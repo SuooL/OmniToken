@@ -1,0 +1,112 @@
+# Release: manual milestone release of `dev` into `main`.
+#
+# Triggered by hand (workflow_dispatch). You pick a `bump` (major/minor); CI
+# merges `dev` -> `main`, computes the next vX.Y.Z from the last tag, tags the
+# merge, generates a changelog, and creates a GitHub Release. `main` is NOT
+# deployed per-feature — this is the only path that updates it.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump for this release"
+        type: choice
+        required: true
+        default: minor
+        options:
+          - major
+          - minor
+
+permissions:
+  contents: write
+
+# Prevent two concurrent releases from computing the same "next version" and
+# racing on the merge/tag/push.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release-to-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # need full history + tags for version + changelog
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # --- Merge dev -> main --------------------------------------------------
+      - name: Merge dev into main
+        run: |
+          git fetch origin dev
+          git merge --no-ff origin/dev -m "release: merge dev into main"
+
+      # --- Compute next version from the last tag -----------------------------
+      - name: Compute next version
+        id: version
+        run: |
+          set -euo pipefail
+          if LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null)"; then
+            HAS_LAST_TAG=true
+          else
+            LAST_TAG="v0.0.0"
+            HAS_LAST_TAG=false
+          fi
+          echo "Last tag: $LAST_TAG (found=$HAS_LAST_TAG)"
+          VER="${LAST_TAG#v}"
+          MAJOR="${VER%%.*}"; REST="${VER#*.}"; MINOR="${REST%%.*}"
+          case "${{ github.event.inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0 ;;
+            minor) MINOR=$((MINOR + 1)) ;;
+          esac
+          NEXT="v${MAJOR}.${MINOR}.0"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "last=$LAST_TAG" >> "$GITHUB_OUTPUT"
+          echo "has_last_tag=$HAS_LAST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT"
+
+      # --- Generate changelog since the last tag ------------------------------
+      # Write to a file (not a step output) so the arbitrary text in commit
+      # subjects can never be interpolated back into a later shell command.
+      - name: Generate changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.version.outputs.has_last_tag }}" = "true" ]; then
+            RANGE="${{ steps.version.outputs.last }}..HEAD"
+          else
+            # First release: no prior tag to diff from, so log full history.
+            RANGE="HEAD"
+          fi
+          git log --pretty=format:'- %s (%h)' "$RANGE" > release-notes.md
+          echo >> release-notes.md
+          # CUSTOMIZE: swap for git-cliff / conventional-changelog if you prefer.
+
+      # --- Tag + push main + tag (atomically) ---------------------------------
+      - name: Tag and push
+        run: |
+          set -euo pipefail
+          git tag -a "${{ steps.version.outputs.next }}" -m "Release ${{ steps.version.outputs.next }}"
+          # --atomic: either both main and the tag land, or neither does —
+          # avoids a merged-but-untagged main if the tag push half fails.
+          git push --atomic origin main "${{ steps.version.outputs.next }}"
+
+      # --- Create GitHub Release ----------------------------------------------
+      # --notes-file (not --notes) so changelog content is never re-parsed as
+      # shell syntax.
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ steps.version.outputs.next }}" \
+            --target main \
+            --title "${{ steps.version.outputs.next }}" \
+            --notes-file release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

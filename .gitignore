@@ -1,0 +1,9 @@
+/omnitoken
+*.db
+*.db-shm
+*.db-wal
+/dist/
+
+# machine-local, not project config
+.DS_Store
+.claude/settings.local.json

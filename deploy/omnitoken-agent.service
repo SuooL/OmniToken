@@ -1,0 +1,16 @@
+# systemd unit for the push-mode agent on a reporting machine.
+# Configure ~/.omnitoken/agent.json first (docs/configuration.md), then:
+#   sudo cp omnitoken-agent.service /etc/systemd/system/ && sudo systemctl enable --now omnitoken-agent
+[Unit]
+Description=OmniToken agent (usage collector)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=%i
+ExecStart=/usr/local/bin/omnitoken agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

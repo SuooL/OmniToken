@@ -1,0 +1,15 @@
+# systemd unit for the OmniToken server (the always-on machine).
+# Install: sudo cp omnitoken-server.service /etc/systemd/system/ && sudo systemctl enable --now omnitoken-server
+[Unit]
+Description=OmniToken server (ingest + dashboard + collectors)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=%i
+ExecStart=/usr/local/bin/omnitoken serve
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

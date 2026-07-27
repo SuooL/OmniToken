@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniToken</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="viz-root">
+  <header>
+    <div>
+      <h1>OmniToken</h1>
+      <p class="subtitle">跨设备 LLM 用量监控</p>
+    </div>
+    <nav class="tabs" id="nav">
+      <a href="#overview" data-view="overview">总览</a>
+      <a href="#live" data-view="live">实时</a>
+      <a href="#reports" data-view="reports">报表</a>
+      <a href="#details" data-view="details">明细</a>
+      <a href="#cache" data-view="cache">缓存</a>
+      <a href="#speed" data-view="speed">速度</a>
+      <a href="#devices" data-view="devices">设备</a>
+      <a href="#models" data-view="models">模型</a>
+      <a href="#settings" data-view="settings">设置</a>
+    </nav>
+    <div class="refresh" id="refresh-note"></div>
+  </header>
+
+  <main id="view-overview" hidden>
+    <section class="stat-row" id="stat-row"></section>
+    <section class="card">
+      <div class="card-head">
+        <h2>每日 Token 用量 · <span id="range-note">近 30 天</span></h2>
+        <div class="head-tools">
+          <div class="legend" id="daily-legend"></div>
+          <button id="table-toggle" class="ghost-btn" aria-pressed="false">表格</button>
+        </div>
+      </div>
+      <div id="daily-chart" class="chart"></div>
+      <div id="daily-table" class="data-table" hidden></div>
+    </section>
+    <section class="card">
+      <h2>活动热力图 · 近 365 天</h2>
+      <div id="heatmap" class="chart"></div>
+    </section>
+    <section class="grid3">
+      <div class="card"><h2>按模型</h2><div id="by-model" class="bars"></div></div>
+      <div class="card"><h2>按设备</h2><div id="by-device" class="bars"></div></div>
+      <div class="card"><h2>按项目</h2><div id="by-repo" class="bars"></div></div>
+    </section>
+    <section class="chip-row" id="chip-row"></section>
+  </main>
+
+  <main id="view-live" hidden>
+    <section class="stat-row" id="quota-row"></section>
+    <section class="stat-row">
+      <div class="stat-tile">
+        <div class="label">燃烧速率(近 10 分钟)</div>
+        <div class="value" id="burn-rate">—</div>
+        <div class="sub" id="burn-sub">&nbsp;</div>
+      </div>
+    </section>
+    <section class="stat-row" id="window-row"></section>
+    <section class="grid2">
+      <div class="card"><h2>设备</h2><div id="live-devices" class="bars"></div></div>
+      <div class="card"><h2>活跃会话(近 10 分钟)</h2><div id="live-sessions" class="data-table"></div></div>
+    </section>
+    <p class="subtle" id="live-status">连接中…</p>
+  </main>
+
+  <main id="view-reports" hidden></main>
+  <main id="view-details" hidden></main>
+  <main id="view-cache" hidden></main>
+  <main id="view-speed" hidden></main>
+  <main id="view-devices" hidden></main>
+  <main id="view-models" hidden></main>
+  <main id="view-settings" hidden></main>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+</div>
+<script src="format.js"></script>
+<script src="overview.js"></script>
+<script src="live.js"></script>
+<script src="reports.js"></script>
+<script src="details.js"></script>
+<script src="cacheview.js"></script>
+<script src="speedview.js"></script>
+<script src="heatmap.js"></script>
+<script src="devicesview.js"></script>
+<script src="modelsview.js"></script>
+<script src="settingsview.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+# Prune branches: weekly cleanup of stale `feature/*` remote branches.
+#
+# `delete-branch-on-merge` (a repo setting) removes a feature branch right after
+# its PR merges. This scheduled job is the safety net: it deletes any remaining
+# `feature/*` remote branch that is already merged into `dev`. Can also be run
+# on demand.
+
+name: Prune branches
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # every Monday 03:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  prune:
+    name: prune-merged-feature-branches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      # NOTE: this intentionally does NOT use `git branch --merged` /
+      # ancestry checks. `ci.yml` auto-merges PRs with `--squash`, which
+      # creates a brand-new commit on `dev` — the original feature-branch
+      # commits are never reachable from `dev`, so an ancestry check would
+      # never consider a squash-merged branch "merged" and this safety net
+      # would silently prune nothing. Querying merged PRs via `gh` is
+      # correct regardless of merge strategy, and as a side effect only ever
+      # considers branches whose PR is actually MERGED (never a branch that
+      # merely looks merged while still backing an open PR).
+      - name: Delete feature/* branches whose PR merged into dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin --prune
+          merged_branches="$(gh pr list --state merged --base dev \
+            --json headRefName --jq '.[].headRefName' || true)"
+          while IFS= read -r branch; do
+            [ -z "$branch" ] && continue
+            case "$branch" in
+              feature/*) ;;
+              *) continue ;;
+            esac
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              echo "Deleting merged remote branch: $branch"
+              git push origin --delete "$branch" || echo "  (skip: could not delete $branch)"
+            fi
+          done <<< "$merged_branches"
