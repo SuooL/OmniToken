@@ -28,7 +28,7 @@ type Config struct {
 
 	Collect struct {
 		IntervalSeconds int               `json:"interval_seconds"`
-		Local           *bool             `json:"local"` // scan this machine's own logs; default true
+		Local           *bool             `json:"local"`                // scan this machine's own logs; default true
 		LocalDirs       []string          `json:"local_dirs,omitempty"` // Claude Code log dirs
 		CodexDirs       []string          `json:"codex_dirs,omitempty"`
 		SSHHosts        []collect.SSHHost `json:"ssh_hosts,omitempty"`

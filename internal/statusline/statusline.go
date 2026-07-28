@@ -87,11 +87,11 @@ type sessionInput struct {
 
 // serverData is what we cache: only the fields the line renders.
 type serverData struct {
-	TodayTokens int64     `json:"today_tokens"`
-	TodayCost   float64   `json:"today_cost"`
-	Devices     int       `json:"devices"`
+	TodayTokens int64       `json:"today_tokens"`
+	TodayCost   float64     `json:"today_cost"`
+	Devices     int         `json:"devices"`
 	Quotas      []quotaLine `json:"quotas"`
-	FetchedAt   time.Time `json:"fetched_at"`
+	FetchedAt   time.Time   `json:"fetched_at"`
 }
 
 type quotaLine struct {

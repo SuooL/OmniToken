@@ -145,10 +145,10 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 	if apiTokens > 0 {
 		cards = append(cards, windowCard{
 			Key: "api", Kind: "api", Label: "API 计费 · 最近 5 小时",
-			Scope:   "按量付费通道合计(API key、Bedrock/Vertex、中转、本地代理)",
-			Tokens:  apiTokens, Events: apiEvents, CostUSD: apiCost,
+			Scope:  "按量付费通道合计(API key、Bedrock/Vertex、中转、本地代理)",
+			Tokens: apiTokens, Events: apiEvents, CostUSD: apiCost,
 			StartMS: rollingStart.UnixMilli(), EndMS: now.UnixMilli(),
-			Note:    "按量付费无配额窗口,按最近 5 小时滚动统计",
+			Note: "按量付费无配额窗口,按最近 5 小时滚动统计",
 		})
 	}
 	return cards, nil
