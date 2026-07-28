@@ -66,9 +66,12 @@ h1 { font-size: 20px; font-weight: 650; }
 h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .card-head h2 { margin-bottom: 0; }
-.head-tools { display: flex; align-items: center; gap: 12px; }
+/* Wraps rather than overflowing: this slot holds button groups and legends
+   that are wider than a phone screen. min-width: 0 because a flex item's auto
+   minimum would otherwise keep it from shrinking below its content. */
+.head-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 
-.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-tile {
   background: var(--surface-1);
   border: 1px solid var(--border);
@@ -106,7 +109,9 @@ a.ghost-btn { text-decoration: none; }
 .data-table th { color: var(--text-muted); font-weight: 500; }
 .data-table th:first-child, .data-table td:first-child { text-align: left; }
 
-.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px; }
+/* min(280px, 100%) so a viewport narrower than the 280px floor still gets a
+   track that fits, instead of one fixed at 280px that overflows. */
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; margin-bottom: 16px; }
 .bars .row { margin-bottom: 10px; }
 .bars .row-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; gap: 8px; }
 .bars .key { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -123,8 +128,12 @@ a.ghost-btn { text-decoration: none; }
 }
 .chip b { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-.grid2 { display: grid; grid-template-columns: 1fr 1.6fr; gap: 16px; margin-bottom: 16px; }
-@media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+/* minmax(0, …) rather than a bare fr: `1fr` means `minmax(auto, 1fr)`, and the
+   auto minimum keeps a track from shrinking below its content. Rows inside use
+   white-space: nowrap for ellipsis, so a long device or model name would push
+   the whole card past the viewport instead of being truncated. */
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 16px; margin-bottom: 16px; }
+@media (max-width: 800px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 
 /* meter: fill carries the accent; the track is a lighter step of the same ramp */
 .meter { height: 8px; border-radius: 4px; background: var(--meter-track); margin-top: 10px; overflow: hidden; }
@@ -182,3 +191,55 @@ a.ghost-btn { text-decoration: none; }
 .tooltip .t-row .k { display: flex; align-items: center; gap: 6px; }
 .tooltip .t-row .v { font-variant-numeric: tabular-nums; color: var(--text-primary); }
 .tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* ---- narrow screens ----------------------------------------------------
+   The header packs a title, nine nav tabs and a refresh stamp into one flex
+   row; below ~640px that row alone is wider than the viewport and drags the
+   whole page into horizontal scrolling. Stack it, and let the tabs scroll
+   sideways on their own — nine tabs wrapped onto three lines costs more
+   vertical space than a phone screen can spare. */
+@media (max-width: 640px) {
+  .viz-root { padding: 16px 12px 32px; }
+
+  header { flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 14px; }
+  header > :first-child { flex: 1 1 auto; min-width: 0; }
+  h1 { font-size: 18px; }
+
+  .tabs {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+    /* Room for the scroll strip and a bigger tap target without the tabs
+       looking cramped against the card below. */
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { flex: 0 0 auto; padding: 8px 12px; }
+
+  .refresh { order: 2; }
+
+  /* Title, legend and buttons compete for one row; let them stack instead of
+     squeezing a button down to two wrapped characters. */
+  .card-head { flex-wrap: wrap; gap: 8px; }
+  .ghost-btn { white-space: nowrap; }
+
+  .card { padding: 14px 12px; }
+  .stat-tile { padding: 12px 12px; }
+  .stat-tile .value { font-size: 22px; }
+
+  /* Tables already scroll inside .data-table; bleed the scroll area to the
+     card edges so the full width is usable rather than boxed in by padding. */
+  .data-table { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+
+  .pager { justify-content: space-between; }
+}
+
+/* Touch input needs a bigger target than a mouse does; 13px text with 5px
+   padding is a ~27px tab, well under a comfortable tap area. */
+@media (pointer: coarse) {
+  .tabs a { padding: 8px 14px; }
+  .ghost-btn { padding: 7px 12px; }
+  .chip-x { padding: 4px 6px; }
+}
