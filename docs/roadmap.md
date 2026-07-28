@@ -35,8 +35,9 @@ Live 页在两台以上设备同时使用时正确反映。
 | 速度页(F15) | ✅ 完成 | 近似(仅 Claude Code)/精确(代理)双通道分离标注;验收时发现并修正 Codex 数据不适用(其 token_count 间隔中位 30ms,非生成耗时) |
 | 权威配额(ADR-0007) | ✅ 完成 | Claude 走 OAuth 用量 API(5h/周/分模型),Codex 解析 rate_limits;实时页权威优先、推断标注 |
 | Cache 分析(F16) | ✅ 完成(提前) | 见 M2 |
-| ccusage 包装采集器(F17) | 暂缓(数据驱动降级) | 本机调研:除 Claude Code/Codex 外,.gemini/.qwen/.qoderworkcn 仅零星日志,占比 <1%;且包装产出为聚合值,与事件级模型冲突(ADR-0004)。有真实需求时再做 |
-| 发布工程 | 部分完成 | Makefile 交叉编译 + systemd/launchd 模板已就位(deploy/) |
+| 长尾工具覆盖(F17) | 暂缓(数据驱动降级) | 本机调研:除 Claude Code/Codex 外,.gemini/.qwen/.qoderworkcn 仅零星日志,占比 <1%。有真实需求时按 `internal/parser/<tool>` 现有分层自研解析器 |
+| 发布工程 | ✅ 完成 | Makefile 交叉编译 + systemd/launchd 模板(deploy/);版本号由 `git describe` 派生并经 ldflags 注入;`release.yml` 手动触发即合 dev→main、打 tag、发布五平台产物与 SHA256SUMS。首个版本 v0.0.1 已发布并校验(校验和一致、`omnitoken version` 输出注入值) |
+| 移动端适配 | ✅ 完成 | 九个页面在 320 / 390px 下横向溢出为 0,1440px 桌面无回归;标签条独立横向滚动,`pointer: coarse` 放大点击区 |
 
 ## 已完成的收尾项
 
@@ -55,7 +56,15 @@ Live 页在两台以上设备同时使用时正确反映。
 
 ## 暂缓池
 
-订阅额度告警通知;移动端适配打磨;ccusage 包装采集器(F17)。
+订阅额度告警通知;长尾工具覆盖(F17)。
+
+> **参考项目不是依赖**。ccusage / token-monitor 是用来**对照解析语义**的
+> (见 `docs/references.md` 的原则),不作为运行时被调用。
+>
+> 长尾工具要覆盖就自研事件级解析器,照 `internal/parser/<tool>` 现有分层新增。
+> 包装 ccusage 这条路已排除:它是 Node CLI,而 agent 在**每台被监控机器上**
+> 本地解析后才推送事件,包装意味着每台机器(含 headless 服务器)都要装
+> Node 运行时,与单二进制定位冲突;且它输出聚合值,无法参与 event_id 幂等去重。
 
 ## 明确不做:多币种
 
