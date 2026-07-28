@@ -1,0 +1,100 @@
+/* Menubar popover. Deliberately its own stylesheet rather than the panel's:
+   the panel is laid out for a 1100px page, this is 320px of glanceable text.
+   Colours mirror web/style.css so the two do not read as different products. */
+
+* { box-sizing: border-box; margin: 0; }
+
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #898781;
+  --border: rgba(11, 11, 11, 0.10);
+  --accent: #2a78d6;
+  --track: #cde2fb;
+  --warn: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #1c1c1b;
+    --surface: #262625;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #898781;
+    --border: rgba(255, 255, 255, 0.12);
+    --accent: #3987e5;
+    --track: #184f95;
+  }
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  /* Transparent window + rounded card reads as a native popover rather than a
+     borderless rectangle. */
+  background: transparent;
+}
+
+.panel {
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px 10px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+header { display: flex; align-items: baseline; justify-content: space-between; }
+.title { font-size: 13px; font-weight: 650; }
+.stamp { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.quotas { display: flex; flex-direction: column; gap: 8px; }
+
+.quota {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.quota .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.quota .name {
+  font-size: 11px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quota .pct { font-size: 15px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.quota .reset { font-size: 10px; color: var(--muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
+
+/* The number is always printed beside the bar, so colour reinforces rather
+   than carries the value. */
+.meter { height: 5px; border-radius: 3px; background: var(--track); margin-top: 6px; overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.meter i.warn { background: var(--warn); }
+.meter i.serious { background: var(--serious); }
+.meter i.critical { background: var(--critical); }
+
+.today {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.today .label { font-size: 11px; color: var(--text-2); }
+.today .value { font-size: 21px; font-weight: 620; margin: 1px 0; font-variant-numeric: tabular-nums; }
+.today .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+footer { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.server {
+  font-size: 10px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.empty { font-size: 11px; color: var(--muted); padding: 6px 0; }
+.error { font-size: 11px; color: var(--critical); padding: 6px 0; word-break: break-all; }

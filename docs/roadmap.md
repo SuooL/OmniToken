@@ -100,7 +100,7 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 |---|---|---|
 | 前端源码提到顶层 `web/` | ✅ 完成 | `web` 包自带 embed(go:embed 无法引用父目录),`serve` 自带面板不变 |
 | 前端传输层收敛 | ✅ 完成 | 12 处 `fetch` 与 1 处 `EventSource` 收敛到 `web/api.js`;桌面端只需替换 get/put/stream 三个方法体 |
-| Mac 菜单栏应用(F24) | 待开始 | Tauri 瘦客户端;v1 只做精简视图(配额 / 燃烧速率 / 今日用量),完整面板仍走浏览器 |
+| Mac 菜单栏应用(F24) | 骨架完成 | Tauri 瘦客户端跑通:托盘图标 + 点击弹出面板 + 经 Rust 侧取真实数据。v1 精简视图(配额 / 今日用量),完整面板仍走浏览器。待做:服务端地址设置界面(当前硬编码 127.0.0.1:8787)、燃烧速率、图标设计 |
 | Windows 端 | 未排期 | Tauri 跨平台,但托盘行为与视觉需单独验收 |
 
 **前置**(2026-07-28 实测):
@@ -110,8 +110,8 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 | Rust(rustup / stable) | ✅ 已装 |
 | Xcode 命令行工具 | ✅ `/Library/Developer/CommandLineTools` |
 | WebKit 框架 | ✅ 系统自带 |
-| `x86_64-apple-darwin` target | ❌ 缺,出通用二进制时需 `rustup target add` |
-| Tauri CLI | ❌ 缺,`cargo install tauri-cli` |
+| `x86_64-apple-darwin` target | ❌ 缺,出通用二进制时需 `rustup target add`(当前只做 arm64) |
+| Tauri CLI | ✅ 已装(2.11.4) |
 
 > `~/.cargo/bin` 写在 `~/.profile` 里。非交互 zsh 只读 `.zshrc` / `.zprofile`,
 > 因此某些工具环境下 `command -v cargo` 会给出假阴性 —— 判断是否已装应直接看

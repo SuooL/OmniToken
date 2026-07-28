@@ -11,7 +11,7 @@ LDFLAGS := -X main.version=$(VERSION)
 
 GOSRC   := ./cmd ./internal
 
-.PHONY: build test vet fmt fmt-check cover check clean release
+.PHONY: build test vet fmt fmt-check cover check clean release desktop desktop-check
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/omnitoken
@@ -46,6 +46,15 @@ cover:
 # CI workflow in sync by having CI call this target — never by duplicating the
 # commands. fmt-check runs first: it is the cheapest and most mechanical.
 check: fmt-check vet cover build
+
+# Menubar client (ADR-0008). Kept out of `check` on purpose: the server is
+# pure Go and a contributor without a Rust toolchain should still be able to
+# run the full gate. Run these when touching desktop/.
+desktop:
+	cd desktop/src-tauri && cargo build
+
+desktop-check:
+	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
 
 # Cross-compile the common personal-fleet targets into dist/.
 release: clean
