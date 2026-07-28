@@ -20,14 +20,14 @@ import (
 )
 
 type Config struct {
-	ServerURL   string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
-	Token       string
-	DeviceName  string
-	ClaudeDirs  []string
-	CodexDirs   []string
-	StatePath   string
-	Interval    time.Duration
-	RelayListen string // e.g. ":8788"; empty = relay disabled
+	ServerURL      string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
+	Token          string
+	DeviceName     string
+	ClaudeDirs     []string
+	CodexDirs      []string
+	StatePath      string
+	Interval       time.Duration
+	RelayListen    string            // e.g. ":8788"; empty = relay disabled
 	ProxyListen    string            // e.g. "127.0.0.1:8899"; empty = proxy disabled
 	ProxyUpstreams map[string]string // prefix -> upstream base
 }

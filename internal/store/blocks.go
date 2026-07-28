@@ -14,13 +14,13 @@ import (
 const BlockDuration = 5 * time.Hour
 
 type Block struct {
-	StartMS   int64  `json:"start_ms"`
-	EndMS     int64  `json:"end_ms"` // start + 5h
-	LastMS    int64  `json:"last_ms"`
-	Tokens    int64  `json:"tokens"`
-	OutTokens int64  `json:"output_tokens"`
-	Events    int64  `json:"events"`
-	Active    bool   `json:"active"`
+	StartMS   int64   `json:"start_ms"`
+	EndMS     int64   `json:"end_ms"` // start + 5h
+	LastMS    int64   `json:"last_ms"`
+	Tokens    int64   `json:"tokens"`
+	OutTokens int64   `json:"output_tokens"`
+	Events    int64   `json:"events"`
+	Active    bool    `json:"active"`
 	CostUSD   float64 `json:"cost_usd,omitempty"` // filled by server layer
 }
 

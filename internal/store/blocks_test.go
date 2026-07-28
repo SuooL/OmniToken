@@ -12,9 +12,9 @@ func TestIdentifyBlocks(t *testing.T) {
 	base := 100*hMS + 17*int64(time.Minute/time.Millisecond) // 100h17m → floors to 100h
 	entries := []blockEntry{
 		{ts: base, tokens: 10, out: 1},
-		{ts: base + 2*hMS, tokens: 20, out: 2},   // same block
-		{ts: base + 6*hMS, tokens: 30, out: 3},   // >5h since block start → new block
-		{ts: base + 20*hMS, tokens: 40, out: 4},  // >5h idle gap → new block
+		{ts: base + 2*hMS, tokens: 20, out: 2},  // same block
+		{ts: base + 6*hMS, tokens: 30, out: 3},  // >5h since block start → new block
+		{ts: base + 20*hMS, tokens: 40, out: 4}, // >5h idle gap → new block
 	}
 	now := base + 20*hMS + 30*int64(time.Minute/time.Millisecond)
 	blocks := identifyBlocks(entries, dur, now)

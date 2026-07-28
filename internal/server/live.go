@@ -53,7 +53,7 @@ func (b *broadcaster) hasSubscribers() bool {
 }
 
 const (
-	burnWindow  = 10 * time.Minute
+	burnWindow   = 10 * time.Minute
 	deviceActive = 2 * time.Minute
 	deviceStale  = 10 * time.Minute // token-monitor's staleAfterMs default
 )

@@ -152,14 +152,14 @@ func runAgent(args []string) {
 		statePath = filepath.Join(server.DataDir(), "agent-state.json")
 	}
 	a, err := agent.New(agent.Config{
-		ServerURL:   strings.TrimSuffix(srvURL, "/"),
-		Token:       pick(*token, "OMNITOKEN_TOKEN", fc.Token),
-		DeviceName:  deviceName,
-		ClaudeDirs:  claudeDirs,
-		CodexDirs:   codexDirs,
-		StatePath:   statePath,
-		Interval:    time.Duration(intervalSec) * time.Second,
-		RelayListen: pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
+		ServerURL:      strings.TrimSuffix(srvURL, "/"),
+		Token:          pick(*token, "OMNITOKEN_TOKEN", fc.Token),
+		DeviceName:     deviceName,
+		ClaudeDirs:     claudeDirs,
+		CodexDirs:      codexDirs,
+		StatePath:      statePath,
+		Interval:       time.Duration(intervalSec) * time.Second,
+		RelayListen:    pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
 		ProxyListen:    pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
 		ProxyUpstreams: fc.ProxyUpstreams,
 	})
