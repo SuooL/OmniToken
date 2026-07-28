@@ -1,9 +1,11 @@
 # Release: manual milestone release of `dev` into `main`.
 #
 # Triggered by hand (workflow_dispatch). You pick a `bump` (major/minor); CI
-# merges `dev` -> `main`, computes the next vX.Y.Z from the last tag, tags the
-# merge, generates a changelog, and creates a GitHub Release. `main` is NOT
-# deployed per-feature — this is the only path that updates it.
+# merges `dev` -> `main`, computes the next vX.Y.Z from the last tag, cross-
+# compiles the five platform binaries with that version stamped in, tags the
+# merge, generates a changelog, and publishes a GitHub Release carrying the
+# binaries plus SHA256SUMS. `main` is NOT deployed per-feature — this is the
+# only path that updates it.
 
 name: Release
 
@@ -18,6 +20,7 @@ on:
         options:
           - major
           - minor
+          - patch
 
 permissions:
   contents: write
@@ -63,11 +66,21 @@ jobs:
           echo "Last tag: $LAST_TAG (found=$HAS_LAST_TAG)"
           VER="${LAST_TAG#v}"
           MAJOR="${VER%%.*}"; REST="${VER#*.}"; MINOR="${REST%%.*}"
-          case "${{ github.event.inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0 ;;
-            minor) MINOR=$((MINOR + 1)) ;;
+          # A two-segment tag (v1.2) has no patch part. Test for the separator
+          # first: ${REST#*.} returns REST unchanged when there is no dot, which
+          # would otherwise make PATCH inherit MINOR.
+          case "$REST" in
+            *.*) PATCH="${REST#*.}" ;;
+            *)   PATCH=0 ;;
           esac
-          NEXT="v${MAJOR}.${MINOR}.0"
+          case "$PATCH" in ''|*[!0-9]*) PATCH=0 ;; esac
+          case "${{ github.event.inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "unknown bump: ${{ github.event.inputs.bump }}" >&2; exit 1 ;;
+          esac
+          NEXT="v${MAJOR}.${MINOR}.${PATCH}"
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           echo "last=$LAST_TAG" >> "$GITHUB_OUTPUT"
           echo "has_last_tag=$HAS_LAST_TAG" >> "$GITHUB_OUTPUT"
@@ -88,7 +101,24 @@ jobs:
           fi
           git log --pretty=format:'- %s (%h)' "$RANGE" > release-notes.md
           echo >> release-notes.md
-          # CUSTOMIZE: swap for git-cliff / conventional-changelog if you prefer.
+
+      # --- Build the artifacts BEFORE anything is pushed -----------------------
+      # A failed build here leaves the repo untouched: main is still only
+      # merged locally and no tag exists yet. Building after the tag push
+      # would strand a tag with no downloadable release.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile release binaries
+        run: make release VERSION="${{ steps.version.outputs.next }}"
+
+      # Lets users verify a download; `gh release create` uploads it alongside
+      # the binaries. Computed inside dist/ so the file lists bare names.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum omnitoken-* > SHA256SUMS
 
       # --- Tag + push main + tag (atomically) ---------------------------------
       - name: Tag and push
@@ -107,6 +137,7 @@ jobs:
           gh release create "${{ steps.version.outputs.next }}" \
             --target main \
             --title "${{ steps.version.outputs.next }}" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md \
+            dist/omnitoken-* dist/SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

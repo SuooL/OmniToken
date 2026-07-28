@@ -12,8 +12,11 @@ import (
 	"github.com/suool/omnitoken/internal/pricing"
 )
 
-// Settings API (F23/GAP-5): pricing overrides, display currency and device
-// display names, editable from the panel and effective **without a restart**.
+// Settings API (F23/GAP-5): pricing overrides and device display names,
+// editable from the panel and effective **without a restart**.
+//
+// All amounts are USD, everywhere: pricing input, computation and display.
+// There is no display-currency conversion — see docs/roadmap.md for why.
 //
 // Reads are open like the other query APIs; the write goes through s.auth —
 // pricing overrides change every cost number on the panel, so it is a write in
@@ -22,7 +25,6 @@ import (
 // history and is undone by simply removing it.
 const (
 	settingsKeyPricing      = "pricing_overrides"
-	settingsKeyCurrency     = "currency"
 	settingsKeyDeviceLabels = "device_labels"
 )
 
@@ -33,10 +35,7 @@ const (
 	maxPricePerMTok  = 10000.0
 	maxDeviceLabel   = 64 // runes
 	maxModelNameLen  = 128
-	maxCurrencyRate  = 1e6
 	settingsBodyMax  = 1 << 20
-	defaultCurrency  = "USD"
-	defaultCurRateV  = 1.0
 	settingsSavedMsg = "saved"
 )
 
@@ -88,14 +87,8 @@ func (s *Server) ReloadPricing() error {
 	return nil
 }
 
-type currencySetting struct {
-	Code string  `json:"code"`
-	Rate float64 `json:"rate"` // multiply USD by this for display only
-}
-
 type settingsResponse struct {
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides"`
-	Currency         currencySetting             `json:"currency"`
 	DeviceLabels     map[string]string           `json:"device_labels"`
 }
 
@@ -104,7 +97,6 @@ type settingsResponse struct {
 // delete the last override or label.
 type settingsRequest struct {
 	PricingOverrides *map[string]pricing.Override `json:"pricing_overrides"`
-	Currency         *currencySetting             `json:"currency"`
 	DeviceLabels     *map[string]string           `json:"device_labels"`
 }
 
@@ -114,13 +106,9 @@ type settingsRequest struct {
 func (s *Server) currentSettings() (settingsResponse, error) {
 	resp := settingsResponse{
 		PricingOverrides: map[string]pricing.Override{},
-		Currency:         currencySetting{Code: defaultCurrency, Rate: defaultCurRateV},
 		DeviceLabels:     map[string]string{},
 	}
 	if err := s.store.GetSettingsJSON(settingsKeyPricing, &resp.PricingOverrides); err != nil {
-		return resp, err
-	}
-	if err := s.store.GetSettingsJSON(settingsKeyCurrency, &resp.Currency); err != nil {
 		return resp, err
 	}
 	if err := s.store.GetSettingsJSON(settingsKeyDeviceLabels, &resp.DeviceLabels); err != nil {
@@ -131,9 +119,6 @@ func (s *Server) currentSettings() (settingsResponse, error) {
 	}
 	if resp.DeviceLabels == nil {
 		resp.DeviceLabels = map[string]string{}
-	}
-	if resp.Currency.Code == "" {
-		resp.Currency = currencySetting{Code: defaultCurrency, Rate: defaultCurRateV}
 	}
 	return resp, nil
 }
@@ -176,12 +161,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		labels = normalized
 	}
-	if req.Currency != nil {
-		if err := validateCurrency(*req.Currency); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
 
 	if overrides != nil {
 		if err := s.store.SetSettingsJSON(settingsKeyPricing, overrides); err != nil {
@@ -192,13 +171,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		// makes the new prices apply to all history on the next request.
 		if err := s.ReloadPricing(); err != nil {
 			http.Error(w, "pricing reload: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	if req.Currency != nil {
-		cur := currencySetting{Code: strings.ToUpper(strings.TrimSpace(req.Currency.Code)), Rate: req.Currency.Rate}
-		if err := s.store.SetSettingsJSON(settingsKeyCurrency, cur); err != nil {
-			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -260,24 +232,6 @@ func validatePricingOverrides(in map[string]pricing.Override) (map[string]pricin
 		out[model] = o
 	}
 	return out, nil
-}
-
-// validateCurrency enforces a 3-letter ISO-4217-shaped code and a positive
-// rate. The rate is display-only — nothing here fetches live FX.
-func validateCurrency(c currencySetting) error {
-	code := strings.ToUpper(strings.TrimSpace(c.Code))
-	if len(code) != 3 {
-		return fmt.Errorf("币种:code %q 非法,须为 3 个字母(如 USD / CNY)", c.Code)
-	}
-	for _, r := range code {
-		if r < 'A' || r > 'Z' {
-			return fmt.Errorf("币种:code %q 非法,只能是 A-Z 字母", c.Code)
-		}
-	}
-	if math.IsNaN(c.Rate) || math.IsInf(c.Rate, 0) || c.Rate <= 0 || c.Rate > maxCurrencyRate {
-		return fmt.Errorf("币种:汇率 %g 非法,须大于 0 且不超过 %g", c.Rate, maxCurrencyRate)
-	}
-	return nil
 }
 
 // validateDeviceLabels maps hostname → display name. An empty label is a

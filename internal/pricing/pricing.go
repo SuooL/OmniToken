@@ -7,11 +7,11 @@
 package pricing
 
 import (
-	"encoding/json"
 	_ "embed"
+	"encoding/json"
 	"regexp"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 )
 

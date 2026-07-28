@@ -1,9 +1,13 @@
-# Prune branches: weekly cleanup of stale `feature/*` remote branches.
+# Prune branches: safety net for `feature/*` remote branches already merged
+# into `dev`.
 #
-# `delete-branch-on-merge` (a repo setting) removes a feature branch right after
-# its PR merges. This scheduled job is the safety net: it deletes any remaining
-# `feature/*` remote branch that is already merged into `dev`. Can also be run
-# on demand.
+# `ci.yml` deletes the head branch as part of the merge, so normally there is
+# nothing left to do here. This catches the exceptions: branches from PRs
+# merged by hand, or from a run where the merge step failed after merging.
+#
+# Deliberately NOT triggered on `pull_request: closed` — `ci.yml` merges with
+# GITHUB_TOKEN, and GitHub does not create workflow runs from events caused by
+# that token, so such a trigger would never fire.
 
 name: Prune branches
 

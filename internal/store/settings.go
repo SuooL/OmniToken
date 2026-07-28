@@ -6,7 +6,7 @@ import (
 )
 
 // App settings (F23/GAP-5): a tiny key/value side table for things the user
-// edits from the settings page — pricing overrides, display currency, device
+// edits from the settings page — pricing overrides, device
 // display names. Kept out of config.json on purpose: the panel must be able to
 // change them at runtime with no restart, and the DB is the single artifact
 // that already travels with the server's data directory.

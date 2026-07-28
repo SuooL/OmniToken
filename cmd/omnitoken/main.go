@@ -20,6 +20,11 @@ import (
 	"github.com/suool/omnitoken/internal/statusline"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+// A plain `go build` or `go install` leaves it as "dev", which is honest:
+// such a binary genuinely has no release identity.
+var version = "dev"
+
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
@@ -34,7 +39,7 @@ func main() {
 	case "statusline":
 		runStatusline(os.Args[2:])
 	case "version":
-		fmt.Println("omnitoken 0.1.0-m1")
+		fmt.Println("omnitoken " + version)
 	default:
 		usage()
 		os.Exit(2)
@@ -56,7 +61,15 @@ func runServe(args []string) {
 
 	path := *configPath
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		path = "" // run on pure defaults
+		// First run: leave the user a file to edit instead of an invisible
+		// set of defaults. A write failure (read-only home, odd -config path)
+		// must not stop the server — fall back to running on pure defaults.
+		if werr := server.WriteDefaultConfig(path); werr != nil {
+			log.Printf("config: 无法写入 %s(%v),继续使用内置默认值", path, werr)
+			path = ""
+		} else {
+			log.Printf("config: 已生成默认配置 %s,可编辑后重启生效", path)
+		}
 	}
 	cfg, err := server.LoadConfig(path)
 	if err != nil {
@@ -101,6 +114,15 @@ func runAgent(args []string) {
 	}
 	srvURL := pick(*serverURL, "OMNITOKEN_SERVER", fc.Server)
 	if srvURL == "" {
+		// Nothing to connect to. If there is no config file yet, leave a
+		// skeleton so the fix is "edit this file", not "create one from the
+		// docs". An existing file is never rewritten — it may hold a token.
+		if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
+			if werr := agent.WriteSkeletonConfig(*configPath); werr == nil {
+				fmt.Fprintf(os.Stderr, "agent: 已生成配置骨架 %s —— 填入 \"server\" 后重新运行\n", *configPath)
+				os.Exit(2)
+			}
+		}
 		fmt.Fprintln(os.Stderr, "agent: server URL is required (-server flag, OMNITOKEN_SERVER env, or \"server\" in "+*configPath+")")
 		os.Exit(2)
 	}
@@ -135,14 +157,14 @@ func runAgent(args []string) {
 		statePath = filepath.Join(server.DataDir(), "agent-state.json")
 	}
 	a, err := agent.New(agent.Config{
-		ServerURL:   strings.TrimSuffix(srvURL, "/"),
-		Token:       pick(*token, "OMNITOKEN_TOKEN", fc.Token),
-		DeviceName:  deviceName,
-		ClaudeDirs:  claudeDirs,
-		CodexDirs:   codexDirs,
-		StatePath:   statePath,
-		Interval:    time.Duration(intervalSec) * time.Second,
-		RelayListen: pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
+		ServerURL:      strings.TrimSuffix(srvURL, "/"),
+		Token:          pick(*token, "OMNITOKEN_TOKEN", fc.Token),
+		DeviceName:     deviceName,
+		ClaudeDirs:     claudeDirs,
+		CodexDirs:      codexDirs,
+		StatePath:      statePath,
+		Interval:       time.Duration(intervalSec) * time.Second,
+		RelayListen:    pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
 		ProxyListen:    pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
 		ProxyUpstreams: fc.ProxyUpstreams,
 	})

@@ -30,30 +30,30 @@ func TestSettingMissingKey(t *testing.T) {
 func TestSettingSetGetOverwrite(t *testing.T) {
 	s := openSettingsStore(t)
 
-	if err := s.SetSetting("currency", "CNY"); err != nil {
+	if err := s.SetSetting("device_labels", "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.GetSetting("currency")
+	v, err := s.GetSetting("device_labels")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != "CNY" {
-		t.Fatalf("GetSetting = %q, want CNY", v)
+	if v != "alpha" {
+		t.Fatalf("GetSetting = %q, want alpha", v)
 	}
 
 	// Upsert: writing again replaces rather than erroring on the primary key.
-	if err := s.SetSetting("currency", "JPY"); err != nil {
+	if err := s.SetSetting("device_labels", "beta"); err != nil {
 		t.Fatalf("overwrite: %v", err)
 	}
-	if v, err = s.GetSetting("currency"); err != nil || v != "JPY" {
-		t.Fatalf("after overwrite = %q, %v; want JPY", v, err)
+	if v, err = s.GetSetting("device_labels"); err != nil || v != "beta" {
+		t.Fatalf("after overwrite = %q, %v; want beta", v, err)
 	}
 
 	// Empty value is a real value, distinct from "never set" only by intent.
-	if err := s.SetSetting("currency", ""); err != nil {
+	if err := s.SetSetting("device_labels", ""); err != nil {
 		t.Fatal(err)
 	}
-	if v, err = s.GetSetting("currency"); err != nil || v != "" {
+	if v, err = s.GetSetting("device_labels"); err != nil || v != "" {
 		t.Fatalf("after clear = %q, %v; want empty", v, err)
 	}
 }
@@ -102,7 +102,7 @@ func TestSettingsJSONMissingKeyKeepsDefault(t *testing.T) {
 		Code string  `json:"code"`
 		Rate float64 `json:"rate"`
 	}{Code: "USD", Rate: 1}
-	if err := s.GetSettingsJSON("currency", &cur); err != nil {
+	if err := s.GetSettingsJSON("no_such_key", &cur); err != nil {
 		t.Fatalf("GetSettingsJSON on missing key: %v", err)
 	}
 	if cur.Code != "USD" || cur.Rate != 1 {

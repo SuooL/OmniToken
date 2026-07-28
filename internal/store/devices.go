@@ -59,7 +59,7 @@ func (s *Store) DeviceDaily(from, to time.Time) ([]DeviceDailyRow, error) {
 
 // DeviceSummary returns one row per device with events in [from, to),
 // busiest device first. Repos counts distinct non-empty repos only —
-// events outside a git checkout carry repo='' and must not inflate the count.
+// events outside a git checkout carry an empty repo and must not inflate it.
 func (s *Store) DeviceSummary(from, to time.Time) ([]DeviceSummaryRow, error) {
 	models, err := s.deviceModelUsage(from, to)
 	if err != nil {

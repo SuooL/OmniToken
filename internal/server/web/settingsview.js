@@ -1,6 +1,6 @@
 "use strict";
-// Settings view (F23/GAP-5): pricing overrides, display currency, device
-// renaming. Everything saved here takes effect without restarting the server —
+// Settings view (F23/GAP-5): pricing overrides and device renaming.
+// Everything saved here takes effect without restarting the server —
 // costs are computed at query time, so the server hot-swaps its price table on
 // save and the next refresh shows the new numbers.
 //
@@ -14,7 +14,6 @@ const SettingsView = {
   _rows: [],       // pricing overrides being edited: {model, in, out, cr, cw}
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
-  _currency: { code: "USD", rate: 1 },
   _loaded: false,
 
   enter() {
@@ -59,8 +58,6 @@ const SettingsView = {
       cw: po[m].cache_write_per_mtok || 0,
     }));
     this._labels = (settings && settings.device_labels) || {};
-    const c = (settings && settings.currency) || {};
-    this._currency = { code: c.code || "USD", rate: c.rate || 1 };
     this._devices = (devices && devices.rows) || [];
     // Devices that only exist as a saved label (retired machine) stay editable.
     const known = new Set(this._devices.map((d) => d.key));
@@ -72,7 +69,7 @@ const SettingsView = {
   render() {
     const root = document.getElementById("view-settings");
     root.innerHTML =
-      this.pricingCard() + this.currencyCard() + this.deviceCard() + this.tokenCard();
+      this.pricingCard() + this.deviceCard() + this.tokenCard();
     this.bind(root);
   },
 
@@ -105,29 +102,6 @@ const SettingsView = {
         <p class="subtle">覆盖内置价格表中的单个模型。成本为查询时计算,保存后历史成本立即按新价重算,<b>无需重启</b>。模型名不区分大小写;写在 config.json 里的覆盖不在此列表,但仍然生效(此处同名条目优先)。</p>
         <div class="data-table">${body}</div>
         <div class="save-note" data-note="price">&nbsp;</div>
-      </section>`;
-  },
-
-  // ---- display currency --------------------------------------------------
-
-  currencyCard() {
-    return `
-      <section class="card" id="card-currency">
-        <div class="card-head">
-          <h2>显示币种</h2>
-          <div class="head-tools"><button class="ghost-btn" data-act="save-currency">保存</button></div>
-        </div>
-        <div class="filter-row">
-          <label>币种代码
-            <input class="form-input" id="cur-code" type="text" maxlength="3" size="4"
-                   value="${esc(this._currency.code)}" spellcheck="false"></label>
-          <label>汇率(1 USD =)
-            <input class="form-input" id="cur-rate" type="number" min="0" step="0.0001"
-                   value="${this._currency.rate}"></label>
-          <span class="subtle">例:1 USD = 7.2 CNY</span>
-        </div>
-        <p class="subtle">仅用于展示换算,<b>不联网获取汇率</b>;底层成本始终以美元存算,改动只影响显示。</p>
-        <div class="save-note" data-note="currency">&nbsp;</div>
       </section>`;
   },
 
@@ -196,8 +170,6 @@ const SettingsView = {
         this.render();
       } else if (act === "save-price") {
         this.savePricing();
-      } else if (act === "save-currency") {
-        this.saveCurrency();
       } else if (act === "save-devices") {
         this.saveDevices();
       } else if (act === "save-token") {
@@ -244,18 +216,6 @@ const SettingsView = {
     }
     const ok = await this.put({ pricing_overrides: out }, "price");
     if (ok) this.note("price", true, "已保存并热重载定价表,成本已按新价重算");
-  },
-
-  async saveCurrency() {
-    const code = document.getElementById("cur-code").value.trim().toUpperCase();
-    const rate = Number(document.getElementById("cur-rate").value);
-    if (!/^[A-Z]{3}$/.test(code)) return this.note("currency", false, "币种代码须为 3 个字母,如 USD / CNY");
-    if (!isFinite(rate) || rate <= 0) return this.note("currency", false, "汇率须大于 0");
-    const ok = await this.put({ currency: { code, rate } }, "currency");
-    if (ok) {
-      this._currency = { code, rate };
-      this.note("currency", true, `已保存:1 USD = ${rate} ${code}`);
-    }
   },
 
   async saveDevices() {

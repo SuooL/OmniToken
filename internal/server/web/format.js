@@ -13,6 +13,8 @@ function compact(n) {
 }
 const full = (n) => n.toLocaleString("en-US");
 
+// Everything on the panel is USD: prices are entered in USD, costs are
+// computed in USD, and there is no display-currency conversion.
 function usd(v) {
   if (v >= 1000) return "$" + (v / 1000).toFixed(1) + "K";
   if (v >= 100) return "$" + v.toFixed(0);

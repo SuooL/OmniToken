@@ -1,14 +1,20 @@
-# CI: verify + auto-merge on PRs to `dev`.
+# CI: verify + merge on PRs to `dev`.
 #
 # The verify job runs `make check` — the exact same command contributors run
 # locally. Never inline the build/test/coverage commands here: a second copy
 # would drift, and then "green locally, red in CI" becomes normal. Coverage
 # thresholds live only in scripts/coverage-gate.sh.
 #
-# IMPORTANT: auto-merge only actually protects `dev` if the repo has
-# BRANCH PROTECTION on `dev` with THIS job's check ("verify") set as a
-# REQUIRED status check, plus "Allow auto-merge" enabled in repo settings.
-# Without required checks, auto-merge would merge without waiting for CI.
+# We merge directly instead of using `gh pr merge --auto`. GitHub does not
+# create new workflow runs from events caused by GITHUB_TOKEN, and a deferred
+# auto-merge lands after this job's token expires — so with `--auto` the head
+# branch was never deleted (observed on 3 of 3 PRs), and neither the repo's
+# `delete-branch-on-merge` setting nor a `pull_request: closed` workflow ever
+# fired. Merging here, while the token is alive, makes `--delete-branch` work.
+#
+# This is only safe because `verify` is the sole required check on `dev`; it
+# has already passed via `needs`. If you add another required check, this job
+# must wait for it too (or go back to `--auto` and accept manual pruning).
 # See .github/workflows/README.md.
 
 name: CI
@@ -48,22 +54,22 @@ jobs:
       - name: Check
         run: make check
 
-  auto-merge:
-    name: enable-auto-merge
+  merge:
+    name: squash-merge-and-delete-branch
     needs: verify
     runs-on: ubuntu-latest
-    # Don't auto-merge draft PRs.
+    # Don't merge draft PRs.
     if: github.event.pull_request.draft == false
     permissions:
       contents: write
       pull-requests: write
     steps:
       # --match-head-commit pins the merge to the exact commit that just
-      # passed `verify`. Without it, a commit pushed between `verify`
-      # finishing and this step running could be the one that actually
-      # merges once checks re-run and pass on it — never on an unverified sha.
-      - name: Enable PR auto-merge
-        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+      # passed `verify`, so a commit pushed while this job was queued can
+      # never be the one that lands — the merge fails instead.
+      # --delete-branch runs in the same step, with a live token.
+      - name: Squash-merge and delete branch
+        run: gh pr merge --squash --delete-branch --match-head-commit "$HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

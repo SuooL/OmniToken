@@ -8,7 +8,7 @@
 | 文件 | 触发 | 做什么 |
 |------|------|--------|
 | `ci.yml` | PR → `dev` | 跑 `make check`;绿了就开启 auto-merge。 |
-| `release.yml` | 手动(`workflow_dispatch`) | 合 `dev` → `main`、算下一个 `vX.Y.Z`、打 tag、生成 changelog、创建 Release。 |
+| `release.yml` | 手动(`workflow_dispatch`) | 合 `dev` → `main`、算下一个 `vX.Y.Z`、交叉编译五平台二进制并注入该版本号、打 tag、生成 changelog、发布带产物与 `SHA256SUMS` 的 Release。 |
 | `prune-branches.yml` | 每周定时 + 手动 | 兜底删除已合入 `dev` 的 `feature/*` 远程分支。 |
 
 `ci.yml` 调用的是 `make check` —— 和贡献者本地跑的**完全同一条命令**。
@@ -26,11 +26,13 @@ auto-merge 和合并门禁**只有在仓库配置到位时才真正生效**。�
 
 ### 2. Branches → Branch protection rules
 
-给 **`dev`** 和 **`main`** 都加规则:
+两条分支的规则**不一样**,不要照抄。
 
-- **Require a pull request before merging**
-- **Require status checks to pass before merging** → 把 `ci.yml` 的 **`verify`** 这个 job
-  设为 **required**(仅 `dev` 需要)。
+#### `dev` —— 人和 AI 都往这里提交,需要完整门禁
+
+- **Require a pull request before merging**(approval 数设 **0**:单人仓无法自我批准,
+  设 1 会让 auto-merge 永远卡住)
+- **Require status checks to pass before merging** → 把 `ci.yml` 的 **`verify`** 设为 **required**
 
   ⚠️ **没有 required check,auto-merge 会在 CI 跑完之前就合并**,门禁形同虚设。
   这是这套配置里最容易漏掉、后果最严重的一步。
@@ -40,7 +42,25 @@ auto-merge 和合并门禁**只有在仓库配置到位时才真正生效**。�
 > `verify` 这个 check 名要等 CI **至少跑过一次**之后才能在 UI 的下拉框里选到。
 > 如果配置时找不到它,先开一个 PR 触发一次 CI,再回来补这项设置。
 
-> 单人仓注意:分支保护默认也会挡住仓库 owner 的直推,这是预期行为 ——
+#### `main` —— 只禁强推与删除,**不要**要求 PR
+
+- 关闭 Require a pull request before merging
+- 保留 **禁止 force push**、**禁止删除分支**
+
+⚠️ **给 `main` 加 "Require a pull request" 会让发版直接失败。**
+`release.yml` 是按设计直接 push `main` 的(合并 dev → 打 tag → 发布),
+开了这条规则后 push 会被拒:
+
+```
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - Changes must be made through a pull request.
+```
+
+这不是漏配,是两条规则本身冲突。`main` 的唯一写入者就是发版工作流,
+而它自身已经是门禁(手动触发 + 构建必须先通过),再套一层 PR 要求并不增加安全性。
+真正要防的是历史被改写和分支被删,这两条保留着。
+
+> 单人仓注意:`dev` 的保护同样会挡住仓库 owner 的直推,这是预期行为 ——
 > 所有改动都该走 PR。
 
 ## Secrets
