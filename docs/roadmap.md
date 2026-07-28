@@ -35,7 +35,7 @@ Live 页在两台以上设备同时使用时正确反映。
 | 速度页(F15) | ✅ 完成 | 近似(仅 Claude Code)/精确(代理)双通道分离标注;验收时发现并修正 Codex 数据不适用(其 token_count 间隔中位 30ms,非生成耗时) |
 | 权威配额(ADR-0007) | ✅ 完成 | Claude 走 OAuth 用量 API(5h/周/分模型),Codex 解析 rate_limits;实时页权威优先、推断标注 |
 | Cache 分析(F16) | ✅ 完成(提前) | 见 M2 |
-| 长尾工具覆盖(F17) | 暂缓(数据驱动降级) | 本机调研:除 Claude Code/Codex 外,.gemini/.qwen/.qoderworkcn 仅零星日志,占比 <1%。有真实需求时按 `internal/parser/<tool>` 现有分层自研解析器 |
+| 长尾工具覆盖(F17) | 明确不做 | 见下方「明确不做」小节 |
 | 发布工程 | ✅ 完成 | Makefile 交叉编译 + systemd/launchd 模板(deploy/);版本号由 `git describe` 派生并经 ldflags 注入;`release.yml` 手动触发即合 dev→main、打 tag、发布五平台产物与 SHA256SUMS。首个版本 v0.0.1 已发布并校验(校验和一致、`omnitoken version` 输出注入值) |
 | 移动端适配 | ✅ 完成 | 九个页面在 320 / 390px 下横向溢出为 0,1440px 桌面无回归;标签条独立横向滚动,`pointer: coarse` 放大点击区 |
 
@@ -54,33 +54,23 @@ Live 页在两台以上设备同时使用时正确反映。
 独立设备页、独立模型页、设置页(定价覆盖热重载)。面板现为九页。
 同轮修复:pricing.Table 并发写 map 崩溃隐患(高危)、定价热swap 的指针竞态。
 
-## 暂缓池
+## 明确不做:长尾工具覆盖(F17)
 
-长尾工具覆盖(F17)。
+只采集 Claude Code 与 Codex。其它工具不做。
 
-**触发条件**:开始常用 Gemini CLI 或 Qwen Code,且其日志确实落用量字段。
-届时新增 `internal/parser/gemini` 一个包即可覆盖两者 —— 它们共用
-`usageMetadata: {promptTokenCount, candidatesTokenCount}` 这套 schema,
-不是 28 个解析器的工程。
+2026-07-28 复查本机(对比已采集 7.6B tokens / 52,171 事件):唯一有可解析用量的是
+`.qwen`(`usageMetadata`),但最近记录停在 2026-05;`.gemini` 近 30 天有 250 次变更,
+查下去全是插件与配置,根本不落用量日志;`.qoderworkcn` 130M/188 文件,抽样 40 个
+会话文件提取到 0 处 token 计数;`.kiro`/`.copilot`/`.cursor`/`.aider`/`.cline`/
+`.codebuddy` 均无用量字段。占比 <1%,且唯一有数据的工具已停用。
 
-**2026-07-28 复查**(对比已采集 7.6B tokens / 52,171 事件):
+将来若要重开:Gemini CLI 与 Qwen Code 共用 `usageMetadata: {promptTokenCount,
+candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两者。
 
-| 工具 | 体量 | 可解析用量 |
-|---|---|---|
-| `.qwen` | 13M | ✅ 有 `usageMetadata`,但最近记录停在 2026-05,近 90 天为 0 |
-| `.gemini` | 31M,近 30 天 250 次变更 | ❌ 变更全是插件/配置,不落用量日志 |
-| `.qoderworkcn` | 130M / 188 文件 | ❌ 抽样 40 个会话文件,提取到 0 处 token 计数 |
-| `.kiro` `.copilot` `.cursor` `.aider` `.cline` `.codebuddy` | 合计约 94M | ❌ 无用量字段 |
-
-结论未变:占比仍 <1%,且唯一有数据的工具已停用。
-
-> **参考项目不是依赖**。ccusage / token-monitor 是用来**对照解析语义**的
-> (见 `docs/references.md` 的原则),不作为运行时被调用。
->
-> 长尾工具要覆盖就自研事件级解析器,照 `internal/parser/<tool>` 现有分层新增。
-> 包装 ccusage 这条路已排除:它是 Node CLI,而 agent 在**每台被监控机器上**
-> 本地解析后才推送事件,包装意味着每台机器(含 headless 服务器)都要装
-> Node 运行时,与单二进制定位冲突;且它输出聚合值,无法参与 event_id 幂等去重。
+**不要包装 ccusage。** 参考项目是用来对照解析语义的(见 `docs/references.md` 的
+原则),不作为运行时被调用。它是 Node CLI,而 agent 在每台被监控机器上本地解析后
+才推送事件,包装意味着每台机器(含 headless 服务器)都要装 Node,与单二进制定位
+冲突;且它输出聚合值,无法参与 event_id 幂等去重。
 
 ## 明确不做:多币种
 
