@@ -21,7 +21,7 @@ const Reports = {
 
   leave() {},
 
-  apiURL(format) {
+  apiPath(format) {
     return `/api/v1/reports?granularity=${this.granularity}&days=${this.days}&format=${format}`;
   },
 
@@ -64,8 +64,8 @@ const Reports = {
       b.setAttribute("aria-pressed", String(b.dataset.gran === this.granularity)));
     document.querySelectorAll("#reports-range [data-days]").forEach((b) =>
       b.setAttribute("aria-pressed", String(+b.dataset.days === this.days)));
-    document.getElementById("reports-csv").href = this.apiURL("csv");
-    document.getElementById("reports-json").href = this.apiURL("json");
+    document.getElementById("reports-csv").href = Api.url(this.apiPath("csv"));
+    document.getElementById("reports-json").href = Api.url(this.apiPath("json"));
     const g = REPORT_GRANULARITIES.find(([k]) => k === this.granularity);
     document.getElementById("reports-note").textContent = `近 ${this.days} 天 · 按${g[1]}`;
   },
@@ -75,9 +75,7 @@ const Reports = {
     const status = document.getElementById("reports-status");
     status.hidden = true;
     try {
-      const res = await fetch(this.apiURL("json"));
-      if (!res.ok) throw new Error(res.statusText);
-      const d = await res.json();
+      const d = await Api.get(this.apiPath("json"));
       if (d.granularity === "session") this.renderSessions(d.rows || []);
       else this.renderPeriods(d.rows || []);
     } catch (e) {

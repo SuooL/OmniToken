@@ -30,13 +30,9 @@ const SettingsView = {
     root.innerHTML = `<section class="card"><span class="empty">加载中…</span></section>`;
     try {
       const [settings, devices] = await Promise.all([
-        fetch("/api/v1/settings").then((r) => {
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          return r.json();
-        }),
-        fetch("/api/v1/breakdown?by=device&days=3650")
-          .then((r) => (r.ok ? r.json() : { rows: [] }))
-          .catch(() => ({ rows: [] })),
+        Api.get("/api/v1/settings"),
+        // A device list failure must not block editing pricing or the token.
+        Api.get("/api/v1/breakdown?by=device&days=3650").catch(() => ({ rows: [] })),
       ]);
       this.adopt(settings, devices);
       this._loaded = true;
@@ -238,11 +234,9 @@ const SettingsView = {
   // put sends one section; the server leaves absent sections untouched.
   async put(body, noteKey) {
     this.note(noteKey, true, "保存中…");
-    const headers = { "Content-Type": "application/json" };
-    const tok = localStorage.getItem(SETTINGS_TOKEN_KEY);
-    if (tok) headers["Authorization"] = "Bearer " + tok;
     try {
-      const res = await fetch("/api/v1/settings", { method: "PUT", headers, body: JSON.stringify(body) });
+      const res = await Api.put("/api/v1/settings", body,
+        localStorage.getItem(SETTINGS_TOKEN_KEY));
       if (res.status === 401) {
         this.note(noteKey, false, "未授权:请在下方填写写入令牌后重试");
         return false;

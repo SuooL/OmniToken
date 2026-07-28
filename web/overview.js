@@ -13,8 +13,7 @@ const Overview = {
 
   async load() {
     try {
-      const res = await fetch("/api/v1/overview?days=30");
-      this.lastData = await res.json();
+      this.lastData = await Api.get("/api/v1/overview?days=30");
       this.render(this.lastData);
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
