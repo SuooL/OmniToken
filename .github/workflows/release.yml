@@ -1,9 +1,11 @@
 # Release: manual milestone release of `dev` into `main`.
 #
 # Triggered by hand (workflow_dispatch). You pick a `bump` (major/minor); CI
-# merges `dev` -> `main`, computes the next vX.Y.Z from the last tag, tags the
-# merge, generates a changelog, and creates a GitHub Release. `main` is NOT
-# deployed per-feature — this is the only path that updates it.
+# merges `dev` -> `main`, computes the next vX.Y.Z from the last tag, cross-
+# compiles the five platform binaries with that version stamped in, tags the
+# merge, generates a changelog, and publishes a GitHub Release carrying the
+# binaries plus SHA256SUMS. `main` is NOT deployed per-feature — this is the
+# only path that updates it.
 
 name: Release
 
@@ -88,7 +90,24 @@ jobs:
           fi
           git log --pretty=format:'- %s (%h)' "$RANGE" > release-notes.md
           echo >> release-notes.md
-          # CUSTOMIZE: swap for git-cliff / conventional-changelog if you prefer.
+
+      # --- Build the artifacts BEFORE anything is pushed -----------------------
+      # A failed build here leaves the repo untouched: main is still only
+      # merged locally and no tag exists yet. Building after the tag push
+      # would strand a tag with no downloadable release.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile release binaries
+        run: make release VERSION="${{ steps.version.outputs.next }}"
+
+      # Lets users verify a download; `gh release create` uploads it alongside
+      # the binaries. Computed inside dist/ so the file lists bare names.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum omnitoken-* > SHA256SUMS
 
       # --- Tag + push main + tag (atomically) ---------------------------------
       - name: Tag and push
@@ -107,6 +126,7 @@ jobs:
           gh release create "${{ steps.version.outputs.next }}" \
             --target main \
             --title "${{ steps.version.outputs.next }}" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md \
+            dist/omnitoken-* dist/SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

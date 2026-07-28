@@ -8,7 +8,7 @@
 | 文件 | 触发 | 做什么 |
 |------|------|--------|
 | `ci.yml` | PR → `dev` | 跑 `make check`;绿了就开启 auto-merge。 |
-| `release.yml` | 手动(`workflow_dispatch`) | 合 `dev` → `main`、算下一个 `vX.Y.Z`、打 tag、生成 changelog、创建 Release。 |
+| `release.yml` | 手动(`workflow_dispatch`) | 合 `dev` → `main`、算下一个 `vX.Y.Z`、交叉编译五平台二进制并注入该版本号、打 tag、生成 changelog、发布带产物与 `SHA256SUMS` 的 Release。 |
 | `prune-branches.yml` | 每周定时 + 手动 | 兜底删除已合入 `dev` 的 `feature/*` 远程分支。 |
 
 `ci.yml` 调用的是 `make check` —— 和贡献者本地跑的**完全同一条命令**。
