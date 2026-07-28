@@ -1,18 +1,17 @@
-# Prune branches: delete `feature/*` remote branches whose PR merged into `dev`.
+# Prune branches: safety net for `feature/*` remote branches already merged
+# into `dev`.
 #
-# The repo setting `delete-branch-on-merge` does NOT cover our flow: `ci.yml`
-# enables GitHub auto-merge, so the merge happens later, when required checks
-# pass, under the github-actions app whose job token is already gone. Observed
-# 3 of 3 PRs keeping their branch. So this workflow — not the repo setting —
-# is what actually deletes branches here.
+# `ci.yml` deletes the head branch as part of the merge, so normally there is
+# nothing left to do here. This catches the exceptions: branches from PRs
+# merged by hand, or from a run where the merge step failed after merging.
 #
-# Runs on PR close (immediate), plus a weekly sweep and on demand as a backstop.
+# Deliberately NOT triggered on `pull_request: closed` — `ci.yml` merges with
+# GITHUB_TOKEN, and GitHub does not create workflow runs from events caused by
+# that token, so such a trigger would never fire.
 
 name: Prune branches
 
 on:
-  pull_request:
-    types: [closed]
   schedule:
     - cron: "0 3 * * 1" # every Monday 03:00 UTC
   workflow_dispatch: {}
@@ -25,9 +24,6 @@ jobs:
   prune:
     name: prune-merged-feature-branches
     runs-on: ubuntu-latest
-    # On a PR event, only act when it actually merged — a closed-without-merge
-    # PR must keep its branch. Scheduled/manual runs have no PR payload.
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     steps:
       - uses: actions/checkout@v4
         with:
