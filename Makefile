@@ -1,15 +1,20 @@
 # OmniToken build & release helpers. Pure Go (no CGO): cross-compiles anywhere.
 
-VERSION ?= 0.2.0-m2
+# Derived from git so a binary always reports what it was actually built from,
+# instead of a literal somebody has to remember to bump. `--always` falls back
+# to a commit hash before the first tag; `--dirty` marks uncommitted builds.
+# Outside a git checkout (source tarball) this yields "dev".
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BIN     := omnitoken
 DIST    := dist
+LDFLAGS := -X main.version=$(VERSION)
 
 GOSRC   := ./cmd ./internal
 
 .PHONY: build test vet fmt fmt-check cover check clean release
 
 build:
-	go build -o $(BIN) ./cmd/omnitoken
+	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/omnitoken
 
 test:
 	go test ./...
@@ -45,11 +50,11 @@ check: fmt-check vet cover build
 # Cross-compile the common personal-fleet targets into dist/.
 release: clean
 	@mkdir -p $(DIST)
-	GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $(DIST)/$(BIN)-darwin-arm64  ./cmd/omnitoken
-	GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $(DIST)/$(BIN)-darwin-amd64  ./cmd/omnitoken
-	GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $(DIST)/$(BIN)-linux-amd64   ./cmd/omnitoken
-	GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $(DIST)/$(BIN)-linux-arm64   ./cmd/omnitoken
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $(DIST)/$(BIN)-windows-amd64.exe ./cmd/omnitoken
+	GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-darwin-arm64  ./cmd/omnitoken
+	GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-darwin-amd64  ./cmd/omnitoken
+	GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-linux-amd64   ./cmd/omnitoken
+	GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-linux-arm64   ./cmd/omnitoken
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-windows-amd64.exe ./cmd/omnitoken
 	@ls -lh $(DIST)
 
 clean:
