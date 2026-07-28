@@ -2,9 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
-	"embed"
 	"encoding/json"
-	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -14,10 +12,8 @@ import (
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/pricing"
 	"github.com/suool/omnitoken/internal/store"
+	"github.com/suool/omnitoken/web"
 )
-
-//go:embed web
-var webFS embed.FS
 
 type Server struct {
 	cfg    *Config
@@ -74,8 +70,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
-	webRoot, _ := fs.Sub(webFS, "web")
-	mux.Handle("GET /", http.FileServerFS(webRoot))
+	mux.Handle("GET /", http.FileServerFS(web.FS))
 
 	log.Printf("omnitoken server listening on %s (db: %s)", s.cfg.Listen, s.cfg.DBPath)
 	return http.ListenAndServe(s.cfg.Listen, mux)

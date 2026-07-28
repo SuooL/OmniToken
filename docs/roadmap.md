@@ -98,7 +98,7 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 前端源码提到顶层 `web/` | 待开始 | Go 侧继续 `go:embed`,`serve` 自带面板不变;web 与桌面端共用一份 |
+| 前端源码提到顶层 `web/` | ✅ 完成 | `web` 包自带 embed(go:embed 无法引用父目录),`serve` 自带面板不变 |
 | 前端传输层收敛 | 待开始 | 现有 12 处 `fetch` 直调 API,需统一到 api 层,便于桌面端换成 Tauri IPC |
 | Mac 菜单栏应用(F24) | 待开始 | Tauri 瘦客户端;v1 只做精简视图(配额 / 燃烧速率 / 今日用量),完整面板仍走浏览器 |
 | Windows 端 | 未排期 | Tauri 跨平台,但托盘行为与视觉需单独验收 |
