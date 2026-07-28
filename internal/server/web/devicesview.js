@@ -229,8 +229,8 @@ const DevicesView = {
         let cost = "无定价";
         if (r.cost_usd != null) {
           cost = r.cost_partial
-            ? `<span title="部分模型无定价,为下限">≥ ${money(r.cost_usd)}</span>`
-            : money(r.cost_usd);
+            ? `<span title="部分模型无定价,为下限">≥ ${usd(r.cost_usd)}</span>`
+            : usd(r.cost_usd);
         }
         const model = r.top_model
           ? `${esc(r.top_model)} <span class="dev-share">${compact(r.top_model_tokens)}</span>`

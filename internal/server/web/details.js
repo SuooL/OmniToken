@@ -152,7 +152,7 @@ const Details = {
       <td>${esc(e.model || "—")}</td>
       <td title="${esc(e.cwd || "")}">${esc(this.trunc(repoLabel(e.repo, e.cwd), 28))}</td>
       ${num(e.input_tokens)}${num(e.output_tokens)}${num(e.cache_read_tokens)}${num(e.cache_creation_tokens)}
-      <td>${e.cost_usd != null ? money(e.cost_usd) : "—"}</td>
+      <td>${e.cost_usd != null ? usd(e.cost_usd) : "—"}</td>
       <td>${sid
         ? `<a class="session-link" data-session="${esc(sid)}" title="按此会话过滤:${esc(sid)}">${esc(sid.slice(0, 8))}</a>`
         : "—"}</td>
