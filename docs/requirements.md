@@ -45,7 +45,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F14 | 本地代理:采集 API 直调,精确 tokens/sec 与 TTFT | P1 | M3 ✅ |
 | F15 | 速度页:各模型 tokens/sec 分布、TTFT(代理=精确,日志=近似,须标注) | P1 | M3 ✅ |
 | F16 | Cache 分析:命中率、1h/5m TTL 明细、节省金额 | P2 | M3 ✅ |
-| F17 | 长尾工具覆盖:ccusage 包装采集器 | P2 | 暂缓(本机长尾工具占比 <1%,且聚合值与事件级模型冲突) |
+| F17 | 长尾工具覆盖(自研事件级解析器) | P2 | 暂缓(本机长尾工具占比 <1%);不包装 ccusage,理由见 roadmap 暂缓池注 |
 | F18 | Claude Code statusline 接入(本会话 + 跨设备今日 + 权威配额) | P3 | ✅ |
 | F19 | 权威配额观测:Claude OAuth 用量端点(5h/周/分模型)、Codex rate_limits;仅订阅计费轮询(ADR-0007) | P1 | ✅ |
 | F20 | 活动热力图:GitHub 风格日历热力图(总览页) | P2 | ✅ |
