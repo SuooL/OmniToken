@@ -56,7 +56,23 @@ Live 页在两台以上设备同时使用时正确反映。
 
 ## 暂缓池
 
-订阅额度告警通知;长尾工具覆盖(F17)。
+长尾工具覆盖(F17)。
+
+**触发条件**:开始常用 Gemini CLI 或 Qwen Code,且其日志确实落用量字段。
+届时新增 `internal/parser/gemini` 一个包即可覆盖两者 —— 它们共用
+`usageMetadata: {promptTokenCount, candidatesTokenCount}` 这套 schema,
+不是 28 个解析器的工程。
+
+**2026-07-28 复查**(对比已采集 7.6B tokens / 52,171 事件):
+
+| 工具 | 体量 | 可解析用量 |
+|---|---|---|
+| `.qwen` | 13M | ✅ 有 `usageMetadata`,但最近记录停在 2026-05,近 90 天为 0 |
+| `.gemini` | 31M,近 30 天 250 次变更 | ❌ 变更全是插件/配置,不落用量日志 |
+| `.qoderworkcn` | 130M / 188 文件 | ❌ 抽样 40 个会话文件,提取到 0 处 token 计数 |
+| `.kiro` `.copilot` `.cursor` `.aider` `.cline` `.codebuddy` | 合计约 94M | ❌ 无用量字段 |
+
+结论未变:占比仍 <1%,且唯一有数据的工具已停用。
 
 > **参考项目不是依赖**。ccusage / token-monitor 是用来**对照解析语义**的
 > (见 `docs/references.md` 的原则),不作为运行时被调用。
