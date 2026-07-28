@@ -98,7 +98,7 @@ const Live = {
       } else {
         bits.push(`近 ${elapsed}`);
       }
-      if (w.cost_usd) bits.push(money(w.cost_usd));
+      if (w.cost_usd) bits.push(usd(w.cost_usd));
       bits.push(`${full(w.events)} 请求`);
       // Burn-rate projection (F11): only shown for windows with a real end.
       const proj = w.projected_tokens

@@ -13,33 +13,13 @@ function compact(n) {
 }
 const full = (n) => n.toLocaleString("en-US");
 
-// Display currency. Costs are stored and computed in USD everywhere; this is a
-// presentation-layer conversion only, with a hand-entered rate (no FX feed).
-// Only USD and CNY are offered — see supportedCurrencies in settingsview.go.
-const Currency = {
-  code: "USD",
-  rate: 1,
-  symbol: "$",
-
-  // Anything unrecognised falls back to USD rather than rendering numbers
-  // under a currency we cannot actually convert to.
-  set(code, rate) {
-    this.code = code === "CNY" ? "CNY" : "USD";
-    this.rate = this.code === "CNY" && rate > 0 ? rate : 1;
-    this.symbol = this.code === "CNY" ? "¥" : "$";
-  },
-};
-
-// money renders a USD amount in the configured display currency. Named for
-// what it does, not for one currency — it returned "$" unconditionally before
-// the currency setting was wired up to anything.
-function money(v) {
-  const x = v * Currency.rate;
-  const s = Currency.symbol;
-  if (x >= 1000) return s + (x / 1000).toFixed(1) + "K";
-  if (x >= 100) return s + x.toFixed(0);
-  if (x >= 1) return s + x.toFixed(2);
-  return x > 0 ? s + x.toFixed(3) : s + "0";
+// Everything on the panel is USD: prices are entered in USD, costs are
+// computed in USD, and there is no display-currency conversion.
+function usd(v) {
+  if (v >= 1000) return "$" + (v / 1000).toFixed(1) + "K";
+  if (v >= 100) return "$" + v.toFixed(0);
+  if (v >= 1) return "$" + v.toFixed(2);
+  return v > 0 ? "$" + v.toFixed(3) : "$0";
 }
 
 function hours(sec) {

@@ -178,7 +178,7 @@ const ModelsView = {
       </div>
       <div class="stat-tile">
         <div class="label">合计成本</div>
-        <div class="value">${money(cost)}</div>
+        <div class="value">${usd(cost)}</div>
         <div class="sub">${missing ? `${missing} 个模型无定价,未计入` : "全部模型已定价"}</div>
       </div>`;
   },
@@ -210,7 +210,7 @@ const ModelsView = {
           `<title>${esc(s.label)} · ${full(v)} tokens</title></rect>`;
         x += w;
       });
-      const cost = m.unpriced ? "无定价" : money(m.cost);
+      const cost = m.unpriced ? "无定价" : usd(m.cost);
       svg += `<text x="${W}" y="${base}" text-anchor="end">${compact(m.total)} · ${esc(cost)}</text>`;
     });
     svg += `</svg>`;
@@ -334,7 +334,7 @@ const ModelsView = {
       </tr></thead><tbody>` +
       rows.map((r) => {
         const label = this.sourceLabel(r.source);
-        const cost = unpriced.has(r.model) ? "无定价" : money(r.cost_usd || 0);
+        const cost = unpriced.has(r.model) ? "无定价" : usd(r.cost_usd || 0);
         const share = (100 * r.total_tokens / grand).toFixed(1) + "%";
         return `<tr>
           <td title="${esc(this.modelLabel(r.model))}">${esc(this.trunc(this.modelLabel(r.model), 34))}</td>
