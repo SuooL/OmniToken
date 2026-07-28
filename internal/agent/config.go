@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // FileConfig is the agent's config file (~/.omnitoken/agent.json).
@@ -35,4 +37,31 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	}
 	err = json.Unmarshal(data, &fc)
 	return fc, err
+}
+
+// WriteSkeletonConfig writes a starter agent.json so the user has a file to
+// edit rather than a path they have to create by hand.
+//
+// Server is left empty on purpose: filling in a placeholder host would make a
+// re-run fail while trying to reach something that does not exist, instead of
+// repeating the clear "server URL is required" message.
+//
+// It refuses to touch an existing file — that file may already hold a token.
+func WriteSkeletonConfig(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	skeleton := FileConfig{IntervalSeconds: 15}
+	data, err := json.MarshalIndent(skeleton, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	// 0600: this file carries the ingest token.
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }

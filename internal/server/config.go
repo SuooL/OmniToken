@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -113,4 +114,37 @@ func (c *Config) applyDefaults() {
 
 func (c *Config) LocalEnabled() bool {
 	return c.Collect.Local == nil || *c.Collect.Local
+}
+
+// WriteDefaultConfig writes a config file filled with the effective defaults,
+// so a first-time user has something to read and edit instead of guessing
+// which fields exist. Values are the resolved ones (absolute paths, this
+// host's name) — the file is per-machine anyway, and showing where data
+// actually lands is more useful than leaving blanks.
+//
+// It refuses to touch an existing file: config may hold a token the user
+// typed, and silently rewriting it would be destructive.
+func WriteDefaultConfig(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	cfg := &Config{}
+	cfg.applyDefaults()
+	// applyDefaults leaves Local nil (nil means enabled). Spell it out, or the
+	// generated file would show `"local": null` and read like a bug.
+	enabled := true
+	cfg.Collect.Local = &enabled
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	// 0600: this file carries the ingest token.
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }

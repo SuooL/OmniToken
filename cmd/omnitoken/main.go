@@ -56,7 +56,15 @@ func runServe(args []string) {
 
 	path := *configPath
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		path = "" // run on pure defaults
+		// First run: leave the user a file to edit instead of an invisible
+		// set of defaults. A write failure (read-only home, odd -config path)
+		// must not stop the server — fall back to running on pure defaults.
+		if werr := server.WriteDefaultConfig(path); werr != nil {
+			log.Printf("config: 无法写入 %s(%v),继续使用内置默认值", path, werr)
+			path = ""
+		} else {
+			log.Printf("config: 已生成默认配置 %s,可编辑后重启生效", path)
+		}
 	}
 	cfg, err := server.LoadConfig(path)
 	if err != nil {
@@ -101,6 +109,15 @@ func runAgent(args []string) {
 	}
 	srvURL := pick(*serverURL, "OMNITOKEN_SERVER", fc.Server)
 	if srvURL == "" {
+		// Nothing to connect to. If there is no config file yet, leave a
+		// skeleton so the fix is "edit this file", not "create one from the
+		// docs". An existing file is never rewritten — it may hold a token.
+		if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
+			if werr := agent.WriteSkeletonConfig(*configPath); werr == nil {
+				fmt.Fprintf(os.Stderr, "agent: 已生成配置骨架 %s —— 填入 \"server\" 后重新运行\n", *configPath)
+				os.Exit(2)
+			}
+		}
 		fmt.Fprintln(os.Stderr, "agent: server URL is required (-server flag, OMNITOKEN_SERVER env, or \"server\" in "+*configPath+")")
 		os.Exit(2)
 	}
