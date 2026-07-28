@@ -121,6 +121,6 @@ make release    # 交叉编译五平台到 dist/
 ```
 
 想参与贡献看 [CONTRIBUTING.md](CONTRIBUTING.md)(分支模型、PR 流程、验收标准)。
-项目的架构约定与正确性铁律在 [AGENTS.md](AGENTS.md) —— AI 编码助手会自动读它。
+项目的架构约定与正确性铁律在 [CLAUDE.md](CLAUDE.md) —— Claude Code 会自动读它。
 
 路线图与当前状态见 [docs/roadmap.md](docs/roadmap.md)。
