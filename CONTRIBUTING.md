@@ -9,10 +9,12 @@
 只需要 Go(版本见 `go.mod`)。纯 Go 无 CGO,不需要额外的系统依赖。
 
 ```sh
-git clone <repo>
+git clone https://github.com/SuooL/OmniToken.git
 cd OmniToken
 make check      # 跑一遍,确认环境就绪
 ```
+
+调试时也可以只跑其中一段:`make vet`、`make test`、`make cover`(测试 + 覆盖率门禁)、`make build`。
 
 ## 分支模型
 
