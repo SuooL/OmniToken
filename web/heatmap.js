@@ -25,8 +25,7 @@ const Heatmap = {
       return;
     }
     try {
-      const res = await fetch("/api/v1/heatmap?days=" + this.span);
-      const d = await res.json();
+      const d = await Api.get("/api/v1/heatmap?days=" + this.span);
       this._days = d.days || [];
       this._at = Date.now();
       this.render(el, this._days);

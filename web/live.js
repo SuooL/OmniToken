@@ -9,7 +9,7 @@ const Live = {
   start() {
     if (this.es) return;
     const status = document.getElementById("live-status");
-    this.es = new EventSource("/api/v1/stream");
+    this.es = Api.stream("/api/v1/stream");
     const onData = (ev) => {
       this.data = JSON.parse(ev.data);
       this.render();

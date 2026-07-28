@@ -22,8 +22,7 @@ const SpeedView = {
 
   async load() {
     try {
-      const res = await fetch("/api/v1/speed?days=30");
-      this.render(await res.json());
+      this.render(await Api.get("/api/v1/speed?days=30"));
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {

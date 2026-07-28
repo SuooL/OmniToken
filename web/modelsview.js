@@ -27,8 +27,7 @@ const ModelsView = {
   async load() {
     try {
       // top=4:每日图最多 4 个模型 + 「其他」,正好用满调色板,不新造色相。
-      const res = await fetch(`/api/v1/models?days=${this.DAYS}&top=4`);
-      this.render(await res.json());
+      this.render(await Api.get(`/api/v1/models?days=${this.DAYS}&top=4`));
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {

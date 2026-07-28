@@ -90,8 +90,7 @@ const Details = {
                   ["model", "d-f-model"], ["repo", "d-f-repo"]];
     await Promise.all(dims.map(async ([by, id]) => {
       try {
-        const res = await fetch(`/api/v1/breakdown?by=${by}&days=90`);
-        const d = await res.json();
+        const d = await Api.get(`/api/v1/breakdown?by=${by}&days=90`);
         const sel = document.getElementById(id);
         sel.innerHTML = sel.firstElementChild.outerHTML +
           (d.rows || []).filter((r) => r.key).map((r) =>
@@ -110,8 +109,7 @@ const Details = {
     }
     const note = document.getElementById("d-note");
     try {
-      const res = await fetch("/api/v1/events?" + p);
-      const d = await res.json();
+      const d = await Api.get("/api/v1/events?" + p);
       if (my !== this.seq) return; // superseded by a newer request
       this.total = d.total || 0;
       this.render(d.events || []);
