@@ -103,7 +103,19 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 | Mac 菜单栏应用(F24) | 待开始 | Tauri 瘦客户端;v1 只做精简视图(配额 / 燃烧速率 / 今日用量),完整面板仍走浏览器 |
 | Windows 端 | 未排期 | Tauri 跨平台,但托盘行为与视觉需单独验收 |
 
-**前置**:本机尚未安装 Rust 工具链(`cargo` / `rustc`),动手前需先装。
+**前置**(2026-07-28 实测):
+
+| 项 | 状态 |
+|---|---|
+| Rust(rustup / stable) | ✅ 已装 |
+| Xcode 命令行工具 | ✅ `/Library/Developer/CommandLineTools` |
+| WebKit 框架 | ✅ 系统自带 |
+| `x86_64-apple-darwin` target | ❌ 缺,出通用二进制时需 `rustup target add` |
+| Tauri CLI | ❌ 缺,`cargo install tauri-cli` |
+
+> `~/.cargo/bin` 写在 `~/.profile` 里。非交互 zsh 只读 `.zshrc` / `.zprofile`,
+> 因此某些工具环境下 `command -v cargo` 会给出假阴性 —— 判断是否已装应直接看
+> `~/.cargo/bin/`,不要只信 PATH 查找。
 
 ## 工程事项(持续)
 
