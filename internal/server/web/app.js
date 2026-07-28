@@ -69,8 +69,26 @@ function route() {
 
 addEventListener("hashchange", route);
 
+// Re-render the visible view after the display currency changes, so saving on
+// the settings page updates the other pages without a reload.
+function refreshCurrentView() {
+  if (!currentView) return;
+  Views[currentView].leave();
+  Views[currentView].enter();
+}
+
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (currentView === "overview" && Overview.lastData) Overview.render(Overview.lastData);
 });
 
-route();
+// Load the display currency before the first paint: money() reads it, and
+// rendering in USD only to swap to CNY a moment later would flash wrong
+// numbers. A missing or failing settings call must still boot the UI, so the
+// route happens in .finally rather than .then.
+fetch("/api/v1/settings")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((s) => {
+    if (s && s.currency) Currency.set(s.currency.code, s.currency.rate);
+  })
+  .catch(() => {})
+  .finally(route);
