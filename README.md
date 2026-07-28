@@ -24,9 +24,14 @@ API 直调代理),汇总到自托管服务端,用内嵌网页面板做统计分�
 
 ## 快速开始
 
+从 [Releases](https://github.com/SuooL/OmniToken/releases) 下载对应平台的二进制
+(附 `SHA256SUMS` 可校验),或自己构建:
+
 ```sh
 make build            # 或 go build -o omnitoken ./cmd/omnitoken
+```
 
+```sh
 # 在常开的机器上启动服务端(自动采集本机 + 首次全量导入历史)
 ./omnitoken serve
 # 浏览器打开 http://<该机器>:8787
