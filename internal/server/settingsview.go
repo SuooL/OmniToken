@@ -196,7 +196,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Currency != nil {
+		// Normalise before storing so the stored code always matches what
+		// validateCurrency checked, not whatever casing the client sent.
 		cur := currencySetting{Code: strings.ToUpper(strings.TrimSpace(req.Currency.Code)), Rate: req.Currency.Rate}
+		if cur.Code == "USD" {
+			cur.Rate = 1
+		}
 		if err := s.store.SetSettingsJSON(settingsKeyCurrency, cur); err != nil {
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -262,17 +267,22 @@ func validatePricingOverrides(in map[string]pricing.Override) (map[string]pricin
 	return out, nil
 }
 
-// validateCurrency enforces a 3-letter ISO-4217-shaped code and a positive
-// rate. The rate is display-only — nothing here fetches live FX.
+// supportedCurrencies is the closed set the panel offers. Accepting arbitrary
+// ISO codes would promise a conversion the project does not actually provide:
+// there is no FX feed, so every non-USD code needs a hand-entered rate, and a
+// code nobody maintains a rate for renders numbers that are simply wrong.
+var supportedCurrencies = map[string]bool{"USD": true, "CNY": true}
+
+// validateCurrency accepts only USD or CNY, with a positive display rate.
+// USD is pinned to 1: costs are stored in USD, so any other rate would mean
+// "show USD amounts multiplied by something", which is never what is wanted.
 func validateCurrency(c currencySetting) error {
 	code := strings.ToUpper(strings.TrimSpace(c.Code))
-	if len(code) != 3 {
-		return fmt.Errorf("币种:code %q 非法,须为 3 个字母(如 USD / CNY)", c.Code)
+	if !supportedCurrencies[code] {
+		return fmt.Errorf("币种:code %q 不支持,只能是 USD 或 CNY", c.Code)
 	}
-	for _, r := range code {
-		if r < 'A' || r > 'Z' {
-			return fmt.Errorf("币种:code %q 非法,只能是 A-Z 字母", c.Code)
-		}
+	if code == "USD" && c.Rate != 1 {
+		return fmt.Errorf("币种:USD 的汇率必须为 1,收到 %g", c.Rate)
 	}
 	if math.IsNaN(c.Rate) || math.IsInf(c.Rate, 0) || c.Rate <= 0 || c.Rate > maxCurrencyRate {
 		return fmt.Errorf("币种:汇率 %g 非法,须大于 0 且不超过 %g", c.Rate, maxCurrencyRate)

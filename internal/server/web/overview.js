@@ -30,7 +30,7 @@ const Overview = {
     const modelCosts = d.model_costs || {};
     const unpriced = new Set(d.unpriced_models || []);
     this.renderBars("by-model", d.by_model, (k) => k, (r) =>
-      unpriced.has(r.key) ? "无定价" : (modelCosts[r.key] != null ? usd(modelCosts[r.key]) : ""));
+      unpriced.has(r.key) ? "无定价" : (modelCosts[r.key] != null ? money(modelCosts[r.key]) : ""));
     this.renderBars("by-device", d.by_device, (k) => k);
     const work = d.work_by_repo || {};
     this.renderBars("by-repo", d.by_repo, (k) => repoLabel(k), (r) => {
@@ -52,8 +52,8 @@ const Overview = {
     document.getElementById("stat-row").innerHTML = tiles.map(([label, t, key]) => {
       const c = costs[key] || {};
       const parts = [];
-      if (c.real_usd > 0) parts.push(`真实 ${usd(c.real_usd)}`);
-      if (c.equivalent_usd > 0) parts.push(`等效 ${usd(c.equivalent_usd)}`);
+      if (c.real_usd > 0) parts.push(`真实 ${money(c.real_usd)}`);
+      if (c.equivalent_usd > 0) parts.push(`等效 ${money(c.equivalent_usd)}`);
       return `
       <div class="stat-tile">
         <div class="label">${label} tokens</div>

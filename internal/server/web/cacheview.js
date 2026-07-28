@@ -63,7 +63,7 @@ const CacheView = {
       </div>
       <div class="stat-tile">
         <div class="label">缓存节省(等效)</div>
-        <div class="value">${usd(t.saved_usd || 0)}</div>
+        <div class="value">${money(t.saved_usd || 0)}</div>
         <div class="sub">按 输入价 − 缓存读取价 折算</div>
       </div>
       <div class="stat-tile">
@@ -83,7 +83,7 @@ const CacheView = {
       models.map((m) => {
         const ttl = m.cache_1h_tokens + m.cache_5m_tokens > 0
           ? `${compact(m.cache_1h_tokens)} / ${compact(m.cache_5m_tokens)}` : "—";
-        const saved = unpriced.has(m.model) ? "无定价" : usd(m.saved_usd || 0);
+        const saved = unpriced.has(m.model) ? "无定价" : money(m.saved_usd || 0);
         return `<tr>
           <td>${esc(m.model || "(未知)")}</td>
           <td>${pct(m.hit_rate)}</td>
