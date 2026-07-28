@@ -72,7 +72,8 @@ Tauri 的 webview 从 `tauri://localhost` 加载,与 `http://<server>:8787` 跨�
 
 **负面**
 
-- 引入 Rust 工具链。**本机当前未安装 `cargo`/`rustc`**,动手前需先装。
+- 引入 Rust 工具链。开发机已装(rustup / stable),Tauri 另需 CLI 与
+  `x86_64-apple-darwin` target 才能出通用二进制 —— 见 roadmap M4 的前置清单。
 - 前端需要一层传输抽象:现有 12 处 `fetch` 直调 `/api/v1/*`,web 走 `fetch`、
   桌面端走 Tauri IPC,需收敛到统一的 api 层。
 - **SSE 是最难桥接的一环**:`live.js` 用 `EventSource("/api/v1/stream")`,
