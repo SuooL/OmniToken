@@ -1,13 +1,18 @@
-# Prune branches: weekly cleanup of stale `feature/*` remote branches.
+# Prune branches: delete `feature/*` remote branches whose PR merged into `dev`.
 #
-# `delete-branch-on-merge` (a repo setting) removes a feature branch right after
-# its PR merges. This scheduled job is the safety net: it deletes any remaining
-# `feature/*` remote branch that is already merged into `dev`. Can also be run
-# on demand.
+# The repo setting `delete-branch-on-merge` does NOT cover our flow: `ci.yml`
+# enables GitHub auto-merge, so the merge happens later, when required checks
+# pass, under the github-actions app whose job token is already gone. Observed
+# 3 of 3 PRs keeping their branch. So this workflow — not the repo setting —
+# is what actually deletes branches here.
+#
+# Runs on PR close (immediate), plus a weekly sweep and on demand as a backstop.
 
 name: Prune branches
 
 on:
+  pull_request:
+    types: [closed]
   schedule:
     - cron: "0 3 * * 1" # every Monday 03:00 UTC
   workflow_dispatch: {}
@@ -20,6 +25,9 @@ jobs:
   prune:
     name: prune-merged-feature-branches
     runs-on: ubuntu-latest
+    # On a PR event, only act when it actually merged — a closed-without-merge
+    # PR must keep its branch. Scheduled/manual runs have no PR payload.
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     steps:
       - uses: actions/checkout@v4
         with:
