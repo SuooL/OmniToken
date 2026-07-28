@@ -20,6 +20,7 @@ on:
         options:
           - major
           - minor
+          - patch
 
 permissions:
   contents: write
@@ -65,11 +66,21 @@ jobs:
           echo "Last tag: $LAST_TAG (found=$HAS_LAST_TAG)"
           VER="${LAST_TAG#v}"
           MAJOR="${VER%%.*}"; REST="${VER#*.}"; MINOR="${REST%%.*}"
-          case "${{ github.event.inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0 ;;
-            minor) MINOR=$((MINOR + 1)) ;;
+          # A two-segment tag (v1.2) has no patch part. Test for the separator
+          # first: ${REST#*.} returns REST unchanged when there is no dot, which
+          # would otherwise make PATCH inherit MINOR.
+          case "$REST" in
+            *.*) PATCH="${REST#*.}" ;;
+            *)   PATCH=0 ;;
           esac
-          NEXT="v${MAJOR}.${MINOR}.0"
+          case "$PATCH" in ''|*[!0-9]*) PATCH=0 ;; esac
+          case "${{ github.event.inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "unknown bump: ${{ github.event.inputs.bump }}" >&2; exit 1 ;;
+          esac
+          NEXT="v${MAJOR}.${MINOR}.${PATCH}"
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           echo "last=$LAST_TAG" >> "$GITHUB_OUTPUT"
           echo "has_last_tag=$HAS_LAST_TAG" >> "$GITHUB_OUTPUT"
