@@ -20,6 +20,11 @@ import (
 	"github.com/suool/omnitoken/internal/statusline"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+// A plain `go build` or `go install` leaves it as "dev", which is honest:
+// such a binary genuinely has no release identity.
+var version = "dev"
+
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) < 2 {
@@ -34,7 +39,7 @@ func main() {
 	case "statusline":
 		runStatusline(os.Args[2:])
 	case "version":
-		fmt.Println("omnitoken 0.1.0-m1")
+		fmt.Println("omnitoken " + version)
 	default:
 		usage()
 		os.Exit(2)
