@@ -85,20 +85,29 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 	return n, tx.Commit()
 }
 
-// LatestQuotas returns the most recent snapshot per
-// (device, source, limit_id, scope, window_minutes).
-// Snapshots whose window has already reset are still returned; callers
-// decide staleness by comparing ResetsAt/ObservedAt against now.
+// LatestQuotas returns the newest observation per (device, source, scope,
+// window) since a cutoff. Snapshots whose window has already reset are still
+// returned; callers decide staleness from ResetsAt/ObservedAt.
+//
+// limit_id is deliberately NOT part of that grouping. It records which channel
+// reported the number, and a window's identity does not depend on how we found
+// out about it — grouping by it means a channel switch leaves the retired
+// channel's last reading on screen forever beside the live one. That happened:
+// after ADR-0011 moved Claude quota from the OAuth endpoint to the status line,
+// every window rendered twice, once per limit_id.
+//
+// scope stays in the grouping. Collapsing it is the ADR-0007 bug where
+// per-model weekly quota (seven_day:<model>) was silently dropped.
 func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
 	rows, err := s.db.Query(
 		`SELECT q.device, q.source, q.limit_id, q.scope, q.window_minutes,
 		        q.used_percent, q.resets_at, q.observed_at, q.plan_type
 		 FROM quota_snapshots q
-		 JOIN (SELECT device, source, limit_id, scope, window_minutes, MAX(observed_at) AS mx
+		 JOIN (SELECT device, source, scope, window_minutes, MAX(observed_at) AS mx
 		       FROM quota_snapshots WHERE observed_at >= ?
-		       GROUP BY device, source, limit_id, scope, window_minutes) m
+		       GROUP BY device, source, scope, window_minutes) m
 		   ON q.device = m.device AND q.source = m.source
-		  AND q.limit_id = m.limit_id AND q.scope = m.scope
+		  AND q.scope = m.scope
 		  AND q.window_minutes = m.window_minutes
 		  AND q.observed_at = m.mx
 		 ORDER BY q.window_minutes, q.device`,
