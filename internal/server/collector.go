@@ -41,8 +41,26 @@ func (s *Server) runCollectors() {
 	// (ADR-0011): Claude Code hands `omnitoken statusline` its own
 	// account-level numbers, which get dropped in a file this reads.
 	quotaReader := collect.NewStatusQuotaReader(s.cfg.DeviceName, s.cfg.StatuslineCachePath)
+	// The server machine collects its own process state the same way an agent
+	// does (ADR-0012) — it is just another monitored machine.
+	procSink := func() {
+		report, err := collect.LiveProcesses(s.cfg.DeviceName, time.Now())
+		if err != nil {
+			log.Printf("collect[procs]: %v", err)
+			return
+		}
+		changed, err := s.store.ApplyProcReport(report)
+		if err != nil {
+			log.Printf("collect[procs]: store: %v", err)
+			return
+		}
+		if changed {
+			s.bcast.Notify()
+		}
+	}
 	for tick := 0; ; tick++ {
 		if s.cfg.LocalEnabled() {
+			procSink()
 			if qs := quotaReader.Collect(time.Now()); len(qs) > 0 {
 				if err := quotaSink(qs); err != nil {
 					log.Printf("quota[claude]: store: %v", err)

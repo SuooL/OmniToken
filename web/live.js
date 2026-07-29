@@ -98,6 +98,8 @@ const Live = {
     this.renderSpeed(d.speed || {});
     this.renderWindows(d.windows || []);
 
+    this.renderProcs(d.processes || {});
+
     const devEl = document.getElementById("live-devices");
     const devs = d.devices || [];
     devEl.innerHTML = devs.length ? devs.map((v) => `
@@ -106,7 +108,7 @@ const Live = {
           <span class="key"><span class="dot ${v.state}"></span>${esc(v.device)} <span class="extra">${this.stateLabel(v.state)}</span></span>
           <span class="val">${compact(v.today_tokens)} <span class="extra">今日</span></span>
         </div>
-        <div class="row-head sub2"><span class="key">最后活动 ${relTime(v.last_ts)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
+        <div class="row-head sub2"><span class="key">最后活动 ${relTime(v.last_ts)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
       </div>`).join("") : `<span class="empty">暂无设备</span>`;
 
     const sesEl = document.getElementById("live-sessions");
@@ -199,6 +201,44 @@ const Live = {
         <div class="meter"><div class="meter-fill${this.intensityClass(pct)}" style="width:${pct}%"></div></div>
       </div>`;
     }).join("");
+  },
+
+  // Ground truth from the machines' own process tables (ADR-0012), as opposed
+  // to the events-inferred list beside it. A session shows up here from the
+  // moment it opens until it is closed, whether or not it spent any tokens.
+  renderProcs(procs) {
+    const el = document.getElementById("live-procs");
+    const note = document.getElementById("procs-note");
+    const sessions = procs.sessions || [];
+    const reporters = procs.reporters || [];
+
+    // No reporter means no visibility, which is a different statement from
+    // "nothing is open" and must never be rendered as one.
+    if (!reporters.length) {
+      note.textContent = "";
+      el.innerHTML = `<span class="empty">没有机器上报进程状态。只有装了 agent 的机器能看到,SSH 拉取的机器看不到。</span>`;
+      return;
+    }
+    note.textContent = `${reporters.length} 台机器可见`;
+    if (!sessions.length) {
+      el.innerHTML = `<span class="empty">${esc(reporters.map((r) => r.device).join("、"))} 上没有会话开着</span>`;
+      return;
+    }
+    el.innerHTML = `<table><thead><tr><th>设备</th><th>工具</th><th>已开启</th><th>PID</th></tr></thead><tbody>` +
+      sessions.map((s) => `<tr>
+        <td>${esc(s.device)}</td>
+        <td>${esc(sourceLabel(s.source))}</td>
+        <td>${esc(since(s.started_at))}</td>
+        <td class="extra">${s.pid}</td>
+      </tr>`).join("") + `</tbody></table>`;
+  },
+
+  // Per-device process line. "无进程数据" is not "nothing open" — it is a
+  // machine we cannot see into, and saying otherwise would be a lie about a
+  // machine that may well have three sessions running.
+  procLabel(v) {
+    if (!v.has_procs) return `无进程数据`;
+    return v.running ? `${v.running} 个会话开着` : `没有会话开着`;
   },
 
   stateLabel(s) {

@@ -56,6 +56,11 @@ const (
 	burnWindow   = 10 * time.Minute
 	deviceActive = 2 * time.Minute
 	deviceStale  = 10 * time.Minute // token-monitor's staleAfterMs default
+	// How long a process report stays trustworthy (ADR-0012). Six times the
+	// default 15s collection interval: long enough that a slow tick or a brief
+	// network drop does not blank the panel, short enough that a machine which
+	// went away stops claiming to have sessions open.
+	procTTL = 90 * time.Second
 )
 
 func (s *Server) livePayload(now time.Time) (map[string]any, error) {
@@ -64,9 +69,33 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Process ground truth (ADR-0012), fetched before the device views so each
+	// device can say whether it has any.
+	running, err := s.store.RunningSessions(now.Add(-procTTL))
+	if err != nil {
+		return nil, err
+	}
+	reporters, err := s.store.ProcReporters(now.Add(-procTTL))
+	if err != nil {
+		return nil, err
+	}
+	reports := make(map[string]bool, len(reporters))
+	for _, r := range reporters {
+		reports[r.Device] = true
+	}
+	procCount := map[string]int{}
+	for _, p := range running {
+		procCount[p.Device]++
+	}
+
 	type devView struct {
 		store.DeviceStatus
 		State string `json:"state"` // active | idle | stale
+		// Running is meaningless unless HasProcs is true: a device with no
+		// agent (SSH-pulled) reports nothing, which is not the same as zero
+		// sessions and must not be rendered as "closed".
+		HasProcs bool `json:"has_procs"`
+		Running  int  `json:"running"`
 	}
 	devViews := make([]devView, 0, len(devices))
 	for _, d := range devices {
@@ -77,7 +106,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		} else if age <= deviceStale.Milliseconds() {
 			state = "idle"
 		}
-		devViews = append(devViews, devView{d, state})
+		devViews = append(devViews, devView{d, state, reports[d.Device], procCount[d.Device]})
 	}
 	sessions, err := s.store.ActiveSessions(now.Add(-burnWindow))
 	if err != nil {
@@ -118,9 +147,18 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"quotas":   quotaViews,
-		"devices":  devViews,
+		"quotas":  quotaViews,
+		"devices": devViews,
+		// Inferred from recent events: "used tokens lately". Kept beside
+		// `processes` on purpose — the two answer different questions, and a
+		// session can appear in one and not the other (open but thinking; or
+		// just closed after a burst).
 		"sessions": sessions,
+		"processes": map[string]any{
+			"sessions":    running,
+			"reporters":   reporters,
+			"ttl_seconds": int(procTTL.Seconds()),
+		},
 		"burn": map[string]any{
 			"window_minutes": int(burnWindow.Minutes()),
 			"tokens":         total,

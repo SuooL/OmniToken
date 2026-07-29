@@ -96,6 +96,10 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 type ingestRequest struct {
 	Events []model.Event         `json:"events"`
 	Quotas []model.QuotaSnapshot `json:"quotas"`
+	// Procs is a pointer because an empty report is meaningful (ADR-0012):
+	// "nothing is running on this device" is data, and must not decode the
+	// same as an older agent that reports no process state at all.
+	Procs *model.ProcReport `json:"procs"`
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +120,14 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if inserted > 0 || quotas > 0 {
+	procsChanged := false
+	if req.Procs != nil {
+		if procsChanged, err = s.store.ApplyProcReport(*req.Procs); err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if inserted > 0 || quotas > 0 || procsChanged {
 		s.bcast.Notify()
 	}
 	writeJSON(w, map[string]int{"received": len(req.Events), "inserted": inserted, "quotas": quotas})

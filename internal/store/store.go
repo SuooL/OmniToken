@@ -60,7 +60,7 @@ func Open(path string) (*Store, error) {
 	}
 	// modernc/sqlite serializes writes; a single conn avoids lock contention.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + quotaSchema + settingsSchema); err != nil {
+	if _, err := db.Exec(schema + quotaSchema + settingsSchema + procSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
