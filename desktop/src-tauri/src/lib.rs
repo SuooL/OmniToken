@@ -4,6 +4,8 @@
 //! and collects nothing itself. Collection stays with `serve` and `agent`, so
 //! there is only ever one writer behind event_id dedup and offset advancement.
 
+mod settings;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -38,6 +40,26 @@ async fn api_get(base: String, path: String) -> Result<Value, String> {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
     res.json::<Value>().await.map_err(|e| format!("{url}: {e}"))
+}
+
+#[tauri::command]
+fn settings_get(app: tauri::AppHandle) -> settings::Settings {
+    settings::load(&app)
+}
+
+/// Normalize, persist, and hand back what was actually stored.
+///
+/// Saving happens before the panel has confirmed the address answers: the
+/// server may simply not be running yet, and losing the address the user just
+/// typed would be the wrong way to say so. The frontend probes afterwards and
+/// reports the result separately.
+#[tauri::command]
+fn settings_set(app: tauri::AppHandle, server: String) -> Result<settings::Settings, String> {
+    let next = settings::Settings {
+        server: settings::normalize(&server)?,
+    };
+    settings::save(&app, &next)?;
+    Ok(next)
 }
 
 fn now_ms() -> u64 {
@@ -82,7 +104,11 @@ fn show_under_tray(app: &tauri::AppHandle, window: &tauri::WebviewWindow, icon_r
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![api_get])
+        .invoke_handler(tauri::generate_handler![
+            api_get,
+            settings_get,
+            settings_set
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

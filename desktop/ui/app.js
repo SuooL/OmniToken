@@ -7,9 +7,9 @@
 // this line and the panel renders as an empty shell with no clue why.
 const invoke = window.__TAURI__ && window.__TAURI__.core.invoke;
 
-// TODO: move to a settings screen. Hard-coded until the panel has somewhere to
-// enter it; localStorage lets it be overridden from the devtools meanwhile.
-const SERVER = localStorage.getItem("omnitoken.server") || "http://127.0.0.1:8787";
+// Set from the stored settings before the first poll. Rust owns the value and
+// the normalisation; this is only the copy the panel reads between saves.
+let SERVER = "";
 
 const POLL_MS = 15000;
 
@@ -93,7 +93,11 @@ function renderToday(overview) {
 }
 
 function fail(msg) {
-  document.getElementById("quotas").innerHTML = `<div class="error">${esc(msg)}</div>`;
+  // The hint matters most on a fresh install pointed at the default address:
+  // an unreachable server and a wrong address look identical from here.
+  document.getElementById("quotas").innerHTML =
+    `<div class="error">${esc(msg)}</div>` +
+    `<div class="empty">点右下角「设置」检查服务端地址。</div>`;
   document.getElementById("today-tokens").textContent = "—";
   document.getElementById("today-sub").textContent = "";
 }
@@ -114,11 +118,90 @@ async function refresh() {
   }
 }
 
-document.getElementById("server").textContent = SERVER.replace(/^https?:\/\//, "");
+// ---- settings ----
+
+const els = {
+  main: document.getElementById("main"),
+  settings: document.getElementById("settings"),
+  input: document.getElementById("server-input"),
+  msg: document.getElementById("settings-msg"),
+  save: document.getElementById("settings-save"),
+};
+
+function showServer() {
+  document.getElementById("server").textContent = SERVER.replace(/^https?:\/\//, "");
+}
+
+function say(text, kind) {
+  els.msg.textContent = text || "";
+  els.msg.className = "msg" + (kind ? " " + kind : "");
+}
+
+function openSettings() {
+  els.input.value = SERVER;
+  say("");
+  els.main.hidden = true;
+  els.settings.hidden = false;
+  els.input.focus();
+  els.input.select();
+}
+
+// Always re-poll on the way out. A save can succeed even when the probe fails,
+// so leaving by way of 取消 can still mean the address changed — and the
+// readout would otherwise show another server's numbers until the next poll.
+function closeSettings() {
+  els.settings.hidden = true;
+  els.main.hidden = false;
+  refresh();
+}
+
+async function saveSettings() {
+  els.save.disabled = true;
+  say("保存中…");
+  try {
+    // Persist first, then check. The address may well be right and the server
+    // simply not started yet, and throwing away what was just typed would be a
+    // poor way to report that.
+    const stored = await invoke("settings_set", { server: els.input.value });
+    SERVER = stored.server;
+    showServer();
+    els.input.value = SERVER;
+
+    try {
+      await apiGet("/api/v1/health");
+    } catch (e) {
+      say("已保存,但连接失败:" + String(e), "bad");
+      return;
+    }
+    closeSettings();
+  } catch (e) {
+    // settings_set rejected the input, or could not write the file.
+    say(String(e), "bad");
+  } finally {
+    els.save.disabled = false;
+  }
+}
+
+document.getElementById("open-settings").addEventListener("click", openSettings);
+document.getElementById("settings-cancel").addEventListener("click", closeSettings);
+els.save.addEventListener("click", saveSettings);
+els.input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveSettings();
+  if (e.key === "Escape") closeSettings();
+});
+
+// ---- boot ----
+
+async function boot() {
+  const stored = await invoke("settings_get");
+  SERVER = stored.server;
+  showServer();
+  await refresh();
+  setInterval(refresh, POLL_MS);
+}
 
 if (!invoke) {
   fail("Tauri IPC 不可用:请检查 tauri.conf.json 的 withGlobalTauri");
 } else {
-  refresh();
-  setInterval(refresh, POLL_MS);
+  boot().catch((e) => fail(String(e)));
 }
