@@ -78,3 +78,11 @@ HTTP ingest 两条路径都触发)推 `live` 事件(≥1s 合并去抖);每 30s 
 事件 data:`devices`(每设备最后活跃、今日用量、online 状态:active <2min /
 idle / stale >10min)、`sessions`(近 10 分钟活跃会话:设备/repo/模型/增量
 tokens)、`burn`(近 10 分钟 tokens/min)、`block`(当前 5h 窗口摘要)。
+
+### GET /api/v1/live
+
+上面那份 `snapshot` 的单次 GET 版本,字段完全相同(同一个 `livePayload`)。
+
+给轮询的客户端用 —— 菜单栏应用不常驻 SSE 连接(ADR-0008 把 SSE 桥接推到 v1 之后)。
+两者共用一份构造是有意为之:燃烧速率只定义一次,面板与 Live 页不会对同一个
+十分钟给出不同的数。网页面板仍走 SSE,不要用这个端点轮询。

@@ -77,6 +77,17 @@ function renderQuotas(list) {
   }).join("");
 }
 
+// Burn comes from the same payload the Live page renders, so the popover and
+// the browser cannot report different numbers for the same ten minutes.
+function renderBurn(burn) {
+  const b = burn || {};
+  document.getElementById("burn-rate").textContent = compact(b.per_minute || 0) + "/min";
+  const window = b.window_minutes || 0;
+  document.getElementById("burn-sub").textContent = window
+    ? `${window} 分钟内 ${compact(b.tokens || 0)} · 输出 ${compact(b.output_tokens || 0)}`
+    : "";
+}
+
 function renderToday(overview) {
   const t = (overview && overview.today) || {};
   document.getElementById("today-tokens").textContent = compact(t.total_tokens || 0);
@@ -98,18 +109,25 @@ function fail(msg) {
   document.getElementById("quotas").innerHTML =
     `<div class="error">${esc(msg)}</div>` +
     `<div class="empty">点右下角「设置」检查服务端地址。</div>`;
-  document.getElementById("today-tokens").textContent = "—";
-  document.getElementById("today-sub").textContent = "";
+  for (const id of ["today-tokens", "burn-rate"]) {
+    document.getElementById(id).textContent = "—";
+  }
+  for (const id of ["today-sub", "burn-sub"]) {
+    document.getElementById(id).textContent = "";
+  }
 }
 
 async function refresh() {
   try {
     // One failing endpoint should not blank the other half of the panel.
-    const [quota, overview] = await Promise.all([
-      apiGet("/api/v1/quota"),
+    // /api/v1/live carries quotas and burn in one consistent snapshot — the
+    // REST twin of what the Live page streams.
+    const [live, overview] = await Promise.all([
+      apiGet("/api/v1/live"),
       apiGet("/api/v1/overview?days=1").catch(() => null),
     ]);
-    renderQuotas(quota && quota.quotas);
+    renderQuotas(live && live.quotas);
+    renderBurn(live && live.burn);
     if (overview) renderToday(overview);
     document.getElementById("stamp").textContent =
       new Date().toLocaleTimeString("zh-CN", { hour12: false });

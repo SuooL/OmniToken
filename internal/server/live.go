@@ -125,6 +125,21 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	}, nil
 }
 
+// handleLive serves the same payload as the SSE snapshot, once, over plain GET.
+//
+// It exists for the menubar client, which polls rather than holding a stream
+// open (ADR-0008 defers the SSE bridge past v1). Sharing livePayload is the
+// point: burn rate is defined once, so the popover and the Live page cannot
+// drift into reporting different numbers for the same ten minutes.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	payload, err := s.livePayload(time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, payload)
+}
+
 // handleStream is the SSE endpoint (docs/API.md). token-monitor-aligned:
 // snapshot on connect, x-accel-buffering off, 30s comment heartbeats,
 // ≥1s coalescing of change signals.

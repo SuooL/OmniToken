@@ -67,6 +67,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("GET /api/v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
+	mux.HandleFunc("GET /api/v1/live", s.handleLive)
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
