@@ -51,7 +51,8 @@ func usage() {
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
-  omnitoken statusline -capture-only                            # quota only, keep your own status line`)
+  omnitoken statusline -capture-only                            # quota only, keep your own status line
+  omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook`)
 }
 
 func runServe(args []string) {
@@ -193,6 +194,9 @@ func runStatusline(args []string) {
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
 	captureOnly := fs.Bool("capture-only", false,
 		"capture quota from the payload and print nothing (keep your own status line)")
+	setup := fs.Bool("setup", false,
+		"install the Claude Code hook, wrapping any status line you already use")
+	setupUndo := fs.Bool("setup-undo", false, "restore the status line -setup replaced")
 	fs.Parse(args)
 
 	cfg, err := statusline.LoadConfig(*configPath)
@@ -212,11 +216,71 @@ func runStatusline(args []string) {
 	if *noColor {
 		cfg.NoColor = true
 	}
+	if *setup || *setupUndo {
+		runStatuslineSetup(*setupUndo)
+		return
+	}
 	if *captureOnly {
 		statusline.Capture(cfg, os.Stdin)
 		return
 	}
 	statusline.Run(cfg, os.Stdin, os.Stdout)
+}
+
+// runStatuslineSetup wires the hook into Claude Code's settings, or unwires it.
+// Unlike the render path this one talks to the user and exits non-zero on
+// failure: it is an explicit administrative action, not something riding along
+// with a status bar.
+func runStatuslineSetup(undo bool) {
+	settingsPath, err := statusline.ClaudeSettingsPath()
+	if err != nil {
+		log.Fatalf("statusline setup: %v", err)
+	}
+	dataDir := server.DataDir()
+
+	if undo {
+		restored, err := statusline.Undo(settingsPath, dataDir, time.Now())
+		if err != nil {
+			log.Fatalf("statusline setup-undo: %v", err)
+		}
+		if restored == "" {
+			fmt.Printf("Removed the statusLine entry from %s.\n", settingsPath)
+		} else {
+			fmt.Printf("Restored your status line in %s:\n  %s\n", settingsPath, restored)
+		}
+		return
+	}
+
+	res, err := statusline.Setup(settingsPath, dataDir, selfPath(), time.Now())
+	if err != nil {
+		log.Fatalf("statusline setup: %v", err)
+	}
+	switch {
+	case res.AlreadyDone:
+		fmt.Println("Already installed; nothing to change.")
+	case res.Wrapped != "":
+		fmt.Printf("Kept your status line and added quota capture beside it.\n"+
+			"  settings: %s\n  wrapper:  %s\n  still rendering: %s\n",
+			res.SettingsPath, res.ScriptPath, res.Wrapped)
+	default:
+		fmt.Printf("Installed OmniToken as your status line.\n  settings: %s\n", res.SettingsPath)
+	}
+	if res.BackupPath != "" {
+		fmt.Printf("  backup:   %s\n", res.BackupPath)
+	}
+	fmt.Println("Restart Claude Code (or wait for the next status-line refresh) to start collecting quota.")
+	fmt.Println("Undo with: omnitoken statusline -setup-undo")
+}
+
+// selfPath resolves this binary absolutely so the generated script does not
+// depend on PATH; falling back to the bare name is better than failing setup.
+func selfPath() string {
+	if p, err := os.Executable(); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+	}
+	return "omnitoken"
 }
 
 func defaultConfigPath() string {

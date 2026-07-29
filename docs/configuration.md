@@ -53,10 +53,24 @@
 > 递来的 `rate_limits` 落到 `~/.omnitoken/rate-limits.json`,再由本机采集器读走。
 > OmniToken 不再调 OAuth 端点,也不会去读其它状态栏工具的产物。
 
-### 已经在用别的状态栏工具?
+### 一键安装
 
-`statusLine` 槽位只能配一条命令,但 OmniToken 需要的只是**看见**那份 stdin,
-并不需要占住渲染权。用 `-capture-only` 保留你自己的状态栏:
+```sh
+omnitoken statusline -setup        # 安装;已有状态栏会被保留
+omnitoken statusline -setup-undo   # 还原
+```
+
+`-setup` 会读 `~/.claude/settings.json`(尊重 `CLAUDE_CONFIG_DIR`):槽位为空就直接
+注册 `omnitoken statusline`;**已经有别的命令则生成一个 wrapper 把两者都调用**,
+而不是把它顶掉。改写前先备份,只动 `statusLine.command`,其余键与 `padding` /
+`refreshInterval` 原样保留;settings.json 若不是合法 JSON 则拒绝改写并报错退出。
+重复执行不会嵌套。
+
+`-setup-undo` 按安装时记下的原值还原,并删掉 wrapper。
+
+### 手动配 wrapper
+
+不想用 `-setup` 的话,原理是这样:
 
 ```sh
 #!/bin/sh
