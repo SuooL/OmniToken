@@ -17,12 +17,17 @@ type Event struct {
 	Cache1hTokens       int64  `json:"cache_1h_tokens,omitempty"`
 	Cache5mTokens       int64  `json:"cache_5m_tokens,omitempty"`
 	DurationMS          int64  `json:"duration_ms,omitempty"`
-	TTFTMS              int64  `json:"ttft_ms,omitempty"`
-	SessionID           string `json:"session_id,omitempty"`
-	CWD                 string `json:"cwd,omitempty"`
-	GitBranch           string `json:"git_branch,omitempty"`
-	Repo                string `json:"repo,omitempty"`
-	AppVersion          string `json:"app_version,omitempty"`
+	// GenMS spans [request sent → response recorded] (ADR-0009): the denominator
+	// for generation speed. Distinct from DurationMS, which spans the gap to the
+	// previous log line of any kind and is the work-time interval (ADR-0006) —
+	// that one includes the user thinking and tools running.
+	GenMS      int64  `json:"gen_ms,omitempty"`
+	TTFTMS     int64  `json:"ttft_ms,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	CWD        string `json:"cwd,omitempty"`
+	GitBranch  string `json:"git_branch,omitempty"`
+	Repo       string `json:"repo,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
 }
 
 func (e *Event) TotalTokens() int64 {

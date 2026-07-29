@@ -4,8 +4,10 @@ package store
 
 import (
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS events (
 	cache_1h_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_5m_tokens INTEGER NOT NULL DEFAULT 0,
 	duration_ms INTEGER NOT NULL DEFAULT 0,
+	gen_ms INTEGER NOT NULL DEFAULT 0,
 	ttft_ms INTEGER NOT NULL DEFAULT 0,
 	session_id TEXT NOT NULL DEFAULT '',
 	cwd TEXT NOT NULL DEFAULT '',
@@ -65,7 +68,31 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateEventsGenMS(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrateEventsGenMS adds the gen_ms column to databases created before
+// ADR-0009. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so the
+// column has to be added explicitly; existing rows default to 0 and are filled
+// in by the next full rescan.
+func migrateEventsGenMS(db *sql.DB) error {
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema already has it
+	}
+	if err != nil {
+		return err
+	}
+	if strings.Contains(sqlText, "gen_ms") {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE events ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -84,28 +111,65 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
 		(event_id, ts, device, source, model, provider, account_label,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 cache_1h_tokens, cache_5m_tokens, duration_ms, ttft_ms,
+		 cache_1h_tokens, cache_5m_tokens, duration_ms, gen_ms, ttft_ms,
 		 session_id, cwd, git_branch, repo, app_version, received_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer stmt.Close()
-	inserted := 0
+
+	// Backfill for gen_ms only (ADR-0009). Events stored before that field
+	// existed carry 0, and re-observing them through INSERT OR IGNORE would
+	// never fill it in, so a rescan would leave the whole history without
+	// speed data. Rebuilding the database instead — what ADR-0006 did for
+	// duration_ms — is no longer an option: N6 requires stored events to
+	// outlive their source logs, which Claude Code deletes after 30 days.
+	//
+	// The guards are what keep this inside ADR-0004's idempotency rule. Only
+	// this one derived column is ever rewritten, never a count or an identity;
+	// `gen_ms = 0` means it is filled in once and not churned afterwards; and
+	// `? > 0` stops an older agent that does not compute it from erasing a
+	// good value. Because both guards fail for an already-backfilled row, the
+	// statement matches nothing and reports no change — so `inserted` keeps
+	// meaning what it always meant, and dedup still shows up as 0.
+	backfill, err := tx.Prepare(
+		`UPDATE events SET gen_ms = ? WHERE event_id = ? AND gen_ms = 0 AND ? > 0`)
+	if err != nil {
+		return 0, err
+	}
+	defer backfill.Close()
+
+	inserted, filled := 0, 0
 	for _, e := range events {
 		if e.EventID == "" {
 			continue
 		}
 		res, err := stmt.Exec(e.EventID, e.TS, e.Device, e.Source, e.Model, e.Provider, e.AccountLabel,
 			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
-			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.TTFTMS,
+			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
 			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt)
 		if err != nil {
 			return inserted, err
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			inserted++
+			continue
 		}
+		// Already known. Fill in gen_ms if this observation has one and the
+		// stored row does not.
+		if e.GenMS > 0 {
+			r, err := backfill.Exec(e.GenMS, e.EventID, e.GenMS)
+			if err != nil {
+				return inserted, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				filled++
+			}
+		}
+	}
+	if filled > 0 {
+		log.Printf("store: backfilled gen_ms on %d existing events (ADR-0009)", filled)
 	}
 	return inserted, tx.Commit()
 }

@@ -26,7 +26,7 @@ type QuotaSink func([]model.QuotaSnapshot) error
 // ParseFunc is the incremental-parser contract shared by all tool parsers:
 // consume complete lines from r and return the events, quota snapshots, and
 // the byte count consumed (excluding any trailing partial line).
-type ParseFunc func(r io.Reader, device string) model.ParseResult
+type ParseFunc func(r io.Reader, device string, turnStartMS int64) model.ParseResult
 
 // SourceSpec pairs a set of log directories with the parser for their format.
 // FullReparse marks formats whose lines are not self-contained (Codex rollout
@@ -106,7 +106,7 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 		return 0, nil
 	}
 
-	res := spec.Parse(fh, device)
+	res := spec.Parse(fh, device, st.TurnStartFor(path))
 	events := res.Events
 	for i := range events {
 		if events[i].CWD != "" && resolveRepo != nil {
@@ -126,7 +126,7 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 			log.Printf("collect: quota sink for %s: %v", path, err)
 		}
 	}
-	if err := st.Commit(path, offset+res.Consumed); err != nil {
+	if err := st.Commit(path, offset+res.Consumed, res.TurnStartMS); err != nil {
 		log.Printf("collect: commit state for %s: %v", path, err)
 	}
 	return len(events), nil
