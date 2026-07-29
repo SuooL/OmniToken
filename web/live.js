@@ -169,7 +169,6 @@ const Live = {
         <div class="value">${w.tokens ? compact(w.tokens) : "0"}</div>
         <div class="sub">${bits.join(" · ")}</div>
         ${proj ? `<div class="sub proj${w.projected_percent >= 100 ? " over" : ""}">${esc(proj)}</div>` : ""}
-        <div class="sub scope" title="${esc(w.note || "")}">${esc(w.scope)}</div>
         <div class="meter"><div class="meter-fill${this.intensityClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
       </div>`;
     }).join("");

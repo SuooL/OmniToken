@@ -13,8 +13,7 @@ import (
 type windowCard struct {
 	Key           string  `json:"key"`
 	Label         string  `json:"label"`
-	Scope         string  `json:"scope"` // which traffic is counted, in words
-	Kind          string  `json:"kind"`  // subscription | api
+	Kind          string  `json:"kind"` // subscription | api
 	Tokens        int64   `json:"tokens"`
 	Events        int64   `json:"events"`
 	CostUSD       float64 `json:"cost_usd,omitempty"`
@@ -113,7 +112,6 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 		card := windowCard{
 			Key: source, Kind: "subscription",
 			Label: src.label + " · 5 小时窗口",
-			Scope: src.label + "(不含 Bedrock/API key 等按量通道)",
 			EndMS: now.UnixMilli(),
 		}
 		from := rollingStart
@@ -145,7 +143,6 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 	if apiTokens > 0 {
 		cards = append(cards, windowCard{
 			Key: "api", Kind: "api", Label: "API 计费 · 最近 5 小时",
-			Scope:  "按量付费通道合计(API key、Bedrock/Vertex、中转、本地代理)",
 			Tokens: apiTokens, Events: apiEvents, CostUSD: apiCost,
 			StartMS: rollingStart.UnixMilli(), EndMS: now.UnixMilli(),
 			Note: "按量付费无配额窗口,按最近 5 小时滚动统计",

@@ -318,7 +318,6 @@ a.ghost-btn { text-decoration: none; }
 .meter-fill.warn { background: #fab219; }
 .meter-fill.serious { background: #ec835a; }
 .meter-fill.critical { background: #d03b3b; }
-.stat-tile .sub.scope { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
 .stat-tile .sub.proj { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 /* projected to blow past the quota — the number says so too */
 .stat-tile .sub.proj.over { color: #d03b3b; font-weight: 600; }
