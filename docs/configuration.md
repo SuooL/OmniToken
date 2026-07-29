@@ -49,13 +49,30 @@
 权威配额**。每次渲染都会调用,因此:网络超时 200ms、缓存 10s 内直接复用、
 服务端不可达时用上次缓存并加 `⟳` 标记,**永不阻塞、永不报错退出**。
 
-> **接入它是 Claude 配额的唯一来源**(ADR-0011)。渲染的同时,它会把 Claude Code
+> **这是 Claude 配额的唯一来源**(ADR-0011)。渲染的同时,它会把 Claude Code
 > 递来的 `rate_limits` 落到 `~/.omnitoken/rate-limits.json`,再由本机采集器读走。
-> 不接入就没有 Claude 的 5h / 周配额数据 —— OmniToken 不再调 OAuth 端点,也不会去
-> 读其它状态栏工具的产物。
->
-> `statusLine` 槽位只能配一条命令。若你原本用的是别的状态栏工具,接入 OmniToken
-> 意味着替换掉它。
+> OmniToken 不再调 OAuth 端点,也不会去读其它状态栏工具的产物。
+
+### 已经在用别的状态栏工具?
+
+`statusLine` 槽位只能配一条命令,但 OmniToken 需要的只是**看见**那份 stdin,
+并不需要占住渲染权。用 `-capture-only` 保留你自己的状态栏:
+
+```sh
+#!/bin/sh
+# ~/.claude/omnitoken-statusline.sh —— chmod +x 后填进 settings.json
+# stdin 只能读一次,所以先读进来再分发给两边。
+input=$(cat)
+printf '%s' "$input" | omnitoken statusline -capture-only
+printf '%s' "$input" | ccstatusline      # 换成你自己的那个
+```
+
+```json
+{ "statusLine": { "type": "command", "command": "~/.claude/omnitoken-statusline.sh" } }
+```
+
+`-capture-only` 不输出任何内容、不请求服务端、不渲染,只把配额落盘,
+所以额外开销就是一次进程启动。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|

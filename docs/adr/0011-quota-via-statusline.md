@@ -36,6 +36,12 @@ seven_day_opus}`,每个带 `used_percentage` 与 `resets_at`,并有测试固定
 **也不寄生在别的插件上。** 不去读 ccstatusline 之类第三方工具的产物:那会让 OmniToken
 的核心功能依赖用户恰好装了某个别的东西。
 
+**不强迫用户换掉自己的状态栏。** `statusLine` 槽位只能配一条命令,但 OmniToken 需要的
+只是**看见**那份 stdin,并不需要占住渲染权。`omnitoken statusline -capture-only` 只捕获、
+不输出、不请求服务端,用一个三行的 wrapper 把同一份 stdin 分发给它和用户原有的工具即可
+(见 `docs/configuration.md`)。首版只提供了「渲染 + 捕获」一种模式,等于逼用户二选一,
+这是设计缺陷,已补。
+
 ### 为什么落文件而不是直接上报
 
 statusLine 是 Claude Code 每次刷新拉起的短命进程,F18 定的预算是 10ms 内出结果。

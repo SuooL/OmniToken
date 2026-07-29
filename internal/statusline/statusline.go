@@ -121,6 +121,20 @@ type quotaLine struct {
 // Run renders one status line. It never returns an error for "server down" —
 // that path prints what it can (cached or session-only) and succeeds.
 func Run(cfg Config, stdin io.Reader, stdout io.Writer) error {
+	return run(cfg, stdin, stdout, false)
+}
+
+// Capture reads the payload for its quota and prints nothing (ADR-0011).
+//
+// Claude Code allows one statusLine command, but OmniToken only needs to *see*
+// that payload — it does not need to own the rendering. This mode lets someone
+// keep whatever status line they already use and still feed OmniToken, by
+// having a small wrapper hand the same stdin to both. See docs/configuration.md.
+func Capture(cfg Config, stdin io.Reader) error {
+	return run(cfg, stdin, io.Discard, true)
+}
+
+func run(cfg Config, stdin io.Reader, stdout io.Writer, captureOnly bool) error {
 	cfg.applyDefaults()
 
 	var sess sessionInput
@@ -135,6 +149,11 @@ func Run(cfg Config, stdin io.Reader, stdout io.Writer) error {
 	// contract is to print a line, and anything on stdout or a non-zero exit
 	// would corrupt the user's status bar.
 	captureRateLimits(cfg, sess, time.Now())
+	if captureOnly {
+		// Deliberately no fetch and no render: this path runs alongside
+		// somebody else's status line and must add as little latency as it can.
+		return nil
+	}
 
 	data, stale := loadOrFetch(cfg)
 	line := render(cfg, sess, data, stale)

@@ -50,7 +50,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788]
-  omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook`)
+  omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
+  omnitoken statusline -capture-only                            # quota only, keep your own status line`)
 }
 
 func runServe(args []string) {
@@ -190,6 +191,8 @@ func runStatusline(args []string) {
 	serverURL := fs.String("server", "", "OmniToken server base URL")
 	token := fs.String("token", "", "ingest bearer token (if the server requires one)")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
+	captureOnly := fs.Bool("capture-only", false,
+		"capture quota from the payload and print nothing (keep your own status line)")
 	fs.Parse(args)
 
 	cfg, err := statusline.LoadConfig(*configPath)
@@ -208,6 +211,10 @@ func runStatusline(args []string) {
 	}
 	if *noColor {
 		cfg.NoColor = true
+	}
+	if *captureOnly {
+		statusline.Capture(cfg, os.Stdin)
+		return
 	}
 	statusline.Run(cfg, os.Stdin, os.Stdout)
 }
