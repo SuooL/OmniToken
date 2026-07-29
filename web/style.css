@@ -40,6 +40,7 @@
      separability at speed — five streams have to stay distinct in a glance,
      which is what drives the spacing around the wheel. */
   --accent:     #71aef4;
+  --cyan:       #77daee;
   --accent-rgb: 113, 174, 244;
   --violet:     #a386f3;
   --rose:       #f382b1;
@@ -48,15 +49,17 @@
   --red:        #f47687;
   --accent-dim: rgba(var(--accent-rgb), 0.16);
 
-  --lane-1: var(--accent);
+  --lane-1: var(--cyan);
   --lane-2: var(--violet);
   --lane-3: var(--rose);
   --lane-4: var(--amber);
   --lane-5: var(--teal);
-  /* The union is deliberately achromatic. It is not a sixth stream competing
-     for a hue — it is what all of them add up to, so it reads as the sum of
-     the colours above rather than another one beside them. */
-  --union:  #dfe8f5;
+  /* The brand blue is reserved for the aggregate: the union is not a sixth
+     stream competing for a hue, it is what the lanes add up to, so it gets the
+     colour that means "this product" while the lanes take the spectrum around
+     it. Lane 1 moved to cyan so nothing collides.
+     (An achromatic union was tried first and read as a black slab.) */
+  --union:  var(--accent);
   --warn:   var(--amber);
   --critical: var(--red);
   --series-1: var(--accent);
@@ -86,19 +89,20 @@
     --lift:           0 10px 28px rgba(16,23,32,0.10);
     --lift-hi:        0 16px 40px rgba(16,23,32,0.16);
     --surface-2:      rgba(16,23,32,0.045);
-    --text-primary:   #101720;
+    --text-primary:   #1e2733;
     --text-secondary: #4d5a6a;
     --text-muted:     #637083;
     --border:         rgba(var(--line-rgb), 0.12);
     --border-strong:  rgba(var(--line-rgb), 0.24);
     --accent:     #1e6dcc;
+    --cyan:       #1395ae;
     --accent-rgb: 30, 109, 204;
     --violet:     #542ed1;
     --rose:       #d42b7d;
     --amber:      #c57a11;
     --teal:       #18957c;
     --red:        #d9263e;
-    --union:      #2b3543;
+    --union:      var(--accent);
   }
 }
 
