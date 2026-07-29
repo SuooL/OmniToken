@@ -11,11 +11,11 @@
   color-scheme: dark;
   /* RGB triplets, so borders / glows / fills can be tinted from one hue
      instead of hard-coding a second colour that drifts out of step. */
-  --glass-rgb:   38, 41, 50;
+  --glass-rgb:   56, 60, 66;
   --overlay-rgb: 255, 255, 255;
   --line-rgb:    232, 238, 244;
 
-  --page:           #1b1e26;
+  --page:           #2d2f34;
   --surface-1:      rgba(var(--glass-rgb), 0.62);
   --surface-2:      rgba(var(--overlay-rgb), 0.05);
   --glass:          rgba(var(--glass-rgb), 0.66);
@@ -26,7 +26,7 @@
 
   --text-primary:   #eef5fb;
   --text-secondary: #b3bdcc;
-  --text-muted:     #8390a3;
+  --text-muted:     #9ca6b4;
   --grid:           rgba(var(--line-rgb), 0.10);
   --baseline:       rgba(var(--line-rgb), 0.20);
   --border:         rgba(var(--line-rgb), 0.14);
@@ -39,13 +39,13 @@
      Finder icon are one product. The supporting hues are picked for lane
      separability at speed — five streams have to stay distinct in a glance,
      which is what drives the spacing around the wheel. */
-  --accent:     #4d9dfa;
-  --accent-rgb: 77, 157, 250;
-  --violet:     #9b7bf5;
-  --rose:       #f472a8;
-  --amber:      #ffb454;
-  --teal:       #3fd0a8;
-  --red:        #ff6b81;
+  --accent:     #71aef4;
+  --accent-rgb: 113, 174, 244;
+  --violet:     #a386f3;
+  --rose:       #f382b1;
+  --amber:      #f4bb71;
+  --teal:       #a0e3d0;
+  --red:        #f47687;
   --accent-dim: rgba(var(--accent-rgb), 0.16);
 
   --lane-1: var(--accent);
@@ -80,7 +80,7 @@
     --glass-rgb:   255, 255, 255;
     --overlay-rgb: 255, 255, 255;
     --line-rgb:    16, 23, 32;
-    --page:           #eef1f6;
+    --page:           #f3f4f7;
     --glass:          rgba(var(--glass-rgb), 0.72);
     --sheen:          rgba(255,255,255,0.75);
     --lift:           0 10px 28px rgba(16,23,32,0.10);
@@ -88,16 +88,16 @@
     --surface-2:      rgba(16,23,32,0.045);
     --text-primary:   #101720;
     --text-secondary: #4d5a6a;
-    --text-muted:     #78859a;
+    --text-muted:     #637083;
     --border:         rgba(var(--line-rgb), 0.12);
     --border-strong:  rgba(var(--line-rgb), 0.24);
-    --accent:     #1f6fd0;
-    --accent-rgb: 31, 111, 208;
-    --violet:     #6f4fd4;
-    --rose:       #cf4c8c;
-    --amber:      #c47a12;
-    --teal:       #0f8f76;
-    --red:        #d24557;
+    --accent:     #1e6dcc;
+    --accent-rgb: 30, 109, 204;
+    --violet:     #542ed1;
+    --rose:       #d42b7d;
+    --amber:      #c57a11;
+    --teal:       #18957c;
+    --red:        #d9263e;
     --union:      #2b3543;
   }
 }
@@ -528,3 +528,43 @@ a.ghost-btn { text-decoration: none; }
 }
 .card-head h2 { display: flex; align-items: center; gap: 8px; }
 .card-head h2 .ico { width: 14px; height: 14px; color: var(--accent); }
+
+/* ── Light mode is its own design, not the dark one inverted ──────────────
+   Three things behave differently on a light ground and need saying so
+   explicitly, because the dark rules quietly stop working rather than
+   visibly breaking. */
+@media (prefers-color-scheme: light) {
+  :root:where(:not([data-theme="dark"])) {
+    /* The ambient washes carry depth on a dark ground. At the same alpha over
+       white they just tint the page dirty, so they drop to a hint. */
+    body::before {
+      background:
+        radial-gradient(58% 46% at 6% -10%,  rgba(30,109,204,0.10), transparent 70%),
+        radial-gradient(50% 42% at 66% -8%,  rgba(84,46,209,0.07), transparent 68%),
+        radial-gradient(46% 40% at 100% 6%,  rgba(24,149,124,0.06), transparent 66%);
+    }
+    /* Surfaces are lifted by shadow, not by being lighter than their
+       surroundings — on white there is no "lighter" left. Hence white cards on
+       an off-white page, and a real shadow instead of an inset sheen. */
+    .card, .stat-tile {
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(16,23,32,0.06), 0 8px 24px rgba(16,23,32,0.07);
+    }
+    .card:hover, .stat-tile:hover {
+      box-shadow: 0 1px 2px rgba(16,23,32,0.07), 0 14px 34px rgba(16,23,32,0.11);
+    }
+    /* Glow reads as smudge on light. Lane blocks get a crisp edge instead, so
+       concurrent activity stays as legible as it is in the dark theme. */
+    .lane .blk {
+      box-shadow: inset 0 0 0 1px rgba(16,23,32,0.10);
+    }
+    .lane .track {
+      background: rgba(16,23,32,0.05);
+      box-shadow: inset 0 1px 2px rgba(16,23,32,0.07);
+    }
+    .now .figure { text-shadow: none; }
+    .tabs a[aria-current] { box-shadow: none; }
+    .tabs a[aria-current] .ico { filter: none; }
+    .brand .dot-live { box-shadow: 0 0 0 3px rgba(24,149,124,0.18); }
+  }
+}
