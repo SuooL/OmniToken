@@ -69,9 +69,21 @@ func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
 }
 
 // TokensSince returns total tokens and output tokens since the cutoff.
+// TokensSince returns the burn-rate numerator and its output component.
+//
+// cache_read is deliberately excluded. It is the same conversation context
+// re-read on every turn, so counting it makes the rate describe repetition
+// rather than consumption: measured on real traffic it was 99.6% of the total
+// (9.28M of 9.31M over ten minutes, across 14 requests), which turned a ~3K/min
+// figure into ~862K/min. It is also billed at a tenth of the input price and
+// does not consume the 5h/weekly windows at anything like that rate.
+//
+// Same call as abtop's token_rate, which counts input + output + cache_create
+// and excludes cache_read for the same reason. Cache volume is not lost — the
+// cache page reports it, where repetition is the point.
 func (s *Store) TokensSince(since time.Time) (total, output int64, err error) {
 	err = s.db.QueryRow(
-		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
+		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens),0),
 		        COALESCE(SUM(output_tokens),0)
 		 FROM events WHERE ts >= ?`, since.UnixMilli()).Scan(&total, &output)
 	return

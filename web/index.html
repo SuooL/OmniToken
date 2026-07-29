@@ -56,7 +56,7 @@
     <section class="stat-row" id="quota-row"></section>
     <section class="stat-row">
       <div class="stat-tile">
-        <div class="label">燃烧速率(近 10 分钟)</div>
+        <div class="label">新增 token 速率(近 10 分钟)</div>
         <div class="value" id="burn-rate">—</div>
         <div class="sub" id="burn-sub">&nbsp;</div>
       </div>
@@ -75,7 +75,9 @@
         <h2>口径说明</h2>
         <p class="subtle">
           <b>生成速度</b>除以的是各次生成区间的<b>并集</b>,只算模型在吐字的时间;
-          <b>燃烧速率</b>除以的是整个 10 分钟窗口,含你思考与工具执行的空闲。
+          <b>新增 token 速率</b>除以的是整个 10 分钟窗口,含你思考与工具执行的空闲;
+          且**不计缓存读取** —— 那是同一份上下文被反复重读,实测占总量的 99.6%,
+          计进去会让这个数虚高两个数量级。
           两者不是一回事,不要互相对照。
         </p>
         <p class="subtle">

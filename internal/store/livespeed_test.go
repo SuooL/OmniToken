@@ -197,3 +197,30 @@ func TestInsertEventsBackfillsGenMSWithoutDoubleCounting(t *testing.T) {
 		t.Errorf("active_ms = %d after a gen_ms-less re-observation, want 5000", got.ActiveMS)
 	}
 }
+
+// Burn must describe new tokens, not the same context re-read every turn:
+// cache_read was 99.6% of the total on real traffic and made the rate
+// meaningless (ADR-0009 follow-up; matches abtop's token_rate).
+func TestTokensSinceExcludesCacheRead(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	ev := gen("a", "s1", now.Add(-1*time.Minute), 5_000, 300)
+	ev.InputTokens = 100
+	ev.CacheCreationTokens = 200
+	ev.CacheReadTokens = 900_000 // dwarfs everything else, as it does in practice
+	if _, err := st.InsertEvents([]model.Event{ev}, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	total, output, err := st.TokensSince(now.Add(-10 * time.Minute))
+	if err != nil {
+		t.Fatalf("TokensSince: %v", err)
+	}
+	if want := int64(100 + 300 + 200); total != want {
+		t.Errorf("total = %d, want %d (input+output+cache_creation, no cache_read)", total, want)
+	}
+	if output != 300 {
+		t.Errorf("output = %d, want 300", output)
+	}
+}
