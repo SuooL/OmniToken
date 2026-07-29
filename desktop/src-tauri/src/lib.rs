@@ -4,11 +4,12 @@
 //! and collects nothing itself. Collection stays with `serve` and `agent`, so
 //! there is only ever one writer behind event_id dedup and offset advancement.
 
+mod gauge;
 mod settings;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -28,8 +29,7 @@ fn http() -> &'static reqwest::Client {
 /// its read endpoints are unauthenticated, so allowing arbitrary origins would
 /// let any page the user visits read their usage data. Rust is not bound by
 /// the same-origin policy, so the request happens here instead.
-#[tauri::command]
-async fn api_get(base: String, path: String) -> Result<Value, String> {
+async fn get_json(base: &str, path: &str) -> Result<Value, String> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
     let res = http()
         .get(&url)
@@ -40,6 +40,11 @@ async fn api_get(base: String, path: String) -> Result<Value, String> {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
     res.json::<Value>().await.map_err(|e| format!("{url}: {e}"))
+}
+
+#[tauri::command]
+async fn api_get(base: String, path: String) -> Result<Value, String> {
+    get_json(&base, &path).await
 }
 
 #[tauri::command]
@@ -59,7 +64,51 @@ fn settings_set(app: tauri::AppHandle, server: String) -> Result<settings::Setti
         server: settings::normalize(&server)?,
     };
     settings::save(&app, &next)?;
+
+    // Repaint now instead of waiting out the poll interval: the icon would
+    // otherwise keep reporting the old server for up to a minute after the
+    // user pointed it somewhere else.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move { refresh_tray(&handle).await });
+
     Ok(next)
+}
+
+const TRAY_ID: &str = "gauge";
+
+/// Coarser than the panel's 15s: the icon only moves between five buckets, and
+/// a menubar glyph that twitches is worse than one that lags a minute.
+const TRAY_POLL: Duration = Duration::from_secs(60);
+
+/// Repaint the tray from the server's current quota.
+///
+/// Reads the address every time rather than caching it, so changing it in
+/// settings takes effect on the next tick with no extra plumbing.
+async fn refresh_tray(app: &tauri::AppHandle) {
+    let base = settings::load(app).server;
+    let percent = match get_json(&base, "/api/v1/live").await {
+        Ok(v) => v
+            .get("quotas")
+            .and_then(|q| q.as_array())
+            .and_then(|q| gauge::tightest_percent(q)),
+        // Unreachable, or serving something that is not the API. Either way
+        // there is no reading, and the offline glyph says so.
+        Err(_) => None,
+    };
+
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let Ok(image) = gauge::icon(percent) else {
+        return;
+    };
+    if tray.set_icon(Some(image)).is_ok() {
+        // tray-icon 0.24 hardcodes `false` for the template flag inside
+        // set_icon (platform_impl/macos/mod.rs), silently undoing what the
+        // builder set. Without re-asserting it here every swap would ship a
+        // literal dark-grey glyph that all but vanishes on a dark menubar.
+        let _ = tray.set_icon_as_template(true);
+    }
 }
 
 fn now_ms() -> u64 {
@@ -124,8 +173,10 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let handle = app.handle().clone();
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+            TrayIconBuilder::with_id(TRAY_ID)
+                // Starts with no reading: the first poll has not landed yet,
+                // and an arbitrary fill level would be a number we made up.
+                .icon(gauge::icon(None)?)
                 // Template mode lets macOS recolour the icon for light and dark
                 // menubars instead of us shipping two assets.
                 .icon_as_template(true)
@@ -154,6 +205,16 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Own thread rather than a timer on the main loop: the poll blocks
+            // on the network, and the menubar must stay responsive while a
+            // dead server times out. set_icon marshals itself back to the main
+            // thread, so painting from here is safe.
+            let poller = app.handle().clone();
+            std::thread::spawn(move || loop {
+                tauri::async_runtime::block_on(refresh_tray(&poller));
+                std::thread::sleep(TRAY_POLL);
+            });
 
             Ok(())
         })
