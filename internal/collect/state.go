@@ -47,6 +47,34 @@ func LoadState(path string) (*State, error) {
 	return st, nil
 }
 
+// ResetOffsets forgets every file offset so the next pass re-reads all logs
+// from the start. Returns how many files were forgotten.
+//
+// This is how a derived column gets backfilled into history. ADR-0009 added
+// gen_ms and promised exactly this, but without an entry point the promise was
+// never kept: on a real install 493 of 24,516 events had it — only the ones
+// collected after the parser changed.
+//
+// Re-reading cannot corrupt anything. Ingestion is keyed by event_id
+// (ADR-0004), so every re-observed event is ignored on insert; the only writes
+// are the derived-column fills, which are guarded to run once per row. Counts,
+// costs and event totals come out identical.
+//
+// The cwd→repo cache is deliberately kept. It is expensive to rebuild (a git
+// probe per directory) and has nothing to do with what the parsers derive.
+//
+// TurnStart goes with the offsets: it describes the boundary an offset sits at
+// (ADR-0009), so keeping it while resetting the offset would make the first
+// re-read measure from a turn start that belongs to bytes far ahead of it.
+func (s *State) ResetOffsets() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.Files)
+	s.Files = map[string]int64{}
+	s.TurnStart = map[string]int64{}
+	return n, s.saveLocked()
+}
+
 func (s *State) Offset(file string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
