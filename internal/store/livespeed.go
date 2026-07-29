@@ -17,6 +17,10 @@ type SessionSpeed struct {
 	ActiveMS     int64   `json:"active_ms"`
 	TPS          float64 `json:"tps"`
 	LastTS       int64   `json:"last_ts"`
+	// Spans are this stream's merged generation intervals, [startMS, endMS]
+	// pairs, so the live view can draw when it was actually producing rather
+	// than only how much it produced.
+	Spans [][2]int64 `json:"spans"`
 }
 
 // LiveSpeed answers "how fast is this machine generating right now".
@@ -33,10 +37,15 @@ type SessionSpeed struct {
 // reported because they answer different questions (ADR-0009).
 type LiveSpeed struct {
 	WindowSeconds int            `json:"window_seconds"`
+	WindowStartMS int64          `json:"window_start_ms"`
+	WindowEndMS   int64          `json:"window_end_ms"`
 	OutputTokens  int64          `json:"output_tokens"`
 	ActiveMS      int64          `json:"active_ms"`
 	TPS           float64        `json:"tps"`
 	Sessions      []SessionSpeed `json:"sessions"`
+	// Spans is the union across every stream — the track that shows why three
+	// sessions at 50 tok/s each is not 150 unless they took turns.
+	Spans [][2]int64 `json:"spans"`
 }
 
 // LiveSpeedSince computes machine-wide and per-session generation speed over
@@ -46,11 +55,14 @@ type LiveSpeed struct {
 // only contributes the part that falls inside — otherwise a long response
 // straddling the boundary would lend the window more active time than elapsed.
 func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, error) {
+	startMS, endMS := since.UnixMilli(), now.UnixMilli()
 	out := LiveSpeed{
 		WindowSeconds: int(now.Sub(since).Seconds()),
+		WindowStartMS: startMS,
+		WindowEndMS:   endMS,
 		Sessions:      []SessionSpeed{},
+		Spans:         [][2]int64{},
 	}
-	startMS, endMS := since.UnixMilli(), now.UnixMilli()
 
 	q := `SELECT session_id, device, repo, model, source, output_tokens, gen_ms, ts
 	      FROM events
@@ -114,7 +126,11 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 	}
 
 	for _, a := range bySession {
-		a.ActiveMS = unionMS(a.spans)
+		merged := mergeSpans(a.spans)
+		a.Spans = exportSpans(merged)
+		for _, sp := range merged {
+			a.ActiveMS += sp.end - sp.start
+		}
 		if a.ActiveMS > 0 {
 			a.TPS = float64(a.OutputTokens) * 1000 / float64(a.ActiveMS)
 		}
@@ -122,11 +138,23 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 	}
 	sortSessionsByTokens(out.Sessions)
 
-	out.ActiveMS = unionMS(all)
+	machine := mergeSpans(all)
+	out.Spans = exportSpans(machine)
+	for _, sp := range machine {
+		out.ActiveMS += sp.end - sp.start
+	}
 	if out.ActiveMS > 0 {
 		out.TPS = float64(out.OutputTokens) * 1000 / float64(out.ActiveMS)
 	}
 	return out, nil
+}
+
+func exportSpans(spans []span) [][2]int64 {
+	out := make([][2]int64, 0, len(spans))
+	for _, sp := range spans {
+		out = append(out, [2]int64{sp.start, sp.end})
+	}
+	return out
 }
 
 func sortSessionsByTokens(ss []SessionSpeed) {

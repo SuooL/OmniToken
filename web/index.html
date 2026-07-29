@@ -8,24 +8,38 @@
 </head>
 <body>
 <div class="viz-root">
-  <header>
-    <div>
+  <nav class="rail">
+    <div class="brand">
+      <span class="dot-live" aria-hidden="true"></span>
       <h1>OmniToken</h1>
-      <p class="subtitle">跨设备 LLM 用量监控</p>
     </div>
-    <nav class="tabs" id="nav">
-      <a href="#overview" data-view="overview">总览</a>
+    <!-- Grouped by what you came to find out, not by page count. Speed and
+         live usage lead; quota sits under "额度" as a secondary concern. -->
+    <div class="tabs" id="nav">
+      <span class="tab-group">正在发生</span>
       <a href="#live" data-view="live">实时</a>
+      <a href="#speed" data-view="speed">速度</a>
+      <span class="tab-group">回顾</span>
+      <a href="#overview" data-view="overview">总览</a>
       <a href="#reports" data-view="reports">报表</a>
       <a href="#details" data-view="details">明细</a>
-      <a href="#cache" data-view="cache">缓存</a>
-      <a href="#speed" data-view="speed">速度</a>
+      <span class="tab-group">切面</span>
       <a href="#devices" data-view="devices">设备</a>
       <a href="#models" data-view="models">模型</a>
+      <a href="#cache" data-view="cache">缓存</a>
+      <span class="tab-group">其它</span>
       <a href="#settings" data-view="settings">设置</a>
-    </nav>
+    </div>
+  </nav>
+
+  <div class="content">
+  <div class="page-head">
+    <div>
+      <h2 id="page-title">实时</h2>
+      <p class="subtitle" id="page-sub">跨设备 LLM 用量监控</p>
+    </div>
     <div class="refresh" id="refresh-note"></div>
-  </header>
+  </div>
 
   <main id="view-overview" hidden>
     <section class="stat-row" id="stat-row"></section>
@@ -53,50 +67,46 @@
   </main>
 
   <main id="view-live" hidden>
-    <section class="stat-row" id="quota-row"></section>
-    <section class="stat-row">
-      <div class="stat-tile">
-        <div class="label">新增 token 速率(近 10 分钟)</div>
-        <div class="value" id="burn-rate">—</div>
-        <div class="sub" id="burn-sub">&nbsp;</div>
-      </div>
-      <div class="stat-tile">
-        <div class="label">生成速度(本机合计)</div>
-        <div class="value" id="speed-tps">—</div>
-        <div class="sub" id="speed-sub">&nbsp;</div>
-      </div>
+    <!-- The strip leads. A number tile would say "here is a figure"; the strip
+         says what the machines are doing right now, which is the job. -->
+    <section class="now" id="now-block">
+      <div class="figure"><span id="speed-tps">—</span><span class="unit"> tok/s</span></div>
+      <div class="caption" id="speed-sub">正在等待数据</div>
     </section>
-    <section class="grid2">
-      <div class="card">
-        <h2>正在生成的会话</h2>
-        <div id="live-speed" class="data-table"></div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>并发生成</h2>
+        <div class="head-tools"><span class="subtle" id="lane-note"></span></div>
       </div>
-      <div class="card">
-        <h2>口径说明</h2>
-        <p class="subtle">
-          <b>生成速度</b>除以的是各次生成区间的<b>并集</b>,只算模型在吐字的时间;
-          <b>新增 token 速率</b>除以的是整个 10 分钟窗口,含你思考与工具执行的空闲;
-          且**不计缓存读取** —— 那是同一份上下文被反复重读,实测占总量的 99.6%,
-          计进去会让这个数虚高两个数量级。
-          两者不是一回事,不要互相对照。
-        </p>
-        <p class="subtle">
-          多个会话并行时,墙钟时间只走一遍:三个会话各 50 tok/s,本机合计是 150,
-          而每个会话仍是 50。上方「本机合计」用全部会话区间的并集,
-          下方每行用该会话自己的并集。
-        </p>
-        <p class="subtle">
-          暂不覆盖 Codex —— 其 rollout 文件在恢复会话时成批回放历史,
-          70% 的记录时间戳是刷盘时刻而非事件时刻,据此算出的速度是假的
-          (<a href="https://github.com/SuooL/OmniToken/blob/dev/docs/adr/0009-generation-speed.md">ADR-0009</a>)。
-        </p>
-      </div>
+      <div class="lanes" id="lanes"></div>
+      <div class="axis"><span id="axis-start">10 分钟前</span><span>现在</span></div>
     </section>
-    <section class="stat-row" id="window-row"></section>
-    <section class="grid2">
+
+    <section class="grid-auto">
+      <div class="card">
+        <h2>新增 token 速率 · 近 10 分钟</h2>
+        <div class="stat-tile plain">
+          <div class="value" id="burn-rate">—</div>
+          <div class="sub" id="burn-sub">&nbsp;</div>
+        </div>
+        <p class="subtle">
+          除以整个 10 分钟窗口,含你思考与工具执行的空闲 —— 回答「新增有多快」。
+          <b>不计缓存读取</b>:那是同一份上下文被反复重读,实测占总量 99.6%,
+          计进去会让这个数虚高两个数量级。上方的生成速度除以的是生成区间的并集,
+          回答「吐字有多快」。两者不可互相对照。
+        </p>
+      </div>
       <div class="card"><h2>设备</h2><div id="live-devices" class="bars"></div></div>
-      <div class="card"><h2>活跃会话(近 10 分钟)</h2><div id="live-sessions" class="data-table"></div></div>
+      <div class="card"><h2>活跃会话</h2><div id="live-sessions" class="data-table"></div></div>
     </section>
+
+    <section class="card">
+      <div class="card-head"><h2>额度</h2></div>
+      <div class="stat-row" id="quota-row"></div>
+      <div class="stat-row" id="window-row"></div>
+    </section>
+
     <p class="subtle" id="live-status">连接中…</p>
   </main>
 
@@ -109,6 +119,7 @@
   <main id="view-settings" hidden></main>
 
   <div id="tooltip" class="tooltip" hidden></div>
+</div>
 </div>
 <script src="api.js"></script>
 <script src="format.js"></script>

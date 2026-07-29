@@ -1,68 +1,229 @@
 * { box-sizing: border-box; margin: 0; }
 
+/* OmniToken panel — an instrument, not a report.
+   Dark is the primary register: this is read at a glance beside an editor
+   while the machines are working. Light is a full variant, not an afterthought.
+
+   The ground is a cool slate rather than black — instrument housing, not a
+   terminal. Deliberately not the near-black + acid-green that every developer
+   tool reaches for. */
 .viz-root {
-  color-scheme: light;
-  --page:           #f9f9f7;
-  --surface-1:      #fcfcfb;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #898781;
-  --grid:           #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11,11,11,0.10);
-  --series-1:       #2a78d6;  /* input */
-  --series-2:       #008300;  /* output */
-  --series-3:       #e87ba4;  /* cache read */
-  --series-4:       #eda100;  /* cache creation */
+  color-scheme: dark;
+  /* RGB triplets, so borders / glows / fills can be tinted from one hue
+     instead of hard-coding a second colour that drifts out of step. */
+  --glass-rgb:   26, 31, 39;
+  --overlay-rgb: 255, 255, 255;
+  --line-rgb:    232, 238, 244;
+
+  --page:           #10141a;
+  --surface-1:      rgba(var(--glass-rgb), 0.62);
+  --surface-2:      rgba(var(--overlay-rgb), 0.05);
+  --glass:          rgba(var(--glass-rgb), 0.62);
+  --glass-filter:   blur(30px) saturate(118%);
+  --sheen:          rgba(var(--overlay-rgb), 0.08);
+  --lift:           0 14px 38px rgba(0,0,0,0.34);
+  --lift-hi:        0 20px 52px rgba(0,0,0,0.44);
+
+  --text-primary:   #eef5fb;
+  --text-secondary: #a3adbb;
+  --text-muted:     #6d7889;
+  --grid:           rgba(var(--line-rgb), 0.10);
+  --baseline:       rgba(var(--line-rgb), 0.20);
+  --border:         rgba(var(--line-rgb), 0.14);
+  --border-strong:  rgba(var(--line-rgb), 0.26);
+
+  /* A full spectrum of bright pastels rather than one accent doing everything.
+     Concurrent lanes need to stay separable, and a single-hue panel is what
+     made the old one read as a spreadsheet. */
+  /* Anchored on the app icon's blue so the panel, the menubar gauge and the
+     Finder icon are one product. The supporting hues are picked for lane
+     separability at speed — five streams have to stay distinct in a glance,
+     which is what drives the spacing around the wheel. */
+  --accent:     #4d9dfa;
+  --accent-rgb: 77, 157, 250;
+  --violet:     #9b7bf5;
+  --rose:       #f472a8;
+  --amber:      #ffb454;
+  --teal:       #3fd0a8;
+  --red:        #ff6b81;
+  --accent-dim: rgba(var(--accent-rgb), 0.16);
+
+  --lane-1: var(--accent);
+  --lane-2: var(--violet);
+  --lane-3: var(--rose);
+  --lane-4: var(--amber);
+  --lane-5: var(--teal);
+  /* The union is deliberately achromatic. It is not a sixth stream competing
+     for a hue — it is what all of them add up to, so it reads as the sum of
+     the colours above rather than another one beside them. */
+  --union:  #dfe8f5;
+  --warn:   var(--amber);
+  --critical: var(--red);
+  --series-1: var(--accent);
+  --series-2: var(--teal);
+  --series-3: var(--rose);
+  --series-4: var(--amber);
+
+  /* Mono throughout, like the reference: this product measures a text
+     generator, and figures that update every second must not shift width. */
+  --font-display: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono",
+                  Menlo, Consolas, "Liberation Mono", monospace;
+  --font-body: var(--font-display);
+
+  --rail: 208px;
+  --gutter: clamp(16px, 2vw, 32px);
+  --radius: 14px;
 }
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) .viz-root {
-    color-scheme: dark;
-    --page:           #0d0d0d;
-    --surface-1:      #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --grid:           #2c2c2a;
-    --baseline:       #383835;
-    --border:         rgba(255,255,255,0.10);
-    --series-1:       #3987e5;
-    --series-2:       #008300;
-    --series-3:       #d55181;
-    --series-4:       #c98500;
+@media (prefers-color-scheme: light) {
+  :root:where(:not([data-theme="dark"])) .viz-root {
+    color-scheme: light;
+    --glass-rgb:   255, 255, 255;
+    --overlay-rgb: 255, 255, 255;
+    --line-rgb:    16, 23, 32;
+    --page:           #eef1f6;
+    --glass:          rgba(var(--glass-rgb), 0.72);
+    --sheen:          rgba(255,255,255,0.75);
+    --lift:           0 10px 28px rgba(16,23,32,0.10);
+    --lift-hi:        0 16px 40px rgba(16,23,32,0.16);
+    --surface-2:      rgba(16,23,32,0.045);
+    --text-primary:   #101720;
+    --text-secondary: #4d5a6a;
+    --text-muted:     #78859a;
+    --border:         rgba(var(--line-rgb), 0.12);
+    --border-strong:  rgba(var(--line-rgb), 0.24);
+    --accent:     #1f6fd0;
+    --accent-rgb: 31, 111, 208;
+    --violet:     #6f4fd4;
+    --rose:       #cf4c8c;
+    --amber:      #c47a12;
+    --teal:       #0f8f76;
+    --red:        #d24557;
+    --union:      #2b3543;
   }
 }
 
 body { background: var(--page); }
+
+/* Ambient depth. Two very low-opacity washes behind everything, so surfaces
+   have something to float above — a flat fill is what made the old panel read
+   as a printed sheet. Fixed, so it does not travel with scroll. */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(70% 55% at 12% -5%, rgba(77,163,255,0.16), transparent 70%),
+    radial-gradient(60% 50% at 92% 0%, rgba(139,124,246,0.13), transparent 68%);
+}
+.viz-root { position: relative; z-index: 1; }
+
+/* Full-bleed shell: a rail for navigation, the rest for content. The old
+   centred 1100px column wasted everything past a laptop and made the page read
+   as a document. Width is spent on more columns, never on longer lines — see
+   .grid-auto, which adds columns rather than stretching them. */
 .viz-root {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-body);
   color: var(--text-primary);
   background: var(--page);
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 24px 20px 48px;
   min-height: 100vh;
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
 }
 
-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; gap: 20px; }
-.tabs { display: flex; gap: 4px; margin-left: auto; }
-.tabs a {
-  color: var(--text-secondary); text-decoration: none; font-size: 13px;
-  padding: 5px 14px; border-radius: 7px; border: 1px solid transparent;
-}
-.tabs a:hover { border-color: var(--border); }
-.tabs a[aria-current] { background: var(--surface-1); border-color: var(--border); color: var(--text-primary); font-weight: 600; }
-h1 { font-size: 20px; font-weight: 650; }
-.subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
-.refresh { color: var(--text-muted); font-size: 12px; }
-
-.card {
+.rail {
+  border-right: 1px solid var(--border);
   background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 18px;
-  margin-bottom: 16px;
+  padding: 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
+.brand { display: flex; align-items: baseline; gap: 8px; padding: 0 8px; }
+.brand h1 {
+  font-family: var(--font-display);
+  font-size: 15px; font-weight: 600; letter-spacing: -0.02em;
+}
+.brand .dot-live {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--teal); flex: none;
+  box-shadow: 0 0 10px var(--teal);
+  box-shadow: 0 0 0 0 var(--accent-dim);
+  animation: pulse 2.4s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-dim); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.tabs { display: flex; flex-direction: column; gap: 2px; }
+.tabs .tab-group {
+  font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-muted); padding: 12px 8px 4px;
+}
+.tabs a {
+  color: var(--text-secondary); text-decoration: none;
+  font-size: 13px; padding: 7px 10px; border-radius: 8px;
+  border-left: 2px solid transparent;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tabs a:hover { background: var(--surface-2); color: var(--text-primary); }
+.tabs a[aria-current] {
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.20), transparent 78%);
+  color: var(--text-primary); font-weight: 600;
+  border-left-color: var(--accent);
+  box-shadow: -1px 0 10px -2px rgba(var(--accent-rgb), 0.55);
+}
+
+.content { padding: 22px var(--gutter) 56px; min-width: 0; }
+.page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 18px;
+}
+.page-head h2 { font-size: 15px; font-weight: 620; color: var(--text-primary); margin: 0; }
+.subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+.refresh { color: var(--text-muted); font-size: 12px; font-family: var(--font-display); }
+
+/* Gains columns with width instead of stretching them. */
+.grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 860px) {
+  .viz-root { grid-template-columns: minmax(0, 1fr); }
+  .rail {
+    position: static; height: auto; flex-direction: row; align-items: center;
+    gap: 10px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+  .tabs { flex-direction: row; gap: 2px; }
+  .tabs .tab-group { display: none; }
+  .tabs a { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tabs a[aria-current] { border-left: 0; border-bottom-color: var(--accent); }
+}
+
+/* Glass, not paper. A translucent panel over the ambient wash, lifted by an
+   inset highlight along the top edge and a soft shadow beneath — the layering
+   is what separates content from ground without drawing a box around it. */
+.card {
+  background:
+    linear-gradient(180deg, rgba(var(--overlay-rgb), 0.075), rgba(var(--overlay-rgb), 0.02)),
+    var(--glass);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+.card:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
 h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .card-head h2 { margin-bottom: 0; }
@@ -73,13 +234,21 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bot
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-tile {
-  background: var(--surface-1);
+  background:
+    linear-gradient(180deg, rgba(var(--overlay-rgb), 0.075), rgba(var(--overlay-rgb), 0.02)),
+    var(--glass);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 14px 16px;
+  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
+.stat-tile:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
+.stat-tile.plain { background: none; border: 0; box-shadow: none; padding: 0; backdrop-filter: none; }
 .stat-tile .label { font-size: 12px; color: var(--text-secondary); }
-.stat-tile .value { font-size: 26px; font-weight: 600; margin: 4px 0 2px; }
+.stat-tile .value { font-family: var(--font-display); font-size: 28px; font-weight: 600; margin: 4px 0 2px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
 .stat-tile .sub { font-size: 12px; color: var(--text-muted); }
 .stat-tile .sub.cost { color: var(--text-secondary); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .bars .val .extra { color: var(--text-muted); font-weight: 400; }
@@ -242,4 +411,91 @@ a.ghost-btn { text-decoration: none; }
   .tabs a { padding: 8px 14px; }
   .ghost-btn { padding: 7px 12px; }
   .chip-x { padding: 4px 6px; }
+}
+
+/* ── Live readout ────────────────────────────────────────────────────────
+   The hero is the lane strip, not a number tile. A tile says "here is a
+   figure"; the strip says "here is what your machines are doing", which is
+   the difference between a report and an instrument. */
+
+.now {
+  display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;
+  padding: 4px 0 16px;
+}
+.now .figure {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  text-shadow: 0 0 28px rgba(var(--accent-rgb), 0.32);
+  font-size: clamp(44px, 6vw, 76px);
+  font-weight: 600; line-height: 0.92; letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums;
+}
+.now .unit { font-size: 0.34em; font-weight: 500; color: var(--text-secondary); letter-spacing: 0; }
+.now .caption { color: var(--text-secondary); font-size: 13px; padding-bottom: 6px; }
+.now .caption b { color: var(--text-primary); font-weight: 600; }
+.now.idle .figure { color: var(--text-muted); }
+
+/* Lanes. One row per concurrent stream, then the union beneath — the whole
+   argument of ADR-0009 in one picture: three sessions at 50 tok/s are not
+   150 unless they took turns. */
+.lanes { display: flex; flex-direction: column; gap: 2px; }
+.lane {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) 92px;
+  align-items: center; gap: 12px;
+  padding: 5px 0;
+}
+.lane .who {
+  font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lane .who .sub { color: var(--text-muted); font-size: 11px; }
+.lane .track {
+  position: relative; height: 24px; border-radius: 7px;
+  background: rgba(var(--line-rgb), 0.06);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+/* Blocks glow in their lane's hue: on a dark ground a flat fill disappears,
+   and the glow is what makes concurrent activity read at a glance. */
+.lane .blk {
+  position: absolute; top: 2px; bottom: 2px;
+  border-radius: 3px; min-width: 2px;
+  background: linear-gradient(180deg, rgba(var(--overlay-rgb), 0.28), transparent 60%), var(--c);
+  box-shadow: 0 0 12px -2px var(--c), inset 0 1px 0 rgba(var(--overlay-rgb), 0.3);
+  animation: blk-in 0.35s ease-out both;
+}
+@keyframes blk-in { from { opacity: 0; transform: scaleY(0.35); } to { opacity: 1; transform: none; } }
+.lane .rate {
+  font-family: var(--font-display); font-size: 13px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.lane .rate .u { color: var(--text-muted); font-size: 10px; }
+
+.lane.union { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.lane.union .who { color: var(--text-primary); font-weight: 600; font-size: 12px; }
+.lane.union .track { height: 30px; }
+.lane.union { --c: var(--union); }
+
+.lane-1 { --c: var(--lane-1); }
+.lane-2 { --c: var(--lane-2); }
+.lane-3 { --c: var(--lane-3); }
+.lane-4 { --c: var(--lane-4); }
+.lane-5 { --c: var(--lane-5); }
+
+.axis {
+  display: flex; justify-content: space-between;
+  font-family: var(--font-display); font-size: 10px; color: var(--text-muted);
+  padding-top: 6px;
+  margin-left: calc(min(200px, max(120px, 16vw)) + 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand .dot-live { animation: none; }
+  .lane .blk { animation: none; }
+}
+@media (max-width: 700px) {
+  .lane { grid-template-columns: minmax(0, 1fr) 78px; }
+  .lane .track { grid-column: 1 / -1; grid-row: 2; }
+  .axis { margin-left: 0; }
 }

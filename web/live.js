@@ -31,23 +31,55 @@ const Live = {
   // so it says how fast the model emits — not how much of the window was busy.
   renderSpeed(sp) {
     const tps = sp.tps || 0;
-    document.getElementById("speed-tps").textContent =
-      tps > 0 ? tps.toFixed(1) + " tok/s" : "—";
-    document.getElementById("speed-sub").textContent = tps > 0
-      ? `输出 ${compact(sp.output_tokens || 0)} · 生成中 ${((sp.active_ms || 0) / 1000).toFixed(0)}s`
+    const now = document.getElementById("now-block");
+    document.getElementById("speed-tps").textContent = tps > 0 ? tps.toFixed(1) : "—";
+    now.classList.toggle("idle", !(tps > 0));
+
+    const n = (sp.sessions || []).length;
+    document.getElementById("speed-sub").innerHTML = tps > 0
+      ? `<b>${n}</b> 个会话在生成 · 近 10 分钟输出 <b>${compact(sp.output_tokens || 0)}</b>`
       : "近 10 分钟没有生成";
 
-    const rows = sp.sessions || [];
-    document.getElementById("live-speed").innerHTML = rows.length ? rows.map((s) => `
-      <div class="row">
-        <div class="row-head">
-          <span class="key">${esc(s.repo || s.session_id.slice(0, 8))}
-            <span class="extra">${esc(s.device)}${s.model ? " · " + esc(s.model) : ""}</span></span>
-          <span class="val">${(s.tps || 0).toFixed(1)} <span class="extra">tok/s</span></span>
-        </div>
-        <div class="extra">输出 ${compact(s.output_tokens)} · 生成中 ${((s.active_ms || 0) / 1000).toFixed(0)}s</div>
-      </div>`).join("")
-      : `<p class="subtle">近 10 分钟没有会话在生成。</p>`;
+    this.renderLanes(sp);
+  },
+
+  // One row per concurrent stream, then the union. Overlap is the point: it
+  // shows why three sessions at 50 tok/s is not 150 unless they took turns.
+  renderLanes(sp) {
+    const el = document.getElementById("lanes");
+    const t0 = sp.window_start_ms, t1 = sp.window_end_ms;
+    const span = Math.max(1, t1 - t0);
+    const blocks = (spans) => (spans || []).map(([a, b]) => {
+      const left = ((Math.max(a, t0) - t0) / span) * 100;
+      const width = ((Math.min(b, t1) - Math.max(a, t0)) / span) * 100;
+      return `<i class="blk" style="left:${left}%;width:${Math.max(width, 0.4)}%"></i>`;
+    }).join("");
+
+    const sessions = sp.sessions || [];
+    if (!sessions.length) {
+      el.innerHTML = `<p class="subtle">近 10 分钟没有会话在生成。开始使用 Claude Code,这里会实时出现。</p>`;
+      document.getElementById("lane-note").textContent = "";
+      return;
+    }
+
+    const rows = sessions.slice(0, 8).map((s, i) => `
+      <div class="lane lane-${(i % 5) + 1}">
+        <div class="who">${esc(s.repo ? repoLabel(s.repo).split("/").pop() : s.session_id.slice(0, 8))}
+          <span class="sub">${esc(s.device)}</span></div>
+        <div class="track">${blocks(s.spans)}</div>
+        <div class="rate">${(s.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
+      </div>`).join("");
+
+    el.innerHTML = rows + `
+      <div class="lane union">
+        <div class="who">本机(并集)</div>
+        <div class="track">${blocks(sp.spans)}</div>
+        <div class="rate">${(sp.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
+      </div>`;
+
+    const busy = Math.round(((sp.active_ms || 0) / Math.max(1, span)) * 100);
+    document.getElementById("lane-note").textContent =
+      `窗口内 ${busy}% 的时间在生成`;
   },
 
   render() {
