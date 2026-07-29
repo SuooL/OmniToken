@@ -12,16 +12,31 @@
     <span class="stamp" id="stamp"></span>
   </header>
 
-  <section id="quotas" class="quotas"></section>
+  <div id="main">
+    <section id="quotas" class="quotas"></section>
 
-  <section class="today">
-    <div class="label">今日</div>
-    <div class="value" id="today-tokens">—</div>
-    <div class="sub" id="today-sub"></div>
+    <section class="today">
+      <div class="label">今日</div>
+      <div class="value" id="today-tokens">—</div>
+      <div class="sub" id="today-sub"></div>
+    </section>
+  </div>
+
+  <section id="settings" class="settings" hidden>
+    <label class="field" for="server-input">服务端地址</label>
+    <input id="server-input" type="text" placeholder="127.0.0.1:8787"
+           spellcheck="false" autocapitalize="off" autocorrect="off">
+    <div class="hint">运行 <code>omnitoken serve</code> 的地址。省略 http:// 也可以。</div>
+    <div class="msg" id="settings-msg"></div>
+    <div class="actions">
+      <button type="button" id="settings-cancel" class="ghost">取消</button>
+      <button type="button" id="settings-save" class="primary">保存</button>
+    </div>
   </section>
 
   <footer>
     <span class="server" id="server"></span>
+    <button type="button" id="open-settings" class="link">设置</button>
   </footer>
 </div>
 <script src="app.js"></script>

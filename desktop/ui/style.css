@@ -4,6 +4,10 @@
 
 * { box-sizing: border-box; margin: 0; }
 
+/* The views below set `display`, which as a class selector outranks the user
+   agent's `[hidden]` rule — without this the hidden view renders anyway. */
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: light;
   --page: #f9f9f7;
@@ -56,6 +60,12 @@ header { display: flex; align-items: baseline; justify-content: space-between; }
 .title { font-size: 13px; font-weight: 650; }
 .stamp { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+/* Four quota cards plus today's total overflow 420px on their own. The readout
+   scrolls so the footer — the only way into settings — is never pushed off the
+   bottom. min-height:0 is what actually lets a flex child shrink enough to
+   scroll instead of stretching its parent. */
+#main { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+
 .quotas { display: flex; flex-direction: column; gap: 8px; }
 
 .quota {
@@ -90,11 +100,43 @@ header { display: flex; align-items: baseline; justify-content: space-between; }
 .today .value { font-size: 21px; font-weight: 620; margin: 1px 0; font-variant-numeric: tabular-nums; }
 .today .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+/* Settings replaces the readout rather than sitting below it: at 320x420 there
+   is no room for both, and a second window would fight the dismiss-on-blur
+   behaviour the popover depends on. */
+.settings { display: flex; flex-direction: column; gap: 6px; }
+.settings .field { font-size: 11px; color: var(--text-2); }
+.settings input {
+  font: inherit; font-size: 12px;
+  color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 9px; width: 100%;
+}
+.settings input:focus { outline: none; border-color: var(--accent); }
+.settings .hint { font-size: 10px; color: var(--muted); line-height: 1.5; }
+.settings .hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.settings .msg { font-size: 10px; line-height: 1.5; word-break: break-all; }
+.settings .msg.bad { color: var(--critical); }
+.settings .msg.ok { color: var(--accent); }
+.settings .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+
+button { font: inherit; cursor: pointer; }
+.settings button {
+  font-size: 11px; border-radius: 7px; padding: 5px 12px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+.settings button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.settings button[disabled] { opacity: 0.5; cursor: default; }
+
 footer { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .server {
   font-size: 10px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.link {
+  font-size: 10px; color: var(--muted);
+  background: none; border: 0; padding: 0; flex: none;
+}
+.link:hover { color: var(--text-2); }
 
 .empty { font-size: 11px; color: var(--muted); padding: 6px 0; }
 .error { font-size: 11px; color: var(--critical); padding: 6px 0; word-break: break-all; }
