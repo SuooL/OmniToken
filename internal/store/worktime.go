@@ -48,22 +48,33 @@ func bridgeSpans(points []evPoint, idleMS int64) []span {
 	return out
 }
 
-// unionMS merges possibly-overlapping spans and returns total covered ms.
-func unionMS(spans []span) int64 {
+// mergeSpans collapses possibly-overlapping spans into disjoint ones, ordered.
+// The live view draws these directly, which is why the merged set is returned
+// rather than only its total: overlapping bars would misread as extra activity.
+func mergeSpans(spans []span) []span {
 	if len(spans) == 0 {
-		return 0
+		return nil
 	}
 	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-	total, curS, curE := int64(0), spans[0].start, spans[0].end
+	out := []span{spans[0]}
 	for _, sp := range spans[1:] {
-		if sp.start > curE {
-			total += curE - curS
-			curS, curE = sp.start, sp.end
-		} else if sp.end > curE {
-			curE = sp.end
+		last := &out[len(out)-1]
+		if sp.start > last.end {
+			out = append(out, sp)
+		} else if sp.end > last.end {
+			last.end = sp.end
 		}
 	}
-	return total + (curE - curS)
+	return out
+}
+
+// unionMS merges possibly-overlapping spans and returns total covered ms.
+func unionMS(spans []span) int64 {
+	var total int64
+	for _, sp := range mergeSpans(spans) {
+		total += sp.end - sp.start
+	}
+	return total
 }
 
 func sumMS(spans []span) int64 {

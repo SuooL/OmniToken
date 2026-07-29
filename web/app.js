@@ -52,8 +52,10 @@ const Views = {
 let currentView = null;
 
 function route() {
-  const name = (location.hash || "#overview").slice(1);
-  const next = Views[name] ? name : "overview";
+  // Lands on live: the panel's job is now what the machines are doing, with
+  // the retrospective views a click away.
+  const name = (location.hash || "#live").slice(1);
+  const next = Views[name] ? name : "live";
   if (next === currentView) return;
   if (currentView) {
     Views[currentView].leave();
@@ -62,10 +64,36 @@ function route() {
   currentView = next;
   Views[next].el().hidden = false;
   Views[next].enter();
+  // The view was hidden until a moment ago; anything canvas-based needs to be
+  // told its real size now that it has one.
+  requestAnimationFrame(() => resizeChartsIn(Views[next].el()));
   document.querySelectorAll("#nav a").forEach((a) => {
     a.toggleAttribute("aria-current", a.dataset.view === next);
   });
+  // The rail no longer carries the page name, so the head does.
+  const link = document.querySelector(`#nav a[data-view="${next}"]`);
+  document.getElementById("page-title").textContent = link ? link.textContent : "";
+  document.getElementById("page-sub").textContent = PAGE_SUB[next] || "";
 }
+
+// One line each, saying what the page answers rather than what it contains.
+const PAGE_SUB = {
+  live: "这台机器现在在生成什么",
+  speed: "各模型的吐字速度",
+  overview: "累计与趋势",
+  reports: "按日/周/月/会话聚合,可导出",
+  details: "事件级下钻",
+  devices: "各设备用量对比",
+  models: "各模型分布",
+  cache: "命中率与节省",
+  settings: "定价覆盖与偏好",
+};
+
+// Icons are injected rather than written into the markup: one source of paths,
+// and the nav keeps working if a view is added without one.
+document.querySelectorAll("#nav a[data-icon]").forEach((a) => {
+  a.insertAdjacentHTML("afterbegin", icon(a.dataset.icon));
+});
 
 addEventListener("hashchange", route);
 
