@@ -91,3 +91,26 @@ func TestCaptureWritesNothingWithoutRateLimits(t *testing.T) {
 		t.Errorf("file exists without rate_limits in the payload (err=%v)", err)
 	}
 }
+
+// Capture exists so nobody has to give up their own status line to feed
+// OmniToken: it must take the quota and stay silent.
+func TestCaptureOnlyIsSilentButStillCaptures(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{CachePath: filepath.Join(dir, "statusline-cache.json")}
+	in := strings.NewReader(`{"rate_limits":{"five_hour":{"used_percentage":88,"resets_at":1774020000}}}`)
+
+	if err := Capture(cfg, in); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	raw, err := os.ReadFile(RateLimitsPath(cfg.CachePath))
+	if err != nil {
+		t.Fatalf("capture file: %v", err)
+	}
+	var f RateLimitsFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := f.Windows["five_hour"]; got.UsedPercent != 88 {
+		t.Errorf("five_hour = %+v, want 88%%", got)
+	}
+}
