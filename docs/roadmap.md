@@ -100,9 +100,10 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 |---|---|---|
 | 前端源码提到顶层 `web/` | ✅ 完成 | `web` 包自带 embed(go:embed 无法引用父目录),`serve` 自带面板不变 |
 | 前端传输层收敛 | ✅ 完成 | 12 处 `fetch` 与 1 处 `EventSource` 收敛到 `web/api.js`;桌面端只需替换 get/put/stream 三个方法体 |
-| Mac 菜单栏应用(F24) | 骨架完成 | Tauri 瘦客户端跑通:托盘图标 + 点击弹出面板 + 经 Rust 侧取真实数据。完整面板仍走浏览器。待做:图标设计 |
+| Mac 菜单栏应用(F24) | 骨架完成 | Tauri 瘦客户端跑通:托盘图标 + 点击弹出面板 + 经 Rust 侧取真实数据。完整面板仍走浏览器。待做:应用/DMG 图标(仍是 Tauri 默认 logo) |
 | 服务端地址设置(F24) | ✅ 完成 | 面板内设置视图;地址存 `app_config_dir()/settings.json`,归一化与校验在 Rust 侧(6 单测);先落盘再探 `/api/v1/health`,连不上也不丢用户刚填的地址。只存地址不存 token —— 读接口本就免鉴权 |
 | 燃烧速率(F24) | ✅ 完成 | 新增 `GET /api/v1/live`(SSE `snapshot` 的单次 GET 版,复用同一个 `livePayload`),面板轮询它拿配额 + 燃烧速率;2 单测。至此 v1 精简视图三项齐全 |
+| 托盘配额表盘(F24) | ✅ 完成 | 菜单栏图标即最紧配额的仪表弧,按 0/25/50/75/100 五档切换,连不上服务端显示虚线环;Rust 侧 60s 轮询独立于面板。图标由 `desktop/icons-src/gen-tray-icons.py` 生成(36px = 托盘 18pt 槽位的 Retina 1:1),6 单测 |
 | Windows 端 | 未排期 | Tauri 跨平台,但托盘行为与视觉需单独验收 |
 
 **前置**(2026-07-28 实测):

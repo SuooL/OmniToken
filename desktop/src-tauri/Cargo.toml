@@ -25,7 +25,13 @@ log = "0.4"
 # macos-private-api backs the transparent window, without which the rounded
 # popover would sit on an opaque square. It rules out the Mac App Store, which
 # is fine: distribution is via GitHub Releases like the server binary.
-tauri = { version = "2.11.3", features = ["tray-icon", "macos-private-api"] }
+#
+# image-png decodes the embedded gauge icons the tray swaps between.
+tauri = { version = "2.11.3", features = [
+  "tray-icon",
+  "macos-private-api",
+  "image-png",
+] }
 tauri-plugin-log = "2"
 # The webview runs on tauri://localhost while the server sits elsewhere, and
 # the server deliberately sends no CORS headers (ADR-0008: its read endpoints
