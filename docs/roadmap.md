@@ -100,8 +100,9 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 |---|---|---|
 | 前端源码提到顶层 `web/` | ✅ 完成 | `web` 包自带 embed(go:embed 无法引用父目录),`serve` 自带面板不变 |
 | 前端传输层收敛 | ✅ 完成 | 12 处 `fetch` 与 1 处 `EventSource` 收敛到 `web/api.js`;桌面端只需替换 get/put/stream 三个方法体 |
-| Mac 菜单栏应用(F24) | 骨架完成 | Tauri 瘦客户端跑通:托盘图标 + 点击弹出面板 + 经 Rust 侧取真实数据。v1 精简视图(配额 / 今日用量),完整面板仍走浏览器。待做:燃烧速率、图标设计 |
+| Mac 菜单栏应用(F24) | 骨架完成 | Tauri 瘦客户端跑通:托盘图标 + 点击弹出面板 + 经 Rust 侧取真实数据。完整面板仍走浏览器。待做:图标设计 |
 | 服务端地址设置(F24) | ✅ 完成 | 面板内设置视图;地址存 `app_config_dir()/settings.json`,归一化与校验在 Rust 侧(6 单测);先落盘再探 `/api/v1/health`,连不上也不丢用户刚填的地址。只存地址不存 token —— 读接口本就免鉴权 |
+| 燃烧速率(F24) | ✅ 完成 | 新增 `GET /api/v1/live`(SSE `snapshot` 的单次 GET 版,复用同一个 `livePayload`),面板轮询它拿配额 + 燃烧速率;2 单测。至此 v1 精简视图三项齐全 |
 | Windows 端 | 未排期 | Tauri 跨平台,但托盘行为与视觉需单独验收 |
 
 **前置**(2026-07-28 实测):

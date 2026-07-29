@@ -90,15 +90,17 @@ header { display: flex; align-items: baseline; justify-content: space-between; }
 .meter i.serious { background: var(--serious); }
 .meter i.critical { background: var(--critical); }
 
-.today {
+/* Burn rate and today's total are the same component twice over: a label, one
+   large number, and a line of context. */
+.stat {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 8px 10px;
 }
-.today .label { font-size: 11px; color: var(--text-2); }
-.today .value { font-size: 21px; font-weight: 620; margin: 1px 0; font-variant-numeric: tabular-nums; }
-.today .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stat .label { font-size: 11px; color: var(--text-2); }
+.stat .value { font-size: 21px; font-weight: 620; margin: 1px 0; font-variant-numeric: tabular-nums; }
+.stat .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* Settings replaces the readout rather than sitting below it: at 320x420 there
    is no room for both, and a second window would fight the dismiss-on-blur
