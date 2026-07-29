@@ -57,7 +57,7 @@ const Live = {
 
     const sessions = sp.sessions || [];
     if (!sessions.length) {
-      el.innerHTML = `<p class="subtle">近 10 分钟没有会话在生成。开始使用 Claude Code,这里会实时出现。</p>`;
+      el.innerHTML = `<p class="subtle">近 10 分钟没有会话在生成。开始使用 Claude,这里会实时出现。</p>`;
       document.getElementById("lane-note").textContent = "";
       return;
     }
@@ -192,7 +192,7 @@ const Live = {
       const scope = q.scope.startsWith("seven_day:") ? q.scope.slice(10) : "";
       return `
       <div class="stat-tile">
-        <div class="label">${esc(q.source)} · ${esc(q.window_label)}${scope ? " · " + esc(scope) : ""}
+        <div class="label">${esc(sourceLabel(q.source))} · ${esc(q.window_label)}${scope ? " · " + esc(scope) : ""}
           <span class="chip authoritative">权威</span></div>
         <div class="value">${pct.toFixed(0)}<span class="unit">%</span></div>
         <div class="sub">${reset} · 观测 ${relTime(q.observed_at)}</div>

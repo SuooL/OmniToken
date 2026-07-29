@@ -2,7 +2,10 @@ package store
 
 import (
 	"fmt"
+	"sort"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 type Totals struct {
@@ -109,13 +112,21 @@ func (s *Store) Breakdown(dim string, from, to time.Time, limit int) ([]Breakdow
 	if limit <= 0 {
 		limit = 50
 	}
+	// Model ids need folding before the cut, not after: one model can arrive
+	// under several ids (Bedrock routing prefixes), and a LIMIT applied to the
+	// unfolded rows could drop a variant whose sibling made the list, quietly
+	// under-reporting the merged total. So fetch every group and fold in Go.
+	sqlLimit := limit
+	if dim == "model" {
+		sqlLimit = -1
+	}
 	rows, err := s.db.Query(
 		`SELECT `+col+` AS k, COALESCE(MAX(ts),0), `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ?
 		 GROUP BY k
 		 ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens) DESC
 		 LIMIT ?`,
-		from.UnixMilli(), to.UnixMilli(), limit)
+		from.UnixMilli(), to.UnixMilli(), sqlLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -128,5 +139,47 @@ func (s *Store) Breakdown(dim string, from, to time.Time, limit int) ([]Breakdow
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if dim == "model" {
+		out = foldModelRows(out, limit)
+	}
+	return out, nil
+}
+
+// foldModelRows merges rows whose ids canonicalise to the same model, then
+// re-sorts and applies the caller's limit.
+func foldModelRows(rows []BreakdownRow, limit int) []BreakdownRow {
+	byKey := map[string]*BreakdownRow{}
+	var order []string
+	for _, r := range rows {
+		k := model.CanonicalModel(r.Key)
+		acc, ok := byKey[k]
+		if !ok {
+			cp := r
+			cp.Key = k
+			byKey[k] = &cp
+			order = append(order, k)
+			continue
+		}
+		acc.Events += r.Events
+		acc.InputTokens += r.InputTokens
+		acc.OutputTokens += r.OutputTokens
+		acc.CacheRead += r.CacheRead
+		acc.CacheCreation += r.CacheCreation
+		acc.TotalTokens += r.TotalTokens
+		if r.LastSeen > acc.LastSeen {
+			acc.LastSeen = r.LastSeen
+		}
+	}
+	folded := make([]BreakdownRow, 0, len(order))
+	for _, k := range order {
+		folded = append(folded, *byKey[k])
+	}
+	sort.Slice(folded, func(i, j int) bool { return folded[i].TotalTokens > folded[j].TotalTokens })
+	if limit > 0 && len(folded) > limit {
+		folded = folded[:limit]
+	}
+	return folded
 }

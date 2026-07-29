@@ -1,6 +1,7 @@
 package store
 
 import (
+	"github.com/suool/omnitoken/internal/model"
 	"sort"
 	"time"
 )
@@ -59,11 +60,15 @@ func (s *Store) ModelBySource(from, to time.Time) ([]ModelSourceRow, error) {
 			&r.Cache1h, &r.Cache5m, &r.MinTS); err != nil {
 			return nil, err
 		}
+		// Fold Bedrock/Vertex routing variants onto one model name; the
+		// channel stays visible through provider elsewhere.
+		r.Model = model.CanonicalModel(r.Model)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	out = mergeModelSourceRows(out)
 
 	byModel := map[string]int64{}
 	for _, r := range out {
@@ -190,4 +195,35 @@ func addTotals(dst *Totals, src Totals) {
 	dst.CacheRead += src.CacheRead
 	dst.CacheCreation += src.CacheCreation
 	dst.TotalTokens += src.TotalTokens
+}
+
+// mergeModelSourceRows collapses rows that became duplicates once their model
+// ids were canonicalised — the same model reaching one source through two
+// routes is still one bar.
+func mergeModelSourceRows(rows []ModelSourceRow) []ModelSourceRow {
+	type key struct{ model, source string }
+	idx := map[key]int{}
+	out := make([]ModelSourceRow, 0, len(rows))
+	for _, r := range rows {
+		k := key{r.Model, r.Source}
+		i, ok := idx[k]
+		if !ok {
+			idx[k] = len(out)
+			out = append(out, r)
+			continue
+		}
+		a := &out[i]
+		a.Events += r.Events
+		a.InputTokens += r.InputTokens
+		a.OutputTokens += r.OutputTokens
+		a.CacheRead += r.CacheRead
+		a.CacheCreation += r.CacheCreation
+		a.TotalTokens += r.TotalTokens
+		a.Cache1h += r.Cache1h
+		a.Cache5m += r.Cache5m
+		if r.MinTS > 0 && (a.MinTS == 0 || r.MinTS < a.MinTS) {
+			a.MinTS = r.MinTS
+		}
+	}
+	return out
 }

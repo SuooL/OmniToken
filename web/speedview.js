@@ -80,7 +80,7 @@ const SpeedView = {
       <section class="stat-row">${this.tiles(approx, exact)}</section>
       <section class="card">
         <div class="card-head">
-          <h2>日志估算(近似) · Claude Code · 近 ${days} 天</h2>
+          <h2>日志估算(近似) · Claude · 近 ${days} 天</h2>
           <span class="chip badge approx">近似 · 由日志间隔推算</span>
         </div>
         <p class="subtle">速度 = 输出 tokens ÷ 与会话内上一事件的间隔(ADR-0006)。该间隔含思考与工具等待,系统性低估真实生成速度,只适合模型之间横向比较,不能与下方代理数据混合平均。已排除 输出 &lt; 8 tokens 或时长未知的事件。<b>Codex 不在此列</b>:它的 token_count 日志在一轮结束后才写入(间隔中位仅 30ms),不反映生成耗时;要看 Codex 速度请启用下方本地代理。</p>
