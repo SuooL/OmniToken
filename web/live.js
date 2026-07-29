@@ -58,8 +58,10 @@ const Live = {
 
     const burn = d.burn || {};
     document.getElementById("burn-rate").textContent = compact(burn.per_minute || 0) + "/min";
+    // Name what is counted: the figure excludes cache reads, and without
+    // saying so the number invites comparison with the generation speed above.
     document.getElementById("burn-sub").textContent =
-      `${burn.window_minutes} 分钟内 ${compact(burn.tokens || 0)} tokens · 输出 ${compact(burn.output_tokens || 0)}`;
+      `${burn.window_minutes} 分钟内新增 ${compact(burn.tokens || 0)} · 输出 ${compact(burn.output_tokens || 0)}`;
 
     this.renderSpeed(d.speed || {});
     this.renderWindows(d.windows || []);

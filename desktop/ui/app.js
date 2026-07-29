@@ -84,7 +84,7 @@ function renderBurn(burn) {
   document.getElementById("burn-rate").textContent = compact(b.per_minute || 0) + "/min";
   const window = b.window_minutes || 0;
   document.getElementById("burn-sub").textContent = window
-    ? `${window} 分钟内 ${compact(b.tokens || 0)} · 输出 ${compact(b.output_tokens || 0)}`
+    ? `${window} 分钟内新增 ${compact(b.tokens || 0)} · 输出 ${compact(b.output_tokens || 0)}`
     : "";
 }
 
