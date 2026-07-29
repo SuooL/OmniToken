@@ -45,6 +45,15 @@ func New(cfg *Config) (*Server, error) {
 	return srv, nil
 }
 
+// ResetOffsets makes the next collection pass re-read every local log from the
+// start, backfilling derived columns into history (see collect.State).
+//
+// It is a method on the running server rather than a standalone command
+// because the offsets live in memory once the server is up: clearing the file
+// underneath a running process would simply be overwritten by its next commit.
+// Doing it here, before Run starts the collectors, has no such race.
+func (s *Server) ResetOffsets() (int, error) { return s.state.ResetOffsets() }
+
 func (s *Server) Run() error {
 	go s.runCollectors()
 

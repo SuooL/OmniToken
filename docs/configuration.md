@@ -43,6 +43,26 @@
 | `collect.codex_dirs` | 自动探测 | Codex 日志目录(`$CODEX_HOME` 生效) |
 | `collect.ssh_hosts` | — | `[{host, name}]`,host 可用 ~/.ssh/config 别名 |
 
+### 重扫 `-rescan`
+
+```sh
+omnitoken serve -rescan          # 本次启动前清空读取位点,重扫全部本地日志
+omnitoken agent -rescan -once    # agent 侧同理,配合 -once 就是一次性回填
+```
+
+**什么时候需要**:解析器新增了一个派生字段,而历史事件里是空的。至今只有一次 ——
+ADR-0009 的 `gen_ms`(生成区间)。加字段前入库的事件不会自己长出这个值,重扫才会补。
+
+**为什么是安全的**:入库按 `event_id` 幂等(ADR-0004),重复观测直接忽略,
+只有派生列会被补上,且每行只补一次。token 数、成本、事件条数完全不变。
+
+**为什么是启动开关而不是独立命令**:进程跑起来后位点在内存里,从外面改状态文件
+会被下一次提交覆盖。因此重置发生在采集器启动之前。
+
+**代价**:一次全量重扫要读完所有日志(本机 5 万条事件量级约数十秒),期间 CPU 占用
+高于平时。另外它只能补回**日志还在**的那部分 —— Claude Code 30 天后清理日志,
+更早的历史事件仍然留在库里(N6),但它们的派生字段永远补不上了。
+
 ## Statusline `~/.omnitoken/statusline.json`
 
 供 Claude Code 状态栏调用(`omnitoken statusline`),显示**本会话 + 跨设备今日 +

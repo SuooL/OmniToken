@@ -48,8 +48,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787]
-  omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788]
+  omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-rescan]
+  omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
   omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook`)
@@ -59,6 +59,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "config file (JSON)")
 	listen := fs.String("listen", "", "listen address override")
+	rescan := fs.Bool("rescan", false, "re-read all local logs from the start once, backfilling derived fields")
 	fs.Parse(args)
 
 	path := *configPath
@@ -84,6 +85,16 @@ func runServe(args []string) {
 	if err != nil {
 		log.Fatalf("init: %v", err)
 	}
+	if *rescan {
+		n, err := srv.ResetOffsets()
+		if err != nil {
+			log.Fatalf("rescan: %v", err)
+		}
+		// Worth saying out loud: this looks alarming and is not. Re-import is
+		// idempotent on event_id, so the pass ahead can only fill in derived
+		// fields (ADR-0009's gen_ms today) — no count changes.
+		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次启动将重扫全部本地日志(幂等,只回填派生字段)", n)
+	}
 	log.Fatal(srv.Run())
 }
 
@@ -94,6 +105,7 @@ func runAgent(args []string) {
 	token := fs.String("token", "", "ingest bearer token")
 	name := fs.String("name", "", "device name (default: hostname)")
 	once := fs.Bool("once", false, "single scan+report pass, then exit")
+	rescan := fs.Bool("rescan", false, "re-read all local logs from the start once, backfilling derived fields")
 	relay := fs.String("relay", "", "also relay ingest for peers on this listen address (e.g. :8788)")
 	proxyListen := fs.String("proxy-listen", "", "run the local API proxy on this address (e.g. 127.0.0.1:8899)")
 	interval := fs.Int("interval", 0, "scan interval seconds (default 15)")
@@ -172,6 +184,15 @@ func runAgent(args []string) {
 	})
 	if err != nil {
 		log.Fatalf("init: %v", err)
+	}
+	// Before either mode: with -once this makes the single pass a full
+	// re-import, which is what a cron-driven backfill wants.
+	if *rescan {
+		n, err := a.ResetOffsets()
+		if err != nil {
+			log.Fatalf("rescan: %v", err)
+		}
+		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次将重扫全部本地日志(幂等,只回填派生字段)", n)
 	}
 	if *once {
 		n, err := a.RunOnce()

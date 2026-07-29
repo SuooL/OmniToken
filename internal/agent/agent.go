@@ -52,6 +52,11 @@ func New(cfg Config) (*Agent, error) {
 	}, nil
 }
 
+// ResetOffsets makes the next pass re-read every log from the start; see
+// collect.State.ResetOffsets. Same reason as the server's: the offsets are in
+// memory once the agent is running, so this has to happen before the loop.
+func (a *Agent) ResetOffsets() (int, error) { return a.state.ResetOffsets() }
+
 // RunOnce performs a single scan+report pass (used for backfill and cron).
 func (a *Agent) RunOnce() (int, error) {
 	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs)
