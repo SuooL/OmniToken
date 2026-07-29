@@ -27,6 +27,19 @@ func newLiveTestServer(t *testing.T) *Server {
 	return &Server{cfg: &Config{}, store: st, prices: prices, bcast: newBroadcaster()}
 }
 
+// seedEventOn is seedEvent for tests that care which device an event came from.
+func seedEventOn(t *testing.T, s *Server, id, device string, ts time.Time) {
+	t.Helper()
+	ev := model.Event{
+		EventID: id, TS: ts.UnixMilli(), Device: device, Source: "claude-code",
+		Model: "claude-sonnet-4-5", Provider: "anthropic",
+		InputTokens: 100, OutputTokens: 50, SessionID: "sess-" + device,
+	}
+	if _, err := s.store.InsertEvents([]model.Event{ev}, ts.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+}
+
 func seedEvent(t *testing.T, s *Server, id string, ts time.Time, input, output int64) {
 	t.Helper()
 	ev := model.Event{
@@ -130,5 +143,97 @@ func TestHandleLiveServesTheStreamSnapshotShape(t *testing.T) {
 	wantBurn, _ := json.Marshal(fromStream["burn"])
 	if string(gotBurn) != string(wantBurn) {
 		t.Errorf("burn = %s, want %s", gotBurn, wantBurn)
+	}
+}
+
+// The whole point of ADR-0012: a device with an agent reporting an empty
+// process list is idle, while a device with no agent at all (SSH-pulled) has no
+// process data. The payload must let the panel tell those apart, or it will
+// render "nothing open" for a machine it simply cannot see.
+func TestLivePayloadSeparatesIdleFromUnobserved(t *testing.T) {
+	s := newLiveTestServer(t)
+	now := time.Now()
+	seedEventOn(t, s, "e-mac", "mac", now.Add(-1*time.Minute))
+	seedEventOn(t, s, "e-ssh", "ssh-box", now.Add(-1*time.Minute))
+
+	// mac runs an agent and currently has nothing open; ssh-box reports nothing.
+	if _, err := s.store.ApplyProcReport(model.ProcReport{
+		Device: "mac", ObservedAt: now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("ApplyProcReport: %v", err)
+	}
+
+	payload, err := s.livePayload(now)
+	if err != nil {
+		t.Fatalf("livePayload: %v", err)
+	}
+	raw, _ := json.Marshal(payload)
+	var got struct {
+		Devices []struct {
+			Device   string `json:"device"`
+			HasProcs bool   `json:"has_procs"`
+			Running  int    `json:"running"`
+		} `json:"devices"`
+		Processes struct {
+			Sessions  []store.RunningSession `json:"sessions"`
+			Reporters []store.ProcReporter   `json:"reporters"`
+		} `json:"processes"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byName := map[string]bool{}
+	for _, d := range got.Devices {
+		byName[d.Device] = d.HasProcs
+		if d.Running != 0 {
+			t.Errorf("%s running = %d, want 0", d.Device, d.Running)
+		}
+	}
+	if !byName["mac"] {
+		t.Error("mac has an agent reporting an empty list, but has_procs is false")
+	}
+	if byName["ssh-box"] {
+		t.Error("ssh-box has no agent, but has_procs is true — that reads as 'nothing open'")
+	}
+	if len(got.Processes.Reporters) != 1 || got.Processes.Reporters[0].Device != "mac" {
+		t.Errorf("reporters = %+v, want only mac", got.Processes.Reporters)
+	}
+}
+
+// A running process is reported whether or not it has produced tokens lately —
+// that is the difference from the events-inferred session list beside it.
+func TestLivePayloadReportsIdleButOpenSession(t *testing.T) {
+	s := newLiveTestServer(t)
+	now := time.Now()
+	// Last token an hour ago: outside every event-based window.
+	seedEventOn(t, s, "old", "mac", now.Add(-time.Hour))
+	if _, err := s.store.ApplyProcReport(model.ProcReport{
+		Device: "mac", ObservedAt: now.UnixMilli(),
+		Sessions: []model.ProcSession{
+			{PID: 4242, Source: "claude-code", StartedAt: now.Add(-2 * time.Hour).UnixMilli()},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyProcReport: %v", err)
+	}
+
+	payload, err := s.livePayload(now)
+	if err != nil {
+		t.Fatalf("livePayload: %v", err)
+	}
+	raw, _ := json.Marshal(payload)
+	var got struct {
+		Sessions  []store.LiveSession `json:"sessions"`
+		Processes struct {
+			Sessions []store.RunningSession `json:"sessions"`
+		} `json:"processes"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Sessions) != 0 {
+		t.Fatalf("event-inferred sessions = %+v, want none an hour after the last token", got.Sessions)
+	}
+	if len(got.Processes.Sessions) != 1 || got.Processes.Sessions[0].PID != 4242 {
+		t.Fatalf("processes.sessions = %+v, want pid 4242 still open", got.Processes.Sessions)
 	}
 }

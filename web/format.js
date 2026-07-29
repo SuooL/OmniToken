@@ -28,6 +28,16 @@ function hours(sec) {
   return Math.round(sec / 60) + "m";
 }
 
+// Elapsed time since an instant, for things that are still going. relTime
+// says when something last happened; this says how long it has been running.
+function since(ms) {
+  if (!ms) return "—";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.round(s / 60) + "m";
+  return Math.floor(s / 3600) + "h" + Math.round((s % 3600) / 60) + "m";
+}
+
 function relTime(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return s + "s 前";

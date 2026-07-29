@@ -12,8 +12,22 @@ Agent(或中继转发)批量上报。幂等:重复 `event_id` 被忽略。
 ```
 Authorization: Bearer <token>        # 服务端配置了 token 时必带
 {"events": [Event, ...]}             # Event 见 internal/model/event.go
-→ 200 {"received": N, "inserted": M}
+{"quotas": [QuotaSnapshot, ...]}     # 权威配额观测(ADR-0007)
+{"procs":  ProcReport}               # 本机进程状态(ADR-0012)
+→ 200 {"received": N, "inserted": M, "quotas": K}
 ```
+
+三种载荷可分开发送。`procs` 是**快照而非流水**:
+
+```
+{"device": "mac", "observed_at": 1785319948062,
+ "sessions": [{"pid": 11941, "source": "claude-code", "started_at": 1785319024000}]}
+```
+
+服务端按 `(device, pid)` 覆盖写入,该设备上一次上报里没再出现的进程即视为已退出。
+`sessions` 为空是**有意义的**——它表示「这台机器上没有会话开着」,与「这台机器不上报」
+不同,后者在面板上必须显示为无数据。晚到的旧快照(`observed_at` 更早)被忽略,
+否则会让已经退出的进程复活。
 
 ## 查询
 
@@ -76,8 +90,18 @@ Cache 分析(F16):按模型命中率与节省金额、cache 写入 1h/5m TTL 结
 HTTP ingest 两条路径都触发)推 `live` 事件(≥1s 合并去抖);每 30s 注释行心跳。
 
 事件 data:`devices`(每设备最后活跃、今日用量、online 状态:active <2min /
-idle / stale >10min)、`sessions`(近 10 分钟活跃会话:设备/repo/模型/增量
-tokens)、`burn`(近 10 分钟 tokens/min)、`block`(当前 5h 窗口摘要)。
+idle / stale >10min,以及 `has_procs` / `running`)、`sessions`(近 10 分钟活跃会话:
+设备/repo/模型/增量 tokens)、`processes`(进程地面真值)、`burn`(近 10 分钟
+tokens/min)、`block`(当前 5h 窗口摘要)。
+
+`sessions` 与 `processes` 回答的是两个问题,不可互相替代:前者由事件推断
+(「谁最近花了 token」),后者读进程表(「谁开着」)。一个会话开着但在思考时只出现在
+后者,刚关掉但十分钟内有用量时只出现在前者。
+
+`processes` = `{sessions: [{device, source, pid, started_at, observed_at}],
+reporters: [{device, observed_at}], ttl_seconds: 90}`。`reporters` 是**有进程数据的
+设备**,超过 TTL 未上报即自动消失(离线的机器无法自己清理)。设备不在 `reporters`
+里意味着看不见,不等于没有会话 —— SSH 拉取的机器没有 agent,永远属于前者。
 
 ### GET /api/v1/live
 

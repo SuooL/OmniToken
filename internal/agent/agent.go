@@ -62,6 +62,21 @@ func (a *Agent) RunOnce() (int, error) {
 	return collect.ScanSources(specs, a.cfg.DeviceName, a.state, collect.LocalRepoResolver, sink, a.pushQuotas)
 }
 
+// reportProcs sends this machine's running agent CLIs (ADR-0012).
+//
+// Kept out of RunOnce, which backfill and cron also call: process state is
+// worthless the moment it is stale, so it belongs to the resident loop, not to
+// a one-shot historical import. Unlike events it is not retried either — the
+// next tick carries a fresher list, and re-sending an old one would tell the
+// server that processes which have since exited are still running.
+func (a *Agent) reportProcs() error {
+	report, err := collect.LiveProcesses(a.cfg.DeviceName, time.Now())
+	if err != nil {
+		return err
+	}
+	return a.postIngest(map[string]any{"procs": report})
+}
+
 func (a *Agent) Run() error {
 	if a.cfg.RelayListen != "" {
 		go a.runRelay()
@@ -82,6 +97,9 @@ func (a *Agent) Run() error {
 			log.Printf("agent: report failed (will retry): %v", err)
 		} else if n > 0 {
 			log.Printf("agent: reported %d events", n)
+		}
+		if err := a.reportProcs(); err != nil {
+			log.Printf("agent: process report failed: %v", err)
 		}
 		time.Sleep(a.cfg.Interval)
 	}
