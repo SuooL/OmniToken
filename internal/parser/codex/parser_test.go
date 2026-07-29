@@ -26,7 +26,7 @@ func TestParseBasic(t *testing.T) {
 			`{"input_tokens":44960,"cached_input_tokens":25600,"cache_write_input_tokens":0,"output_tokens":133,"reasoning_output_tokens":97,"total_tokens":45093}`),
 	}, "\n") + "\n"
 
-	events := Parse(strings.NewReader(lines), "dev1").Events
+	events := Parse(strings.NewReader(lines), "dev1", 0).Events
 	if len(events) != 1 {
 		t.Fatalf("want 1 event, got %d", len(events))
 	}
@@ -50,7 +50,7 @@ func TestRepeatedTokenCountSkipped(t *testing.T) {
 		tokenCount("2026-07-26T03:00:05Z", last, total),
 		tokenCount("2026-07-26T03:00:09Z", last, total), // stale repeat: totals unchanged
 	}, "\n") + "\n"
-	events := Parse(strings.NewReader(lines), "d").Events
+	events := Parse(strings.NewReader(lines), "d", 0).Events
 	if len(events) != 1 {
 		t.Fatalf("stale repeat must be skipped: got %d events", len(events))
 	}
@@ -62,7 +62,7 @@ func TestTotalsDeltaFallback(t *testing.T) {
 		tokenCount("2026-07-26T03:00:05Z", "", `{"input_tokens":100,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}`),
 		tokenCount("2026-07-26T03:00:09Z", "", `{"input_tokens":300,"cached_input_tokens":60,"cache_write_input_tokens":0,"output_tokens":125,"reasoning_output_tokens":5,"total_tokens":425}`),
 	}, "\n") + "\n"
-	events := Parse(strings.NewReader(lines), "d").Events
+	events := Parse(strings.NewReader(lines), "d", 0).Events
 	if len(events) != 2 {
 		t.Fatalf("want 2 events, got %d", len(events))
 	}
@@ -75,7 +75,7 @@ func TestTotalsDeltaFallback(t *testing.T) {
 func TestQuotaSnapshots(t *testing.T) {
 	rl := `"rate_limits":{"limit_id":"codex","primary":{"used_percent":5.0,"window_minutes":10080,"resets_at":1785635302},"secondary":{"used_percent":38.0,"window_minutes":300,"resets_at":1783736644},"plan_type":"plus"}`
 	line := `{"timestamp":"2026-07-26T03:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150},"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}},` + rl + `}}`
-	res := Parse(strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+line+"\n"), "dev1")
+	res := Parse(strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+line+"\n"), "dev1", 0)
 	if len(res.Quotas) != 2 {
 		t.Fatalf("want 2 quota snapshots (primary+secondary), got %d", len(res.Quotas))
 	}

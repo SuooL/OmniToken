@@ -80,7 +80,9 @@ type limitState struct {
 
 // Parse streams JSONL lines from r. Same offset contract as the claudecode
 // parser: a final partial line is not counted into consumed.
-func Parse(r io.Reader, device string) (res model.ParseResult) {
+// The turn-start carry (ADR-0009) is unused here: Codex files are re-parsed
+// whole on every growth (FullReparse), and Codex emits no gen_ms anyway.
+func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	var ctx struct {
 		rolloutID, sessionID, cwd, version, provider, model string
@@ -152,6 +154,12 @@ func Parse(r io.Reader, device string) (res model.ParseResult) {
 			if prevTick > 0 && ts.UnixMilli() > prevTick {
 				durationMS = min(ts.UnixMilli()-prevTick, maxSpanMS)
 			}
+			// No gen_ms for Codex (ADR-0009). Rollout files replay history on
+			// session resume, writing whole blocks with the flush time rather
+			// than the time things happened: 70% of token_count records across
+			// the last 60 rollouts share a timestamp with the line above them.
+			// Any interval measured against those is fiction, and a wrong speed
+			// is worse than an absent one.
 			res.Events = append(res.Events, model.Event{
 				EventID:             eventID(ctx.rolloutID, e.Timestamp, seq, u),
 				DurationMS:          durationMS,

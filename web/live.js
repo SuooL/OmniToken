@@ -27,6 +27,29 @@ const Live = {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   },
 
+  // Generation speed (ADR-0009). Divided by the union of generation intervals,
+  // so it says how fast the model emits — not how much of the window was busy.
+  renderSpeed(sp) {
+    const tps = sp.tps || 0;
+    document.getElementById("speed-tps").textContent =
+      tps > 0 ? tps.toFixed(1) + " tok/s" : "—";
+    document.getElementById("speed-sub").textContent = tps > 0
+      ? `输出 ${compact(sp.output_tokens || 0)} · 生成中 ${((sp.active_ms || 0) / 1000).toFixed(0)}s`
+      : "近 10 分钟没有生成";
+
+    const rows = sp.sessions || [];
+    document.getElementById("live-speed").innerHTML = rows.length ? rows.map((s) => `
+      <div class="row">
+        <div class="row-head">
+          <span class="key">${esc(s.repo || s.session_id.slice(0, 8))}
+            <span class="extra">${esc(s.device)}${s.model ? " · " + esc(s.model) : ""}</span></span>
+          <span class="val">${(s.tps || 0).toFixed(1)} <span class="extra">tok/s</span></span>
+        </div>
+        <div class="extra">输出 ${compact(s.output_tokens)} · 生成中 ${((s.active_ms || 0) / 1000).toFixed(0)}s</div>
+      </div>`).join("")
+      : `<p class="subtle">近 10 分钟没有会话在生成。</p>`;
+  },
+
   render() {
     const d = this.data;
     if (!d) return;
@@ -38,6 +61,7 @@ const Live = {
     document.getElementById("burn-sub").textContent =
       `${burn.window_minutes} 分钟内 ${compact(burn.tokens || 0)} tokens · 输出 ${compact(burn.output_tokens || 0)}`;
 
+    this.renderSpeed(d.speed || {});
     this.renderWindows(d.windows || []);
 
     const devEl = document.getElementById("live-devices");

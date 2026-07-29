@@ -87,6 +87,13 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Same window as burn so "active" means one thing across the payload.
+	// Widening it would not dilute the rate anyway: speed divides by the union
+	// of generation intervals, not by the window (ADR-0009).
+	speed, err := s.store.LiveSpeedSince(now.Add(-burnWindow), now, "")
+	if err != nil {
+		return nil, err
+	}
 
 	quotas, err := s.store.LatestQuotas(now.Add(-14 * 24 * time.Hour))
 	if err != nil {
@@ -120,6 +127,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 			"output_tokens":  output,
 			"per_minute":     total / int64(burnWindow.Minutes()),
 		},
+		// Distinct from burn on purpose: burn divides by the whole window and
+		// so includes idle time ("how much am I consuming"), speed divides by
+		// the union of generation intervals ("how fast is it generating").
+		"speed":        speed,
 		"windows":      windows,
 		"generated_at": now.UnixMilli(),
 	}, nil
