@@ -19,6 +19,12 @@ async function apiGet(path) {
   return invoke("api_get", { base: SERVER, path });
 }
 
+// Display name for a collection source; stored value stays `claude-code`.
+const SOURCE_LABELS = { "claude-code": "claude" };
+function sourceLabel(s) {
+  return SOURCE_LABELS[s] || s;
+}
+
 function compact(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
@@ -68,7 +74,7 @@ function renderQuotas(list) {
     return `
       <div class="quota">
         <div class="head">
-          <span class="name">${esc(q.source)} · ${esc(q.window_label || "")}</span>
+          <span class="name">${esc(sourceLabel(q.source))} · ${esc(q.window_label || "")}</span>
           <span class="pct">${pct}%</span>
         </div>
         <div class="meter"><i class="${severity(pct)}" style="width:${Math.min(100, pct)}%"></i></div>

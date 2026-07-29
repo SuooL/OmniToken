@@ -9,7 +9,7 @@
 const ModelsView = {
   // 固定槽位:即使某来源当前无数据也占住它的色号,换时间窗颜色不会漂移。
   ORDER: ["claude-code", "codex", "proxy"],
-  LABEL: { "claude-code": "Claude Code", codex: "Codex", proxy: "本地代理" },
+  LABEL: { "claude-code": "Claude", codex: "Codex", proxy: "本地代理" },
   PALETTE: ["--series-1", "--series-2", "--series-3", "--series-4"],
   OTHER: "其他",
   DAYS: 30,
