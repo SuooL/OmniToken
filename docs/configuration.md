@@ -36,7 +36,7 @@
 | `device_name` | hostname | 本机作为被统计设备的名字 |
 | `pricing_overrides` | — | `{模型: {input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok}}`(单位 USD/百万 token) |
 | `worktime_idle_minutes` | 5 | 工时空闲停表阈值(ADR-0006) |
-| `quota_poll_minutes` | 5 | 轮询 Anthropic OAuth 用量端点取权威 5h/周配额的间隔(ADR-0007)。**仅订阅计费生效**:F9 探测判为 API key 计费、或本机无订阅凭据时完全跳过(API 按量付费无窗口概念) |
+| `statusline_cache_path` | `~/.omnitoken/statusline-cache.json` | 定位 `omnitoken statusline` 的产物;配额从它旁边的 `rate-limits.json` 读取(ADR-0011)。不再轮询任何端点 |
 | `collect.interval_seconds` | 15 | 本地扫描周期;SSH 拉取自动降频至 ≥60s |
 | `collect.local` | true | 是否采集本机日志 |
 | `collect.local_dirs` | 自动探测 | Claude Code 日志目录 |
@@ -48,6 +48,14 @@
 供 Claude Code 状态栏调用(`omnitoken statusline`),显示**本会话 + 跨设备今日 +
 权威配额**。每次渲染都会调用,因此:网络超时 200ms、缓存 10s 内直接复用、
 服务端不可达时用上次缓存并加 `⟳` 标记,**永不阻塞、永不报错退出**。
+
+> **接入它是 Claude 配额的唯一来源**(ADR-0011)。渲染的同时,它会把 Claude Code
+> 递来的 `rate_limits` 落到 `~/.omnitoken/rate-limits.json`,再由本机采集器读走。
+> 不接入就没有 Claude 的 5h / 周配额数据 —— OmniToken 不再调 OAuth 端点,也不会去
+> 读其它状态栏工具的产物。
+>
+> `statusLine` 槽位只能配一条命令。若你原本用的是别的状态栏工具,接入 OmniToken
+> 意味着替换掉它。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|

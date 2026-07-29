@@ -37,14 +37,13 @@ func (s *Server) runCollectors() {
 		return err
 	}
 	localSpecs := collect.LocalSpecs(s.cfg.Collect.LocalDirs, s.cfg.Collect.CodexDirs)
-	// Authoritative Claude subscription quota (ADR-0007): polled, not parsed.
-	quotaPoller := collect.NewClaudeQuotaPoller(s.cfg.DeviceName, probe)
-	quotaEvery := max(1, int(time.Duration(s.cfg.QuotaPollMinutes)*time.Minute/interval))
+	// Claude quota arrives through the status line, not an API call
+	// (ADR-0011): Claude Code hands `omnitoken statusline` its own
+	// account-level numbers, which get dropped in a file this reads.
+	quotaReader := collect.NewStatusQuotaReader(s.cfg.DeviceName, s.cfg.StatuslineCachePath)
 	for tick := 0; ; tick++ {
-		if s.cfg.LocalEnabled() && tick%quotaEvery == 0 {
-			if qs, err := quotaPoller.Fetch(time.Now()); err != nil {
-				log.Printf("quota[claude]: %v", err)
-			} else if len(qs) > 0 {
+		if s.cfg.LocalEnabled() {
+			if qs := quotaReader.Collect(time.Now()); len(qs) > 0 {
 				if err := quotaSink(qs); err != nil {
 					log.Printf("quota[claude]: store: %v", err)
 				}
