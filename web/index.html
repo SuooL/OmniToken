@@ -17,18 +17,18 @@
          live usage lead; quota sits under "额度" as a secondary concern. -->
     <div class="tabs" id="nav">
       <span class="tab-group">正在发生</span>
-      <a href="#live" data-view="live">实时</a>
-      <a href="#speed" data-view="speed">速度</a>
+      <a href="#live" data-view="live" data-icon="live">实时</a>
+      <a href="#speed" data-view="speed" data-icon="speed">速度</a>
       <span class="tab-group">回顾</span>
-      <a href="#overview" data-view="overview">总览</a>
-      <a href="#reports" data-view="reports">报表</a>
-      <a href="#details" data-view="details">明细</a>
+      <a href="#overview" data-view="overview" data-icon="overview">总览</a>
+      <a href="#reports" data-view="reports" data-icon="reports">报表</a>
+      <a href="#details" data-view="details" data-icon="details">明细</a>
       <span class="tab-group">切面</span>
-      <a href="#devices" data-view="devices">设备</a>
-      <a href="#models" data-view="models">模型</a>
-      <a href="#cache" data-view="cache">缓存</a>
+      <a href="#devices" data-view="devices" data-icon="devices">设备</a>
+      <a href="#models" data-view="models" data-icon="models">模型</a>
+      <a href="#cache" data-view="cache" data-icon="cache">缓存</a>
       <span class="tab-group">其它</span>
-      <a href="#settings" data-view="settings">设置</a>
+      <a href="#settings" data-view="settings" data-icon="settings">设置</a>
     </div>
   </nav>
 
@@ -121,7 +121,9 @@
   <div id="tooltip" class="tooltip" hidden></div>
 </div>
 </div>
+<script src="vendor/echarts.min.js"></script>
 <script src="api.js"></script>
+<script src="icons.js"></script>
 <script src="format.js"></script>
 <script src="overview.js"></script>
 <script src="live.js"></script>

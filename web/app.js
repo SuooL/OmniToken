@@ -64,6 +64,9 @@ function route() {
   currentView = next;
   Views[next].el().hidden = false;
   Views[next].enter();
+  // The view was hidden until a moment ago; anything canvas-based needs to be
+  // told its real size now that it has one.
+  requestAnimationFrame(() => resizeChartsIn(Views[next].el()));
   document.querySelectorAll("#nav a").forEach((a) => {
     a.toggleAttribute("aria-current", a.dataset.view === next);
   });
@@ -85,6 +88,12 @@ const PAGE_SUB = {
   cache: "命中率与节省",
   settings: "定价覆盖与偏好",
 };
+
+// Icons are injected rather than written into the markup: one source of paths,
+// and the nav keeps working if a view is added without one.
+document.querySelectorAll("#nav a[data-icon]").forEach((a) => {
+  a.insertAdjacentHTML("afterbegin", icon(a.dataset.icon));
+});
 
 addEventListener("hashchange", route);
 

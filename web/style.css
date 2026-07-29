@@ -11,22 +11,22 @@
   color-scheme: dark;
   /* RGB triplets, so borders / glows / fills can be tinted from one hue
      instead of hard-coding a second colour that drifts out of step. */
-  --glass-rgb:   26, 31, 39;
+  --glass-rgb:   38, 41, 50;
   --overlay-rgb: 255, 255, 255;
   --line-rgb:    232, 238, 244;
 
-  --page:           #10141a;
+  --page:           #1b1e26;
   --surface-1:      rgba(var(--glass-rgb), 0.62);
   --surface-2:      rgba(var(--overlay-rgb), 0.05);
-  --glass:          rgba(var(--glass-rgb), 0.62);
+  --glass:          rgba(var(--glass-rgb), 0.66);
   --glass-filter:   blur(30px) saturate(118%);
   --sheen:          rgba(var(--overlay-rgb), 0.08);
   --lift:           0 14px 38px rgba(0,0,0,0.34);
   --lift-hi:        0 20px 52px rgba(0,0,0,0.44);
 
   --text-primary:   #eef5fb;
-  --text-secondary: #a3adbb;
-  --text-muted:     #6d7889;
+  --text-secondary: #b3bdcc;
+  --text-muted:     #8390a3;
   --grid:           rgba(var(--line-rgb), 0.10);
   --baseline:       rgba(var(--line-rgb), 0.20);
   --border:         rgba(var(--line-rgb), 0.14);
@@ -111,8 +111,10 @@ body::before {
   content: "";
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background:
-    radial-gradient(70% 55% at 12% -5%, rgba(77,163,255,0.16), transparent 70%),
-    radial-gradient(60% 50% at 92% 0%, rgba(139,124,246,0.13), transparent 68%);
+    radial-gradient(58% 48% at 8% -8%,  rgba(77,157,250,0.20), transparent 70%),
+    radial-gradient(52% 44% at 62% -6%, rgba(155,123,245,0.17), transparent 68%),
+    radial-gradient(46% 42% at 100% 8%, rgba(63,208,168,0.14), transparent 66%),
+    radial-gradient(60% 50% at 78% 100%, rgba(255,180,84,0.10), transparent 70%);
 }
 .viz-root { position: relative; z-index: 1; }
 
@@ -499,3 +501,30 @@ a.ghost-btn { text-decoration: none; }
   .lane .track { grid-column: 1 / -1; grid-row: 2; }
   .axis { margin-left: 0; }
 }
+
+/* ── Icons ───────────────────────────────────────────────────────────────
+   Stroked, currentColor, so each one takes the tint of where it sits. */
+.ico { width: 15px; height: 15px; flex: none; }
+.tabs a { display: flex; align-items: center; gap: 9px; }
+.tabs a .ico { color: var(--text-muted); transition: color 0.14s ease; }
+.tabs a:hover .ico { color: var(--text-secondary); }
+
+/* Each destination carries its own hue, so the rail reads as a set of places
+   rather than a list of words — and the active one lights up in that hue. */
+.tabs a[data-icon="live"]     { --ic: var(--teal); }
+.tabs a[data-icon="speed"]    { --ic: var(--accent); }
+.tabs a[data-icon="overview"] { --ic: var(--violet); }
+.tabs a[data-icon="reports"]  { --ic: var(--amber); }
+.tabs a[data-icon="details"]  { --ic: var(--rose); }
+.tabs a[data-icon="devices"]  { --ic: var(--accent); }
+.tabs a[data-icon="models"]   { --ic: var(--violet); }
+.tabs a[data-icon="cache"]    { --ic: var(--teal); }
+.tabs a[data-icon="settings"] { --ic: var(--text-secondary); }
+.tabs a[aria-current] .ico { color: var(--ic); filter: drop-shadow(0 0 6px var(--ic)); }
+.tabs a[aria-current] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ic) 22%, transparent), transparent 78%);
+  border-left-color: var(--ic);
+  box-shadow: -1px 0 10px -2px color-mix(in srgb, var(--ic) 55%, transparent);
+}
+.card-head h2 { display: flex; align-items: center; gap: 8px; }
+.card-head h2 .ico { width: 14px; height: 14px; color: var(--accent); }

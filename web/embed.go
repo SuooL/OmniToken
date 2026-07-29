@@ -14,5 +14,9 @@ import "embed"
 //
 // embed.go itself is not matched by these patterns.
 //
-//go:embed index.html style.css *.js
+// vendor/ holds prebuilt third-party libraries committed as-is (ADR-0010):
+// no build step, and they ship inside the binary so the panel renders without
+// reaching a CDN.
+//
+//go:embed index.html style.css *.js vendor/echarts.min.js
 var FS embed.FS

@@ -65,61 +65,60 @@ const Overview = {
 
   renderDaily(daily) {
     const el = document.getElementById("daily-chart");
-    document.getElementById("daily-legend").innerHTML = SERIES.map((s) =>
-      `<span class="item"><span class="swatch" style="background:${cssVar(s.varName)}"></span>${s.label}</span>`
-    ).join("");
-    if (!daily.length) { el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`; return; }
-
-    const W = 1060, H = 240, padL = 46, padR = 8, padT = 10, padB = 22;
-    const plotW = W - padL - padR, plotH = H - padT - padB;
-    const days = this.fillDays(daily);
-    const maxTotal = Math.max(...days.map((r) => r.total_tokens), 1);
-    const yMax = this.niceCeil(maxTotal);
-    const slot = plotW / days.length;
-    const barW = Math.min(24, slot * 0.7);
-    const y = (v) => padT + plotH * (1 - v / yMax);
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日 token 用量堆叠柱状图">`;
-    for (let i = 1; i <= 4; i++) {
-      const gy = padT + (plotH * i) / 4;
-      const val = yMax * (1 - i / 4);
-      svg += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${cssVar("--grid")}" stroke-width="1"/>`;
-      if (val > 0) svg += `<text x="${padL - 6}" y="${gy + 4}" text-anchor="end">${compact(val)}</text>`;
+    document.getElementById("daily-legend").innerHTML = "";
+    if (!daily.length) {
+      el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
+      return;
     }
-    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${compact(yMax)}</text>`;
-    svg += `<line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="${cssVar("--baseline")}" stroke-width="1"/>`;
-
-    const labelEvery = Math.ceil(days.length / 8);
-    days.forEach((row, i) => {
-      const cx = padL + slot * i + slot / 2;
-      const x = cx - barW / 2;
-      let cum = 0;
-      let segs = "";
-      SERIES.forEach((s) => {
-        const v = row[s.key];
-        if (!v) return;
-        const y0 = y(cum), y1 = y(cum + v);
-        cum += v;
-        const top = y1, hgt = y0 - y1;
-        if (hgt < 0.5) return;
-        const isTop = cum === row.total_tokens;
-        const gapTop = isTop ? 0 : 1, gapBot = cum - v === 0 ? 0 : 1;
-        const gh = Math.max(hgt - gapTop - gapBot, 0.5);
-        const gy = top + gapTop;
-        const color = cssVar(s.varName);
-        segs += isTop
-          ? `<path d="${this.roundedTop(x, gy, barW, gh, Math.min(4, gh / 2))}" fill="${color}"/>`
-          : `<rect x="${x}" y="${gy}" width="${barW}" height="${gh}" fill="${color}"/>`;
-      });
-      svg += segs;
-      if (i % labelEvery === 0) {
-        svg += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${row.bucket.slice(5)}</text>`;
-      }
-      svg += `<rect class="hit" data-i="${i}" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${plotH}" fill="transparent"/>`;
-    });
-    svg += `</svg>`;
-    el.innerHTML = svg;
-    this.attachTooltip(el, days);
+    // ECharts rather than the hand-rolled SVG this used to be (ADR-0010):
+    // gradients, hover, and a shared tooltip are what the drawing code was
+    // never going to be worth writing by hand.
+    el.style.height = "300px";
+    const chart = echartsFor(el);
+    const days = this.fillDays(daily);
+    chart.setOption({
+      grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        ...tooltipStyle(),
+        valueFormatter: (v) => compact(v || 0),
+      },
+      legend: {
+        top: 0, left: 0, itemWidth: 9, itemHeight: 9, itemGap: 14,
+        textStyle: { color: cssVar("--text-secondary"), fontSize: 11, fontFamily: chartFont() },
+      },
+      xAxis: {
+        type: "category",
+        data: days.map((d) => d.bucket.slice(5)),
+        axisLine: { lineStyle: { color: cssVar("--baseline") } },
+        axisTick: { show: false },
+        axisLabel: { color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont() },
+      },
+      yAxis: {
+        type: "value",
+        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        axisLabel: {
+          color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont(),
+          formatter: (v) => compact(v),
+        },
+      },
+      series: SERIES.map((sname, i) => ({
+        name: sname.label,
+        type: "bar",
+        stack: "tokens",
+        barMaxWidth: 26,
+        // Rounded only on the topmost segment, so the stack reads as one column.
+        itemStyle: {
+          color: gradientOf(cssVar(sname.varName)),
+          borderRadius: i === SERIES.length - 1 ? [4, 4, 0, 0] : 0,
+        },
+        emphasis: { focus: "series" },
+        data: days.map((d) => d[sname.key] || 0),
+      })),
+      animationDuration: 420,
+      animationEasing: "cubicOut",
+    }, true);
   },
 
   fillDays(daily) {

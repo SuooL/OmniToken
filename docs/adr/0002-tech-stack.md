@@ -1,6 +1,7 @@
 # ADR-0002 技术栈:Go 无 CGO 单二进制 + SQLite + 内嵌前端
 
-状态:已采纳(2026-07-26)
+状态:已采纳(2026-07-26)。前端条款经 [ADR-0010](0010-vendored-frontend-libs.md) 修订
+(2026-07-29):允许 vendored 预构建库,仍不引入构建链。
 
 ## 背景
 
@@ -17,5 +18,6 @@
 ## 后果
 
 - 服务器部署 = scp 一个文件 + systemd unit;备份 = 拷一个 .db 文件;
-- 放弃了 npm 图表生态,图表手写 SVG(遵循 dataviz 规范,已通过校验);
+- ~~放弃了 npm 图表生态,图表手写 SVG~~ —— 2026-07-29 由 ADR-0010 修订:
+  预构建库可直接 vendored 进 `web/vendor/`,构建链仍然没有;
 - 若未来事件量超出 SQLite 舒适区(亿级),再以 ADR 讨论换 DuckDB/ClickHouse。
