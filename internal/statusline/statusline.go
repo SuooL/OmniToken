@@ -83,6 +83,24 @@ type sessionInput struct {
 		TotalInputTokens  int64 `json:"total_input_tokens"`
 		TotalOutputTokens int64 `json:"total_output_tokens"`
 	} `json:"context_window"`
+	// RateLimits is how quota reaches OmniToken (ADR-0011). Claude Code hands
+	// the status line its own authoritative numbers, which is why there is no
+	// longer an OAuth poller: the data arrives here, already account-level,
+	// with no credentials to read and no endpoint to call.
+	RateLimits *struct {
+		FiveHour       *rateWindow `json:"five_hour"`
+		SevenDay       *rateWindow `json:"seven_day"`
+		SevenDaySonnet *rateWindow `json:"seven_day_sonnet"`
+		SevenDayOpus   *rateWindow `json:"seven_day_opus"`
+	} `json:"rate_limits"`
+}
+
+// rateWindow mirrors one bucket of the status-line payload. resets_at is epoch
+// SECONDS here — the OAuth endpoint used RFC3339, so this is not a drop-in
+// swap and the collector converts.
+type rateWindow struct {
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       int64   `json:"resets_at"`
 }
 
 // serverData is what we cache: only the fields the line renders.
@@ -111,6 +129,12 @@ func Run(cfg Config, stdin io.Reader, stdout io.Writer) error {
 			_ = json.Unmarshal(raw, &sess) // malformed input must not break the line
 		}
 	}
+
+	// Capture before rendering: a status line that fails to draw still leaves
+	// usable quota behind. Errors are swallowed on purpose — this command's
+	// contract is to print a line, and anything on stdout or a non-zero exit
+	// would corrupt the user's status bar.
+	captureRateLimits(cfg, sess, time.Now())
 
 	data, stale := loadOrFetch(cfg)
 	line := render(cfg, sess, data, stale)

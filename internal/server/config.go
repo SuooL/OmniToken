@@ -22,9 +22,10 @@ type Config struct {
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides,omitempty"`
 	// WorktimeIdleMinutes: idle gap that stops the work clock (F8); default 5.
 	WorktimeIdleMinutes int `json:"worktime_idle_minutes,omitempty"`
-	// QuotaPollMinutes: how often to poll Anthropic's OAuth usage endpoint
-	// for authoritative 5h/weekly quota (ADR-0007); default 5.
-	QuotaPollMinutes int `json:"quota_poll_minutes,omitempty"`
+	// StatuslineCachePath locates what `omnitoken statusline` leaves behind.
+	// Quota is read from a file beside it (ADR-0011) rather than polled from
+	// Anthropic, so this is the only knob the quota channel needs.
+	StatuslineCachePath string `json:"statusline_cache_path,omitempty"`
 
 	Collect struct {
 		IntervalSeconds int               `json:"interval_seconds"`
@@ -101,8 +102,9 @@ func (c *Config) applyDefaults() {
 	if c.WorktimeIdleMinutes <= 0 {
 		c.WorktimeIdleMinutes = 5
 	}
-	if c.QuotaPollMinutes <= 0 {
-		c.QuotaPollMinutes = 5
+	if c.StatuslineCachePath == "" {
+		home, _ := os.UserHomeDir()
+		c.StatuslineCachePath = filepath.Join(home, ".omnitoken", "statusline-cache.json")
 	}
 	if len(c.Collect.LocalDirs) == 0 {
 		c.Collect.LocalDirs = DefaultLocalClaudeDirs()

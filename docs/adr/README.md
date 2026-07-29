@@ -13,3 +13,4 @@ ADR 标注 supersedes,不改写历史。
 | [0006](0006-worktime-semantics.md) | 工作时长语义:事件区间化 + 双指标(投入/代理运转) | 已采纳 |
 | [0007](0007-quota-observation.md) | 配额观测:权威限额数据(Codex 5h/周)优先,推断窗口兜底 | 已采纳 |
 | [0008](0008-desktop-client.md) | 桌面端形态:Tauri 菜单栏瘦客户端,前端源码 web 与桌面共用 | 已采纳 |
+| [0011](0011-quota-via-statusline.md) | 配额改由 statusLine 捕获(取代 0007 的 OAuth 通道) | 已采纳 |

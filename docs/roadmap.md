@@ -33,7 +33,7 @@ Live 页在两台以上设备同时使用时正确反映。
 |---|---|---|
 | 本地代理(F14) | ✅ 完成 | 手写转发 + tee 流式解析,精确 TTFT/耗时,key 指纹多账号,5 单测含 race |
 | 速度页(F15) | ⚠️ 口径已修正 | 见 ADR-0009:原「近似」口径是逐条比值再平均,分母含空闲,算出 Sonnet 5 = 0.7 tok/s 这类假数;已改为并集口径。Codex 仍不覆盖,但理由更正为 rollout 回放(70% 记录时间戳是刷盘时刻) |
-| 权威配额(ADR-0007) | ✅ 完成 | Claude 走 OAuth 用量 API(5h/周/分模型),Codex 解析 rate_limits;实时页权威优先、推断标注 |
+| 权威配额(ADR-0007 → ADR-0011) | ✅ 完成 | Codex 解析 rollout 的 rate_limits;**Claude 已于 2026-07-29 改为从 statusLine 载荷捕获**,移除 OAuth 轮询与凭据读取(见 ADR-0011)。实时页权威优先、推断标注 |
 | Cache 分析(F16) | ✅ 完成(提前) | 见 M2 |
 | 长尾工具覆盖(F17) | 明确不做 | 见下方「明确不做」小节 |
 | 发布工程 | ✅ 完成 | Makefile 交叉编译 + systemd/launchd 模板(deploy/);版本号由 `git describe` 派生并经 ldflags 注入;`release.yml` 手动触发即合 dev→main、打 tag、发布五平台产物与 SHA256SUMS。首个版本 v0.0.1 已发布并校验(校验和一致、`omnitoken version` 输出注入值) |
