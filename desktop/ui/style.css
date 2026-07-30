@@ -30,7 +30,7 @@ body {
 
 .eyebrow {
   font-family: system-ui, -apple-system, "SF Pro Text", sans-serif;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 650;
   letter-spacing: 0.07em;
   color: var(--text-muted);
@@ -56,7 +56,7 @@ footer {
 .link,
 .device-head {
   font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 0.03em;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
@@ -114,13 +114,13 @@ body.stale #main { opacity: 0.62; }
 }
 .risk-arrow { color: var(--text-muted); }
 .risk-projected {
-  font: 600 12px/1 var(--font-display);
+  font: 600 13px/1 var(--font-display);
   color: var(--text-secondary);
 }
 .risk.breach .risk-projected { color: var(--breach); }
 .risk-reset {
   margin-left: auto;
-  font-size: 9px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -130,7 +130,7 @@ body.stale #main { opacity: 0.62; }
 .track .baseline { stroke: var(--hairline); }
 .track .ceiling { stroke: var(--text-muted); stroke-opacity: 0.4; }
 .track .ceiling-tag {
-  font: 600 8px system-ui, sans-serif;
+  font: 600 13px system-ui, sans-serif;
   fill: var(--text-muted);
 }
 .track .past {
@@ -154,7 +154,7 @@ body.stale #main { opacity: 0.62; }
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   gap: 6px;
-  font-size: 8.5px;
+  font-size: 13px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -181,11 +181,14 @@ body.stale #main { opacity: 0.62; }
 }
 .session-row {
   display: grid;
-  grid-template-columns: 48px minmax(48px, 1fr) minmax(48px, 0.9fr) minmax(48px, 0.9fr) 48px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "tool repo rate"
+    "model device rate";
   align-items: center;
   gap: 7px;
   min-width: 0;
-  font-size: 9.5px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 .session-row > span {
@@ -194,13 +197,16 @@ body.stale #main { opacity: 0.62; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.session-tool { color: var(--text-primary); font-weight: 650; }
-.session-rate { text-align: right; color: var(--text-primary); }
+.session-tool { grid-area: tool; color: var(--text-primary); font-weight: 650; }
+.session-repo { grid-area: repo; }
+.session-model { grid-area: model; }
+.session-device { grid-area: device; }
+.session-rate { grid-area: rate; text-align: right; color: var(--text-primary); }
 
 .more {
   margin-top: 4px;
   text-align: right;
-  font-size: 9px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -214,9 +220,9 @@ body.stale #main { opacity: 0.62; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 13px;
 }
-.summary-tail { font-size: 9px; color: var(--text-muted); white-space: nowrap; }
+.summary-tail { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
 
 .readouts {
   display: grid;
@@ -227,10 +233,10 @@ body.stale #main { opacity: 0.62; }
 }
 .readouts > div { display: flex; align-items: baseline; gap: 8px; }
 .readouts > div + div { border-left: 1px solid var(--hairline); padding-left: 12px; }
-.readouts .fig { font-size: 12px; font-weight: 600; }
+.readouts .fig { font-size: 14px; font-weight: 600; }
 
 .devices { min-height: 46px; }
-.section-head { font-size: 9px; color: var(--text-muted); }
+.section-head { font-size: 13px; color: var(--text-muted); }
 .device-list {
   display: flex;
   flex-direction: column;
@@ -242,7 +248,7 @@ body.stale #main { opacity: 0.62; }
   grid-template-columns: 7px minmax(60px, 1fr) auto 34px;
   align-items: center;
   gap: 7px;
-  font-size: 9px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 .device-name {
@@ -259,7 +265,7 @@ body.stale #main { opacity: 0.62; }
 .settings input {
   width: 100%;
   padding: 7px 9px;
-  font: 12px var(--font-display);
+  font: 13px var(--font-display);
   color: var(--text-primary);
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border: 1px solid var(--hairline);
@@ -268,7 +274,7 @@ body.stale #main { opacity: 0.62; }
 .settings input:focus-visible { outline: none; border-color: var(--signal); }
 .settings .hint,
 .settings .msg {
-  font-size: 9.5px;
+  font-size: 13px;
   line-height: 1.55;
   color: var(--text-muted);
 }
@@ -285,7 +291,7 @@ button { font: inherit; cursor: pointer; }
 }
 .settings button {
   padding: 5px 12px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-primary);
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border: 1px solid var(--hairline);
@@ -305,10 +311,21 @@ footer {
 }
 .textlink {
   padding: 0;
-  font: 9.5px system-ui, -apple-system, sans-serif;
+  font: 13px system-ui, -apple-system, sans-serif;
   color: var(--text-muted);
   background: none;
   border: 0;
 }
 .textlink:hover { color: var(--text-secondary); }
-.error { padding: 6px 0; font-size: 9.5px; line-height: 1.5; }
+.error { padding: 6px 0; font-size: 13px; line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

@@ -154,9 +154,9 @@ function renderSessions(view) {
   $("session-list").innerHTML = view.sessions.map((session) => `
     <div class="session-row">
       <span class="session-tool" title="${esc(session.tool)}">${esc(session.tool)}</span>
-      <span title="${esc(session.repository)}">${esc(session.repository)}</span>
-      <span title="${esc(session.model)}">${esc(session.model)}</span>
-      <span title="${esc(session.device)}">${esc(session.device)}</span>
+      <span class="session-repo" title="${esc(session.repository)}">${esc(session.repository)}</span>
+      <span class="session-model" title="${esc(session.model)}">${esc(session.model)}</span>
+      <span class="session-device" title="${esc(session.device)}">${esc(session.device)}</span>
       <span class="session-rate">${session.rate.toFixed(0)} t/s</span>
     </div>`).join("");
   showMore("sessions-more", view.sessions_more);
