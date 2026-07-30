@@ -10,6 +10,47 @@
 // The desktop build therefore swaps the bodies of get / put / stream for calls
 // into its Rust side, which is not bound by the same-origin policy. Nothing
 // outside this file needs to know which transport is in use.
+class APIError extends Error {
+  constructor(path, status) {
+    const detail = status === 401
+      ? "401 未授权:设置页填写读取 token"
+      : `HTTP ${status}`;
+    super(`${path} → ${detail}`);
+    this.name = "APIError";
+    this.status = status;
+  }
+}
+
+async function apiFetch(path, init = {}) {
+  const request = Object.assign({}, init, {
+    headers: Api.headers(init.headers),
+  });
+  const res = await fetch(Api.url(path), request);
+  if (!res.ok) throw new APIError(path, res.status);
+  return res;
+}
+
+function downloadFilename(filename) {
+  return String(filename || "download")
+    .replace(/[\\/\\:*?"<>|]/g, "-")
+    .trim() || "download";
+}
+
+async function downloadAPI(path, filename) {
+  const res = await apiFetch(path);
+  const objectURL = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = objectURL;
+  link.download = downloadFilename(filename);
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    URL.revokeObjectURL(objectURL);
+  }
+}
+
 const Api = {
   // Empty means same origin, which is what the browser wants. The desktop
   // client sets an absolute base such as "http://192.0.2.1:8787".
@@ -58,14 +99,12 @@ const Api = {
   },
 
   async get(path) {
-    const res = await fetch(this.url(path), { headers: this.headers() });
+    const res = await apiFetch(path);
     // Every caller sits inside a try/catch that surfaces the message, so
     // failing loudly here beats letting res.json() throw a parse error on
     // whatever the server returned instead of JSON. 401 is named: "wrong
     // token" and "server not running" are different problems with different
     // fixes, and a bare status number does not tell them apart.
-    if (res.status === 401) throw new Error(`${path} → 401 未授权:设置页填写读取 token`);
-    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
     return res.json();
   },
 

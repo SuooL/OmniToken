@@ -36,9 +36,9 @@ const Reports = {
             `<button class="ghost-btn" data-gran="${k}">${l}</button>`).join("")}</div>
           <div class="btn-group" id="reports-range">${REPORT_RANGES.map((d) =>
             `<button class="ghost-btn" data-days="${d}">近 ${d} 天</button>`).join("")}</div>
-          <div class="btn-group">
-            <a class="ghost-btn" id="reports-csv" href="#">导出 CSV</a>
-            <a class="ghost-btn" id="reports-json" href="#" target="_blank">导出 JSON</a>
+          <div class="btn-group" id="reports-export">
+            <button class="ghost-btn" type="button" data-format="csv">导出 CSV</button>
+            <button class="ghost-btn" type="button" data-format="json">导出 JSON</button>
           </div>
         </div>
       </div>
@@ -57,6 +57,10 @@ const Reports = {
       this.days = +btn.dataset.days;
       this.load();
     });
+    root.querySelector("#reports-export").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-format]");
+      if (btn) this.download(btn.dataset.format);
+    });
   },
 
   syncControls() {
@@ -64,10 +68,19 @@ const Reports = {
       b.setAttribute("aria-pressed", String(b.dataset.gran === this.granularity)));
     document.querySelectorAll("#reports-range [data-days]").forEach((b) =>
       b.setAttribute("aria-pressed", String(+b.dataset.days === this.days)));
-    document.getElementById("reports-csv").href = Api.url(this.apiPath("csv"));
-    document.getElementById("reports-json").href = Api.url(this.apiPath("json"));
     const g = REPORT_GRANULARITIES.find(([k]) => k === this.granularity);
     document.getElementById("reports-note").textContent = `近 ${this.days} 天 · 按${g[1]}`;
+  },
+
+  async download(format) {
+    const status = document.getElementById("reports-status");
+    status.hidden = true;
+    try {
+      await downloadAPI(this.apiPath(format), `omnitoken-${this.granularity}-${this.days}d.${format}`);
+    } catch (e) {
+      status.textContent = `导出失败:${e.message}`;
+      status.hidden = false;
+    }
   },
 
   async load() {
