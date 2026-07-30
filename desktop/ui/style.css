@@ -1,39 +1,8 @@
-/* Menubar popover (ADR-0014).
-
-   Colour, type and radius come from tokens.css — the same file the nine-page
-   panel loads, so the two surfaces cannot drift into looking like different
-   products. Everything here is this surface's own geometry.
-
-   The design brief this answers: a menubar glance has one question in it —
-   "am I going to run out before the window resets". So the popover is built
-   around a forecast, not around a fullness gauge. The tray glyph already says
-   roughly-how-full in 18pt; spending the popover on a larger copy of that would
-   be a second reading of the same thing.
-
-   Two disciplines hold the whole thing together:
-
-   1. ONE HUE MEANS CONSUMPTION. --accent for what has happened, the same accent
-      ghosted for what is forecast, and --meter-critical for one thing only: a
-      forecast that crosses the ceiling. The popover deliberately drops the
-      75/90 severity ramp the panel uses on its bars — here severity is carried
-      by geometry (does the dashed line clear the ceiling?), which says strictly
-      more than a hue could, and keeping both would be saying it twice.
-
-   2. LINE STYLE IS EPISTEMOLOGY. Dotted where the path is unknown, a solid dot
-      for the single authoritative reading, dashed for the projection. The
-      project's iron law is 权威优先,推断标注 — this is that law drawn. A smooth
-      ramp from 0 to "now" would be the obvious chart and it would be a lie: the
-      payload carries the level now, never the path taken to it.
-
-   No cards. Hairlines and full-bleed rows: three bordered boxes in a row is the
-   dashboard default, and it is what made the previous pass read as templated. */
+/* Activity-first menubar popover (system redesign §7). Shared colours and type
+   tokens live in tokens.css; this file owns only the popover's composition. */
 
 * { box-sizing: border-box; margin: 0; }
-
-/* The views below set `display`, which as a class selector outranks the user
-   agent's `[hidden]` rule — without this the hidden view renders anyway. */
 [hidden] { display: none !important; }
-
 html, body { height: 100%; background: transparent; }
 
 body {
@@ -44,317 +13,302 @@ body {
 }
 
 .panel {
-  /* Roles, not raw tokens: named for what they mean here so the two disciplines
-     above are enforced by the names themselves. */
-  --signal:   var(--accent);
+  --signal: var(--accent);
   --forecast: color-mix(in srgb, var(--accent) 62%, transparent);
-  --wash:     color-mix(in srgb, var(--accent) 12%, transparent);
-  --breach:   var(--meter-critical);
+  --breach: var(--meter-critical);
   --hairline: color-mix(in srgb, var(--text-muted) 30%, transparent);
-
   height: 100%;
-  /* A real ground, at 62%. The window is transparent and macOS's `popover`
-     material supplies the translucency (tauri.conf.json → windowEffects), so it
-     is tempting to paint nothing and let the material work. That fails in the
-     one case that matters: if the effect does not apply, near-white text lands
-     on a transparent window and the popover is unreadable rather than merely
-     plain. 62% keeps the desktop visibly tinting through.
-     Radius matches windowEffects.radius — a mismatch shows as a bright sliver
-     in each corner. */
+  padding: 12px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
   background: color-mix(in srgb, var(--page) 62%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
-  padding: 11px 13px 9px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  overflow: hidden;
 }
 
-/* ── type roles ─────────────────────────────────────────────────────────────
-
-   Figures stay mono: this product measures a text generator, and a number that
-   updates every second must not shift width.
-
-   Labels do not. At 9px SF Mono is mush, and these are structural markers
-   rather than data — so they take the system UI face, uppercase-ish, tracked
-   out. That contrast (tracked-out label over a mono readout) is the instrument
-   look, and it is the one place this surface deviates from the panel's
-   mono-everything. */
 .eyebrow {
   font-family: system-ui, -apple-system, "SF Pro Text", sans-serif;
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: 0.07em;
   color: var(--text-muted);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.fig {
+.fig,
+.summary-value,
+.session-rate {
   font-family: var(--font-display);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  color: var(--text-primary);
 }
 
-/* ── header ─────────────────────────────────────────────────────────────── */
+header,
+.section-head,
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
 
-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.mark { font-size: 12px; font-weight: 650; letter-spacing: 0.02em; }
-
-/* Connection state, as text plus a dot — never colour alone. It has to say
-   which channel the numbers came from: a stalled stream and a live one look
-   identical if all you show is a number (ADR-0014). */
-.link {
-  display: inline-flex; align-items: center; gap: 5px;
+.link,
+.device-head {
   font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; letter-spacing: 0.04em; color: var(--text-muted);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.link::before {
-  content: ""; width: 5px; height: 5px; border-radius: 50%;
+
+.link { display: inline-flex; align-items: center; gap: 6px; }
+.link::before,
+.device-dot {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
   background: var(--text-muted);
 }
-.link[data-mode="live"]::before    { background: var(--teal); }
+.link[data-mode="live"]::before { background: var(--teal); }
 .link[data-mode="polling"]::before { background: var(--meter-warn); }
-.link[data-mode="offline"]::before { background: var(--breach); }
+.link[data-mode="stale"]::before,
+.link[data-mode="offline"]::before,
+.link[data-mode="unauthorized"]::before { background: var(--breach); }
 
-/* ── scroll region ──────────────────────────────────────────────────────── */
-
-/* min-height:0 is what actually lets a flex child shrink enough to scroll
-   instead of stretching its parent past the footer. */
 #main {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 9px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 #main::-webkit-scrollbar { width: 0; }
+body.degraded #main { opacity: 0.78; }
+body.stale #main { opacity: 0.62; }
 
-/* ── the signature: collision forecast ──────────────────────────────────── */
-
-.forecast { display: flex; flex-direction: column; gap: 3px; }
-
-.fc-read { display: flex; align-items: baseline; gap: 6px; margin-top: 1px; }
-.fc-now {
-  font-family: var(--font-display); font-variant-numeric: tabular-nums;
-  font-size: 27px; font-weight: 600; line-height: 1;
-  letter-spacing: -0.02em;
+/* Risk is the only conditional reorder: its fixed DOM slot is above activity,
+   but hidden unless the Rust view model promotes an authoritative window. */
+.risk {
+  padding: 8px 10px 7px;
+  background: color-mix(in srgb, var(--meter-warn) 10%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--meter-warn) 45%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--meter-warn) 30%, transparent);
 }
-.fc-arrow { font-size: 11px; color: var(--text-muted); }
-.fc-proj {
-  font-family: var(--font-display); font-variant-numeric: tabular-nums;
-  font-size: 14px; font-weight: 600; color: var(--text-secondary);
+.risk.breach {
+  background: color-mix(in srgb, var(--breach) 10%, transparent);
+  border-color: color-mix(in srgb, var(--breach) 42%, transparent);
 }
-/* The one alarm in the popover, and it fires on the forecast rather than on the
-   current level: being at 40% with two hours of this rate left is the situation
-   worth colouring, and a level-based scale cannot see it. */
-.forecast.over .fc-proj { color: var(--breach); }
-.fc-reset {
-  margin-left: auto;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; letter-spacing: 0.03em; color: var(--text-muted);
+.risk-copy > div:last-child {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+.risk-now {
+  font: 600 20px/1 var(--font-display);
   font-variant-numeric: tabular-nums;
 }
-
-/* Height is what keeps the gap between the trace and the ceiling readable as
-   headroom rather than as empty canvas: too tall and a typical 20% window is a
-   line at the bottom of a void. 46px is enough for a breach to have somewhere
-   to climb and little enough that the space still reads as "room left". */
-.track { width: 100%; height: 46px; display: block; overflow: visible; }
-.track line, .track path { fill: none; vector-effect: non-scaling-stroke; }
-.track .baseline { stroke: var(--hairline); stroke-width: 1; }
-/* The wall. Solid so it reads as a hard limit — the forecast is the dashed thing
-   here, not the ceiling.
-   Graphite until something is heading for it: the limit is always there, but a
-   red line across the panel while you are at 17% spends the alarm colour on a
-   non-event, and then it has nothing left to say when the forecast actually
-   crosses. Urgency is the forecast's job; the ceiling only joins in. */
-.track .ceiling { stroke: var(--text-muted); stroke-width: 1; stroke-opacity: 0.4; }
-.track .ceiling-tag {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 8px; font-weight: 600; letter-spacing: 0.06em;
-  fill: var(--text-muted); fill-opacity: 0.75; stroke: none;
+.risk-arrow { color: var(--text-muted); }
+.risk-projected {
+  font: 600 12px/1 var(--font-display);
+  color: var(--text-secondary);
 }
-.forecast.over .track .ceiling { stroke: var(--breach); stroke-opacity: 0.6; }
-.forecast.over .track .ceiling-tag { fill: var(--breach); fill-opacity: 1; }
-/* The path from window start to now: endpoints known, route unknown. */
+.risk.breach .risk-projected { color: var(--breach); }
+.risk-reset {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.track { width: 100%; height: 42px; display: block; overflow: visible; }
+.track line,
+.track path { fill: none; vector-effect: non-scaling-stroke; }
+.track .baseline { stroke: var(--hairline); }
+.track .ceiling { stroke: var(--text-muted); stroke-opacity: 0.4; }
+.track .ceiling-tag {
+  font: 600 8px system-ui, sans-serif;
+  fill: var(--text-muted);
+}
 .track .past {
-  stroke: var(--signal); stroke-width: 1.5;
-  stroke-dasharray: 1 3; stroke-linecap: round;
+  stroke: var(--signal);
+  stroke-width: 1.5;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
 }
 .track .future {
-  stroke: var(--forecast); stroke-width: 1.5;
+  stroke: var(--forecast);
+  stroke-width: 1.5;
   stroke-dasharray: 5 3.5;
 }
-.track .breach { stroke: var(--breach); stroke-width: 1.5; stroke-dasharray: 5 3.5; }
-.track .nowline { stroke: var(--hairline); stroke-width: 1; }
-.track .nowdot { fill: var(--signal); stroke: none; }
-
-/* The opening moment, and the only animation in the popover: the known path
-   draws itself, then the forecast extends past it. Deliberately one
-   orchestrated gesture rather than effects scattered over the panel. */
-@media (prefers-reduced-motion: no-preference) {
-  .track .past   { animation: draw 380ms ease-out both; }
-  .track .future,
-  .track .breach { animation: draw 300ms ease-out 260ms both; }
-  .track .nowdot { animation: pop 200ms ease-out 240ms both; }
-  @keyframes draw {
-    from { stroke-dashoffset: 46; opacity: 0; }
-    to   { stroke-dashoffset: 0; opacity: 1; }
-  }
-  @keyframes pop { from { opacity: 0; } to { opacity: 1; } }
+.track .breach {
+  stroke: var(--breach);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3.5;
 }
-
+.track .nowdot { fill: var(--signal); }
 .axis {
-  position: relative;
-  display: flex; justify-content: space-between; gap: 6px;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9px; letter-spacing: 0.04em; color: var(--text-muted);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 6px;
+  font-size: 8.5px;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-/* Positioned under the crossing rather than centred in the row: a caption that
-   names a moment has to point at where that moment is on the axis, or it is
-   just a sentence sitting near a chart. */
-.axis .axis-mid {
-  position: absolute; top: 0;
-  transform: translateX(-50%);
+.axis span:last-child { text-align: right; }
+.risk.breach .axis span:nth-child(2) { color: var(--breach); }
+
+.activity {
+  min-height: 58px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.activity h1 {
+  font: 600 18px/1.25 var(--font-display);
+  letter-spacing: -0.015em;
+}
+.activity[data-kind="idle"] h1,
+.activity[data-kind="unknown"] h1 { color: var(--text-muted); }
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+.session-row {
+  display: grid;
+  grid-template-columns: 48px minmax(48px, 1fr) minmax(48px, 0.9fr) minmax(48px, 0.9fr) 48px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 9.5px;
+  color: var(--text-secondary);
+}
+.session-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  color: color-mix(in srgb, var(--breach) 82%, var(--text-muted));
+}
+.session-tool { color: var(--text-primary); font-weight: 650; }
+.session-rate { text-align: right; color: var(--text-primary); }
+
+.more {
+  margin-top: 4px;
+  text-align: right;
+  font-size: 9px;
+  color: var(--text-muted);
 }
 
-/* ── readouts ───────────────────────────────────────────────────────────── */
-
-.readouts { display: flex; align-items: stretch; }
-.ro { flex: 1 1 0; min-width: 0; padding: 0 9px; }
-.ro:first-child { padding-left: 0; }
-.ro:last-child { padding-right: 0; }
-.ro + .ro { border-left: 1px solid var(--hairline); }
-.ro .fig {
-  font-size: 15px; margin-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.summary-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
 }
-.ro .fig .unit { font-size: 9.5px; font-weight: 500; color: var(--text-secondary); }
-/* Idle is a state, not a gap: the figure dims rather than the row collapsing,
-   so the layout does not jump every time you stop typing. */
-.ro.idle .fig { color: var(--text-muted); }
-
-/* ── activity strip ─────────────────────────────────────────────────────── */
-
-/* The union of generation intervals over the burn window, from `speed.spans` —
-   real data, which is why this is a strip and not a sparkline: the payload
-   carries when generation happened, not a series to plot, and accumulating one
-   in the popover would only chart how long it had been open. */
-.strip { display: flex; align-items: center; gap: 7px; }
-.strip-track {
-  position: relative; flex: 1 1 auto; height: 9px; border-radius: 2px;
-  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+.summary-value {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
 }
-.strip-track > i {
-  position: absolute; top: 0; bottom: 0;
-  background: var(--signal); opacity: 0.8;
-}
-.strip-note {
-  flex: none;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9px; letter-spacing: 0.04em; color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
+.summary-tail { font-size: 9px; color: var(--text-muted); white-space: nowrap; }
 
-/* ── other windows ──────────────────────────────────────────────────────── */
-
-/* Everything that is not the window in the forecast: one line each, so the
-   hero stays the only loud thing on the panel. */
-.others { display: flex; flex-direction: column; gap: 5px; }
-/* A grid, not a flex row: with flex the bar's position drifts with the label's
-   length and the rows stop lining up as a column. */
-.oq {
-  display: grid; align-items: center; gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 54px 30px;
+.readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  padding: 7px 0;
 }
-.oq .fig { font-size: 11px; text-align: right; }
-.oq .bar {
-  height: 3px; border-radius: 2px;
-  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+.readouts > div { display: flex; align-items: baseline; gap: 8px; }
+.readouts > div + div { border-left: 1px solid var(--hairline); padding-left: 12px; }
+.readouts .fig { font-size: 12px; font-weight: 600; }
+
+.devices { min-height: 46px; }
+.section-head { font-size: 9px; color: var(--text-muted); }
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.device-row {
+  display: grid;
+  grid-template-columns: 7px minmax(60px, 1fr) auto 34px;
+  align-items: center;
+  gap: 7px;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.device-name {
+  color: var(--text-secondary);
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.oq .bar > i { display: block; height: 100%; background: var(--forecast); }
-@media (prefers-reduced-motion: no-preference) {
-  .oq .bar > i { transition: width 0.5s ease; }
-}
+.device-dot[data-state="active"] { background: var(--teal); }
+.device-dot[data-state="idle"] { background: var(--text-muted); }
+.device-dot[data-state="stale"] { background: var(--meter-warn); }
 
-.procs {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; letter-spacing: 0.03em; color: var(--text-muted); line-height: 1.5;
-}
-
-/* ── settings ───────────────────────────────────────────────────────────── */
-
-/* Settings replaces the readout rather than sitting below it: at this width
-   there is no room for both, and a second window would fight the
-   dismiss-on-blur behaviour the popover depends on. */
 .settings { display: flex; flex-direction: column; gap: 6px; }
 .settings input {
-  font-family: var(--font-display); font-size: 12px;
+  width: 100%;
+  padding: 7px 9px;
+  font: 12px var(--font-display);
   color: var(--text-primary);
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
-  border: 1px solid var(--hairline); border-radius: 7px;
-  padding: 7px 9px; width: 100%;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
 }
 .settings input:focus-visible { outline: none; border-color: var(--signal); }
-.settings .hint {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; color: var(--text-muted); line-height: 1.6;
+.settings .hint,
+.settings .msg {
+  font-size: 9.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 .settings .hint code { font-family: var(--font-display); }
-.settings .msg {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; line-height: 1.6; word-break: break-all;
-}
-.settings .msg.bad { color: var(--breach); }
-.settings .actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 2px; }
-
-/* ── controls ───────────────────────────────────────────────────────────── */
+.settings .msg.bad,
+.error { color: var(--breach); }
+.settings .actions { display: flex; justify-content: flex-end; gap: 7px; }
 
 button { font: inherit; cursor: pointer; }
-/* Keyboard focus has to be visible: the popover is reachable by global
-   shortcut, so it can be driven without ever touching the mouse. */
-:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
-
-.settings button {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 11px; border-radius: 7px; padding: 5px 12px;
-  border: 1px solid var(--hairline);
-  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
-  color: var(--text-primary);
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
-.settings button.primary { background: var(--signal); border-color: var(--signal); color: var(--page); }
+.settings button {
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+}
+.settings button.primary {
+  color: var(--page);
+  background: var(--signal);
+  border-color: var(--signal);
+}
 .settings button[disabled] { opacity: 0.5; cursor: default; }
 
 footer {
-  margin-top: auto; padding-top: 7px; border-top: 1px solid var(--hairline);
-  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
 }
-.server {
-  font-family: var(--font-display);
-  font-size: 9.5px; color: var(--text-muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.foot-actions { display: flex; gap: 10px; flex: none; }
 .textlink {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; letter-spacing: 0.03em; color: var(--text-muted);
-  background: none; border: 0; padding: 0; flex: none;
+  padding: 0;
+  font: 9.5px system-ui, -apple-system, sans-serif;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
 }
 .textlink:hover { color: var(--text-secondary); }
-
-.empty {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; color: var(--text-muted); padding: 2px 0;
-}
-.error {
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 9.5px; color: var(--breach); padding: 2px 0; word-break: break-all;
-  line-height: 1.6;
-}
+.error { padding: 6px 0; font-size: 9.5px; line-height: 1.5; }

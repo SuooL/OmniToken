@@ -1,452 +1,248 @@
 "use strict";
-// Menubar popover (ADR-0008, ADR-0014).
-//
-// A menubar glance has one question in it: am I going to run out before the
-// window resets. So the popover is built around that forecast, and leaves
-// analysis to the nine-page panel in a browser.
-//
-// The forecast comes from the `windows` array of /api/v1/live, which the server
-// already computes (F11 burn projection, internal/server/windows.go) and which
-// v1 of this popover ignored entirely — it showed a fullness ring instead, which
-// is a second reading of what the 18pt tray glyph already says.
-//
-// Number and time formatting comes from format-core.js, shared verbatim with
-// that panel: the popover must never describe the same ten minutes differently
-// from the page it links to.
+// Activity-first menubar popover (ADR-0014, system redesign §7).
+// Rust owns the deterministic payload → view-model transformation. This file
+// renders that contract and keeps only presentation-time concerns: relative
+// age, SVG geometry, overview refresh, settings, and window sizing.
 
-// Requires `withGlobalTauri` in tauri.conf.json — Tauri v2 does not inject
-// window.__TAURI__ by default. Without the guard a missing bridge throws on
-// this line and the panel renders as an empty shell with no clue why.
 const invoke = window.__TAURI__ && window.__TAURI__.core.invoke;
 const listen = window.__TAURI__ && window.__TAURI__.event.listen;
+const $ = (id) => document.getElementById(id);
 
-// Set from the stored settings before the first snapshot. Rust owns the value
-// and the normalisation; this is only the copy the panel reads between saves.
 let SERVER = "";
-// The secret itself never crosses IPC. This bit only lets settings explain that
-// leaving the password field blank retains the credential already stored.
 let HAS_TOKEN = false;
-
-// Live data is pushed, not pulled: Rust holds one /api/v1/stream connection and
-// forwards each snapshot here, to the tray glyph and to the quota alerts at the
-// same time (ADR-0014). Nothing in this file polls for it.
-//
-// Today's total is the exception. It comes from /api/v1/overview, which is not
-// on the stream, and a figure that only changes as the day accumulates does not
-// need the live cadence.
-const OVERVIEW_MS = 60000;
-// Relative times ("3m 前") go stale on their own, with no event to prompt a
-// redraw — same reason the Live page keeps a timer alongside its stream.
-const REDRAW_MS = 10000;
 let overview = null;
-let latest = null;
+let latestView = null;
 
-// All HTTP goes through Rust: the webview is on tauri://localhost and the
-// server sends no CORS headers on purpose (ADR-0008). Rust also holds the token
-// (ADR-0016) — the webview never sees it, so it cannot end up in a rendered
-// string or an error message.
+const OVERVIEW_MS = 60000;
+const REDRAW_MS = 10000;
+const PANEL_W = 380;
+const H_MIN = 280;
+const H_MAX = 520;
+let lastH = 0;
+
 async function apiGet(path) {
   return invoke("api_get", { path });
 }
-
-const $ = (id) => document.getElementById(id);
-
-// ── window height ─────────────────────────────────────────────────────────
-
-// The popover is anchored by its top edge, just under the tray icon, so it can
-// grow downwards without being re-positioned — which is why this can live in JS
-// and does not need the tray rect Rust holds.
-//
-// A fixed height was the alternative, and it is wrong in both directions: with
-// one quota it left a third of the popover blank, and with four it pushed the
-// readout into an inner scroll while the footer — the only way into settings —
-// stayed pinned.
-const PANEL_W = 340;
-const H_MIN = 180;
-// Past this a menubar popover stops being a glance. #main keeps its own
-// overflow so an unusually long list scrolls inside instead of running off
-// the bottom of the screen.
-const H_MAX = 560;
-
-let lastH = 0;
 
 function contentHeight() {
   const panel = document.querySelector(".panel");
   const cs = getComputedStyle(panel);
   const kids = [...panel.children].filter((el) => !el.hidden);
-  // scrollHeight, not offsetHeight: #main is a flex child stretched to whatever
-  // the current window allows, so its laid-out height is the answer we are
-  // trying to replace, and only its content height is meaningful here.
-  const inner = kids.reduce((h, el) => h + el.scrollHeight, 0) +
+  const inner = kids.reduce((height, el) => height + el.scrollHeight, 0) +
     (parseFloat(cs.rowGap) || 0) * Math.max(0, kids.length - 1);
   return Math.ceil(inner +
     parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
     parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth));
 }
 
-// Only resize when the number actually moved: a transparent always-on-top
-// window repainting on every poll is visible, and most polls change nothing
-// about the layout.
 function fitWindow() {
   const w = window.__TAURI__ && window.__TAURI__.window;
   const dpi = window.__TAURI__ && window.__TAURI__.dpi;
   if (!w || !dpi) return;
-  const h = Math.min(H_MAX, Math.max(H_MIN, contentHeight()));
-  if (h === lastH) return;
-  lastH = h;
-  w.getCurrentWindow().setSize(new dpi.LogicalSize(PANEL_W, h)).catch(() => {
-    // Not fatal: the popover simply keeps the size it has.
-  });
+  const height = Math.min(H_MAX, Math.max(H_MIN, contentHeight()));
+  if (height === lastH) return;
+  lastH = height;
+  w.getCurrentWindow().setSize(new dpi.LogicalSize(PANEL_W, height)).catch(() => {});
 }
 
-// ── connection state ──────────────────────────────────────────────────────
+// ── connection / freshness ───────────────────────────────────────────────
 
-// The popover must say which channel its figures arrived on. A number alone
-// cannot distinguish fresh from frozen, and a silently dead stream showing a
-// plausible figure forever is the failure mode worth designing against — which
-// is why "降级为轮询" is stated rather than hidden (ADR-0014).
-const LINK_TEXT = { live: "实时", polling: "降级轮询", offline: "连接失败" };
-function setLink(mode) {
+const CONNECTION_LABEL = {
+  live: "实时",
+  polling: "轮询",
+  stale: "数据陈旧",
+  unauthorized: "未授权",
+  offline: "离线",
+};
+
+function ageLabel(generatedAt) {
+  if (!generatedAt) return "年龄未知";
+  return relTime(generatedAt);
+}
+
+function renderConnection(connection) {
+  const kind = connection.kind || "offline";
   const el = $("link");
-  el.dataset.mode = mode;
-  const stamp = mode === "offline"
-    ? ""
-    : " · " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  el.textContent = (LINK_TEXT[mode] || mode) + stamp;
+  el.dataset.mode = kind;
+  el.textContent = `${CONNECTION_LABEL[kind] || kind} · ${ageLabel(connection.generated_at_ms)}`;
+  document.body.dataset.mode = kind;
+  document.body.classList.toggle("degraded", kind !== "live");
+  document.body.classList.toggle("stale", !!connection.is_stale);
 }
 
-// ── the signature: collision forecast ─────────────────────────────────────
+// ── promoted risk ────────────────────────────────────────────────────────
 
-// `hidden` is an HTMLElement property; on an SVG element assigning it silently
-// creates a plain JS property and leaves the attribute in place, so the
-// stylesheet's [hidden] rule keeps the node invisible. The ceiling line was
-// missing for exactly that reason. Same trap as writing stroke-dasharray as an
-// attribute when the stylesheet also sets it: for SVG, go through attributes.
-function showSvg(el, on) {
-  if (on) el.removeAttribute("hidden");
-  else el.setAttribute("hidden", "");
-}
-
-// Track geometry, in the SVG's own units (viewBox 314×46).
-const TR = { x0: 2, x1: 312, base: 40.5, top: 4, max: 110 };
-// y for a quota percentage. The scale runs to 110 rather than 100 so a forecast
-// that breaches the ceiling has somewhere to go — clamping it at the wall would
-// hide exactly the case worth showing.
-const trY = (pct) => TR.base - (Math.min(pct, TR.max) / TR.max) * (TR.base - TR.top);
-const CEILING_Y = trY(100);
-
-// Which window the popover leads with: the one closest to trouble.
-//
-// Ranked by the forecast, not by the current level. Sitting at 40% with four
-// hours of this rate left is the situation worth leading with, and a
-// level-ordered list puts it below a window at 60% that has already stopped
-// growing.
-function leadWindow(windows) {
-  const authoritative = (windows || []).filter((w) => w.authoritative && w.resets_at);
-  if (!authoritative.length) return null;
-  return authoritative.reduce((a, b) =>
-    (b.projected_percent || b.used_percent || 0) > (a.projected_percent || a.used_percent || 0)
-      ? b : a);
-}
-
-// Strip the "· 5 小时窗口" the server appends: the axis underneath already says
-// where the window starts and ends, so repeating it in the label is the same
-// fact twice.
-function windowLabel(w) {
-  return String(w.label || "").replace(/\s*·\s*5 小时窗口\s*$/, "");
-}
+const TRACK = { x0: 2, x1: 352, base: 37.5, top: 3, max: 110 };
+const trackY = (percent) =>
+  TRACK.base - (Math.min(Math.max(percent, 0), TRACK.max) / TRACK.max) *
+  (TRACK.base - TRACK.top);
 
 function clockAt(ms) {
+  if (!ms) return "";
   return new Date(ms).toLocaleTimeString("zh-CN", {
     hour12: false, hour: "2-digit", minute: "2-digit",
   });
 }
 
-function renderForecast(w, quotas) {
-  const root = $("forecast");
-  if (!w) {
-    // No authoritative window means no cliff to forecast. Say that, rather than
-    // drawing a forecast off a rolling look-back — an inferred boundary dressed
-    // as a real one is the one thing this panel must not do.
-    root.classList.remove("over");
-    $("fc-window").textContent = quotas && quotas.length ? "无 5 小时窗口数据" : "暂无配额数据";
-    $("fc-now").textContent = "—";
-    $("fc-arrow").hidden = true;
-    $("fc-proj").textContent = "";
-    $("fc-reset").textContent = "";
-    clearTrack();
-    return;
-  }
+function drawRisk(risk) {
+  const root = $("risk");
+  root.hidden = !risk;
+  if (!risk) return;
 
-  const used = Math.max(0, w.used_percent || 0);
-  const proj = Math.max(used, w.projected_percent || 0);
-  const over = proj >= 100;
+  const used = Math.max(0, risk.used_percent || 0);
+  const projected = Math.max(used, risk.projected_percent || 0);
+  const breach = projected > 100;
+  root.classList.toggle("breach", breach);
+  $("risk-source").textContent = risk.source;
+  $("risk-now").textContent = `${used.toFixed(0)}%`;
+  $("risk-projected").textContent = `预计 ${projected.toFixed(0)}%`;
+  $("risk-reset").textContent = untilReset(risk.remaining_minutes);
 
-  root.classList.toggle("over", over);
-  $("fc-window").textContent = windowLabel(w);
-  $("fc-now").textContent = `${used.toFixed(0)}%`;
-  $("fc-arrow").hidden = false;
-  // Named, because a bare second percentage beside the first reads as a range.
-  $("fc-proj").textContent = `窗口结束约 ${Math.min(999, proj).toFixed(0)}%`;
-  $("fc-reset").textContent = untilReset(w.remaining_minutes);
+  const span = Math.max(1, risk.resets_at - risk.start_ms);
+  const x = (ms) => TRACK.x0 +
+    ((Math.min(Math.max(ms, risk.start_ms), risk.resets_at) - risk.start_ms) / span) *
+    (TRACK.x1 - TRACK.x0);
+  const xNow = x(risk.end_ms);
+  const xEnd = x(risk.resets_at);
+  const yUsed = trackY(used);
+  const yProjected = trackY(projected);
+  const ceilingY = trackY(100);
 
-  drawTrack(w, used, proj, over);
-}
-
-function clearTrack() {
-  for (const id of ["track-past", "track-future", "track-breach"]) {
-    $(id).setAttribute("d", "");
-  }
-  showSvg($("track-ceiling"), false);
-  $("track-nowline").setAttribute("y1", "0");
-  $("track-nowline").setAttribute("y2", "0");
-  $("track-nowdot").setAttribute("cx", "-9");
-  $("track").querySelector("desc").textContent = "";
-  for (const id of ["ax-start", "ax-ceiling", "ax-end"]) $(id).textContent = "";
-}
-
-// Three line styles, each carrying a claim about how well the value is known:
-//
-//   dotted  the route from window start to now. Both endpoints are known — a
-//           window opens at zero, and the level now is authoritative — but the
-//           payload never carries the path between them. A smooth ramp is the
-//           obvious chart here and it would assert a uniform burn we did not
-//           observe.
-//   dot     the single authoritative reading.
-//   dashed  the projection, at the rate observed so far.
-//
-// That is 权威优先,推断标注 drawn rather than written.
-function drawTrack(w, used, proj, over) {
-  const span = Math.max(1, w.resets_at - w.start_ms);
-  const x = (ms) => TR.x0 + ((Math.min(Math.max(ms, w.start_ms), w.resets_at) - w.start_ms) / span) * (TR.x1 - TR.x0);
-  const xNow = x(w.end_ms);
-  const yUsed = trY(used);
-  const yProj = trY(proj);
-
-  $("track-past").setAttribute("d", `M ${TR.x0} ${TR.base} L ${xNow} ${yUsed}`);
-  $("track-nowline").setAttribute("x1", xNow);
-  $("track-nowline").setAttribute("x2", xNow);
-  $("track-nowline").setAttribute("y1", yUsed);
-  $("track-nowline").setAttribute("y2", TR.base);
+  $("track-past").setAttribute("d", `M ${TRACK.x0} ${TRACK.base} L ${xNow} ${yUsed}`);
   $("track-nowdot").setAttribute("cx", xNow);
   $("track-nowdot").setAttribute("cy", yUsed);
+  $("axis-start").textContent = clockAt(risk.start_ms);
+  $("axis-end").textContent = `${clockAt(risk.resets_at)} 重置`;
+  $("axis-hit").textContent = "";
 
-  showSvg($("track-ceiling"), true);
-
-  $("ax-start").textContent = clockAt(w.start_ms);
-
-  // Split the forecast at the ceiling so the breach reads as a distinct event
-  // with a time attached, not as a line that happens to end up high.
-  const breaching = over && proj > used;
-  if (breaching) {
-    const t = (100 - used) / (proj - used); // fraction of the remaining window
-    const xHit = xNow + (x(w.resets_at) - xNow) * t;
-    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xHit} ${CEILING_Y}`);
-    $("track-breach").setAttribute("d", `M ${xHit} ${CEILING_Y} L ${x(w.resets_at)} ${yProj}`);
-
-    const hitMs = w.end_ms + (w.resets_at - w.end_ms) * t;
-    $("ax-ceiling").textContent = `${clockAt(hitMs)} 触顶`;
-    // Sit the caption under the crossing. Clamped so it cannot overhang either
-    // end of the panel when the breach lands at the edge of the window.
-    const pos = ((xHit - TR.x0) / (TR.x1 - TR.x0)) * 100;
-    $("ax-ceiling").style.left = `${Math.min(84, Math.max(16, pos)).toFixed(1)}%`;
-    // Drop the reset clock from the axis while a breach is showing: the two
-    // captions collide when the crossing lands late in the window, the crossing
-    // is the more urgent of the two, and the line above already says how long
-    // there is until reset.
-    $("ax-end").textContent = "";
+  if (breach && projected > used) {
+    const fraction = Math.min(1, Math.max(0, (100 - used) / (projected - used)));
+    const xHit = xNow + (xEnd - xNow) * fraction;
+    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xHit} ${ceilingY}`);
+    $("track-breach").setAttribute("d", `M ${xHit} ${ceilingY} L ${xEnd} ${yProjected}`);
+    const hitAt = risk.end_ms + (risk.resets_at - risk.end_ms) * fraction;
+    $("axis-hit").textContent = `${clockAt(hitAt)} 触顶`;
   } else {
-    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${x(w.resets_at)} ${yProj}`);
+    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xEnd} ${yProjected}`);
     $("track-breach").setAttribute("d", "");
-    // Nothing to say in the middle of the axis: the ceiling labels itself on the
-    // line, so repeating "100%" here was the same fact twice. The slot exists for
-    // the one thing only a breach has — when it happens.
-    $("ax-ceiling").textContent = "";
-    $("ax-end").textContent = `${clockAt(w.resets_at)} 重置`;
   }
 
-  // The chart is decorative to a screen reader; the sentence is the content.
-  $("track").querySelector("desc").textContent =
-    `${windowLabel(w)}:当前 ${used.toFixed(0)}%,按当前速率窗口结束约 ` +
-    `${proj.toFixed(0)}%${over ? ",将超出配额" : ""}。`;
+  $("track-desc").textContent =
+    `${risk.source}：当前 ${used.toFixed(0)}%，预计 ${projected.toFixed(0)}%。`;
 }
 
-// Everything that is not the lead window: one line each, so the forecast stays
-// the only loud thing on the panel.
-function renderOthers(quotas, lead) {
-  const root = $("others");
-  const rest = quotas.filter((q) => !isLeadQuota(q, lead));
-  root.innerHTML = rest.slice(0, 3).map((q) => {
-    const pct = Math.max(0, q.used_percent || 0);
+// ── activity / quota / devices ───────────────────────────────────────────
+
+function showMore(id, count) {
+  const el = $(id);
+  el.hidden = !count;
+  el.textContent = count ? `另有 ${count} 项` : "";
+}
+
+function renderSessions(view) {
+  $("activity").dataset.kind = view.activity.kind;
+  $("activity-hero").textContent = view.activity.text;
+  $("session-list").innerHTML = view.sessions.map((session) => `
+    <div class="session-row">
+      <span class="session-tool" title="${esc(session.tool)}">${esc(session.tool)}</span>
+      <span title="${esc(session.repository)}">${esc(session.repository)}</span>
+      <span title="${esc(session.model)}">${esc(session.model)}</span>
+      <span title="${esc(session.device)}">${esc(session.device)}</span>
+      <span class="session-rate">${session.rate.toFixed(0)} t/s</span>
+    </div>`).join("");
+  showMore("sessions-more", view.sessions_more);
+}
+
+function renderQuota(view) {
+  $("quota-summary").textContent = view.quota_summary || "暂无配额数据";
+  $("quota-reset").textContent = view.quota_reset_minutes == null
+    ? ""
+    : untilReset(view.quota_reset_minutes);
+  showMore("quotas-more", view.quotas_more);
+}
+
+function renderDevices(view) {
+  $("device-head").textContent = view.device_summary;
+  $("device-summary").textContent = view.device_summary;
+  $("device-list").innerHTML = view.devices.map((device) => {
+    const processState = !device.has_procs
+      ? "不可观测"
+      : device.running > 0 ? `${device.running} 个会话` : "无打开会话";
+    const stateLabel = {
+      active: "活跃", idle: "空闲", stale: "陈旧", unknown: "未知",
+    }[device.state] || device.state;
     return `
-      <div class="oq">
-        <span class="eyebrow">${esc(quotaName(q))}</span>
-        <span class="bar" role="meter" aria-label="${esc(quotaName(q))}"
-              aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
-          <i style="width:${Math.min(100, pct)}%"></i>
-        </span>
-        <span class="fig">${pct.toFixed(0)}%</span>
+      <div class="device-row">
+        <span class="device-dot" data-state="${esc(device.state)}"></span>
+        <span class="device-name" title="${esc(device.name)}">${esc(device.name)}</span>
+        <span>${processState}</span>
+        <span>${stateLabel}</span>
       </div>`;
   }).join("");
+  showMore("devices-more", view.devices_more);
 }
 
-// The lead window is identified by source + a 5-hour boundary, which is what
-// buildWindowCards keyed it on; matching on the label would break the moment
-// the server rewords it.
-function isLeadQuota(q, lead) {
-  return !!lead && q.source === lead.key && q.window_minutes === 300;
+function renderReadouts(view) {
+  $("burn-value").textContent = view.burn_per_minute == null
+    ? "—"
+    : `${compact(view.burn_per_minute)}/min`;
+  const total = overview && overview.today && overview.today.total_tokens;
+  $("today-value").textContent = Number.isFinite(total) ? compact(total) : "—";
 }
 
-// Display name for one quota row.
-function quotaName(q) {
-  const scope = String(q.scope || "").startsWith("seven_day:") ? q.scope.slice(10) : "";
-  return sourceLabel(q.source) + " · " + (q.window_label || "") + (scope ? " · " + scope : "");
-}
-
-// Expired entries describe a window that has already rolled over, so their
-// number is stale; showing one would pin the popover to a spent window.
-function liveQuotas(list) {
-  return (list || []).filter((q) => !q.expired);
-}
-
-// Order matches the Live page: 5h first, then the weekly windows.
-const SCOPE_ORDER = { five_hour: 0, seven_day: 1 };
-function sortQuotas(list) {
-  return [...list].sort((a, b) =>
-    (SCOPE_ORDER[a.scope] ?? 9) - (SCOPE_ORDER[b.scope] ?? 9) ||
-    a.window_minutes - b.window_minutes);
-}
-
-// ── readouts ──────────────────────────────────────────────────────────────
-
-// Generation speed (ADR-0009): divided by the union of generation intervals, so
-// it says how fast the model emits — not how much of the window was busy. That
-// is what makes it a different number from the burn rate beside it.
-function renderSpeed(sp) {
-  const tps = sp.tps || 0;
-  const busy = tps > 0;
-  $("ro-speed").classList.toggle("idle", !busy);
-  $("speed-value").innerHTML = busy
-    ? `${tps.toFixed(0)}<span class="unit"> t/s</span>`
-    : "闲";
-  renderStrip(sp);
-}
-
-// Union of generation intervals across the window, as blocks on a track.
-function renderStrip(sp) {
-  const el = $("strip");
-  const t0 = sp.window_start_ms, t1 = sp.window_end_ms;
-  const spans = sp.spans || [];
-  if (!t0 || !t1 || t1 <= t0 || !spans.length) {
-    el.hidden = true;
-    return;
-  }
-  el.hidden = false;
-  const span = t1 - t0;
-  $("strip-track").innerHTML = spans.map(([a, b]) => {
-    const left = ((Math.max(a, t0) - t0) / span) * 100;
-    const width = ((Math.min(b, t1) - Math.max(a, t0)) / span) * 100;
-    return `<i style="left:${left}%;width:${Math.max(width, 0.6)}%"></i>`;
-  }).join("");
-  $("strip-note").textContent =
-    `近 ${Math.round(span / 60000)} 分钟 ${Math.round(((sp.active_ms || 0) / span) * 100)}% 在生成`;
-}
-
-// Burn divides by the whole window and so includes idle time — "how much am I
-// consuming", as against how fast it emits.
-function renderBurn(b) {
-  $("burn-value").innerHTML =
-    `${compact(b.per_minute || 0)}<span class="unit">/min</span>`;
-}
-
-function renderToday(ov) {
-  const t = (ov && ov.today) || {};
-  $("today-value").textContent = compact(t.total_tokens || 0);
-}
-
-// Ground truth from the machines' own process tables (ADR-0012). "No reporter"
-// is a different statement from "nothing is open" and must never be rendered as
-// one — the wording here matches the Live page for exactly that reason.
-function renderProcs(procs, devices) {
-  const reporters = procs.reporters || [];
-  const el = $("procs");
-  const n = (devices || []).length;
-  if (!reporters.length) {
-    el.textContent = n ? `${n} 台设备 · 无进程数据` : "";
-    return;
-  }
-  const open = (procs.sessions || []).length;
-  el.textContent = `${n} 台设备 · ${reporters.length} 台可见 · ` +
-    (open ? `${open} 个会话开着` : "没有会话开着");
-}
-
-// ── receiving ─────────────────────────────────────────────────────────────
-
-function fail(msg) {
-  setLink("offline");
-  $("forecast").classList.remove("over");
-  $("fc-window").textContent = "连不上服务端";
-  $("fc-now").textContent = "—";
-  $("fc-arrow").hidden = true;
-  $("fc-proj").textContent = "";
-  $("fc-reset").textContent = "";
-  clearTrack();
-  // The hint matters most on a fresh install pointed at the default address:
-  // an unreachable server and a wrong address look identical from here.
-  $("others").innerHTML =
-    `<div class="error">${esc(msg)}</div>` +
-    `<div class="empty">点右下角「设置」检查服务端地址。</div>`;
-  $("strip").hidden = true;
-  $("procs").textContent = "";
-  for (const id of ["speed-value", "burn-value", "today-value"]) {
-    $(id).textContent = "—";
-  }
+function renderView(view) {
+  latestView = view;
+  renderConnection(view.connection);
+  drawRisk(view.risk);
+  renderSessions(view);
+  renderQuota(view);
+  renderReadouts(view);
+  renderDevices(view);
   fitWindow();
 }
 
-function render(live) {
-  const quotas = sortQuotas(liveQuotas(live.quotas));
-  const lead = leadWindow(live.windows);
-  renderForecast(lead, quotas);
-  renderOthers(quotas, lead);
-  renderSpeed(live.speed || {});
-  renderBurn(live.burn || {});
-  renderProcs(live.processes || {}, live.devices);
-  renderToday(overview);
+function renderUnknown(message) {
+  renderConnection({
+    kind: "offline", generated_at_ms: null, age_ms: null, is_stale: false,
+  });
+  $("risk").hidden = true;
+  $("activity").dataset.kind = "unknown";
+  $("activity-hero").textContent = "活动未知";
+  $("session-list").innerHTML = message ? `<div class="error">${esc(message)}</div>` : "";
+  for (const id of ["sessions-more", "quotas-more", "devices-more"]) $(id).hidden = true;
+  $("quota-summary").textContent = "—";
+  $("quota-reset").textContent = "";
+  $("burn-value").textContent = "—";
+  $("today-value").textContent = "—";
+  $("device-head").textContent = "设备未知";
+  $("device-summary").textContent = "设备未知";
+  $("device-list").innerHTML = "";
   fitWindow();
 }
 
-// Rust publishes { mode, data? }. `data` is absent when it has nothing new to
-// show — a channel change on its own — and that must update the label without
-// blanking figures that are merely a minute old.
 function onUpdate(update) {
-  if (update.data) {
-    latest = update.data;
-    render(latest);
-  } else if (update.mode === "offline") {
-    fail("连不上服务端");
-    return;
-  }
-  setLink(update.mode);
+  if (update.view) renderView(update.view);
+  else renderUnknown("客户端与服务端版本不匹配");
 }
 
-// One failing endpoint should not blank the other half of the popover, so this
-// keeps whatever it last had on failure.
 async function pullOverview() {
   try {
     overview = await apiGet("/api/v1/overview?days=1");
-    if (latest) render(latest);
-  } catch (e) {
-    // The stream, not this, is what reports connectivity.
+  } catch (_) {
+    // Unknown is deliberately not zero: overview can fail while live remains.
+    overview = null;
+  }
+  if (latestView) renderReadouts(latestView);
+}
+
+function redraw() {
+  if (latestView) {
+    renderConnection(latestView.connection);
+    renderReadouts(latestView);
   }
 }
 
-// Re-render from the last snapshot so relative times move on without an event.
-function redraw() {
-  if (latest) render(latest);
-}
-
-// ── settings ──────────────────────────────────────────────────────────────
+// ── settings / actions ───────────────────────────────────────────────────
 
 const els = {
   main: $("main"),
@@ -457,12 +253,6 @@ const els = {
   save: $("settings-save"),
 };
 
-function showServer() {
-  $("server").textContent = SERVER.replace(/^https?:\/\//, "");
-}
-
-// A connection error can run to several lines, so the message changing is a
-// layout change like any other.
 function say(text, kind) {
   els.msg.textContent = text || "";
   els.msg.className = "msg" + (kind ? " " + kind : "");
@@ -486,14 +276,15 @@ function openSettings() {
 function closeSettings() {
   els.settings.hidden = true;
   els.main.hidden = false;
-  invoke("refresh_now").catch(() => {});
+  // settings_set already respawns the bridge. Cancel changes nothing, and a
+  // second refresh here used to abort the connection that had just started.
   pullOverview();
   fitWindow();
 }
 
 async function saveSettings() {
   els.save.disabled = true;
-  say("保存中…");
+  say("验证中…");
   try {
     const stored = await invoke("settings_set", {
       server: els.input.value,
@@ -501,13 +292,9 @@ async function saveSettings() {
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
-    showServer();
-    els.input.value = SERVER;
     closeSettings();
-  } catch (e) {
-    // Validation happens before persistence, so prior working settings remain
-    // active when the address or credentials fail.
-    say(String(e), "bad");
+  } catch (error) {
+    say(String(error), "bad");
   } finally {
     els.save.disabled = false;
   }
@@ -516,50 +303,37 @@ async function saveSettings() {
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 els.save.addEventListener("click", saveSettings);
-for (const el of [els.input, els.token]) {
-  el.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") saveSettings();
-    if (e.key === "Escape") closeSettings();
+for (const input of [els.input, els.token]) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveSettings();
+    if (event.key === "Escape") closeSettings();
   });
 }
 
-// The full panel is one click from the popover as well as from the tray menu:
-// looking at a figure and wanting the history behind it is the common path, and
-// making it right-click-only would hide it.
 $("open-full").addEventListener("click", () => {
   invoke("open_full_panel").catch(() => {});
 });
 
-// Esc dismisses the popover, like any menubar panel. The settings view takes Esc
-// for its own cancel, so this only applies to the readout.
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && els.settings.hidden) {
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && els.settings.hidden) {
     const w = window.__TAURI__ && window.__TAURI__.window;
     if (w) w.getCurrentWindow().hide().catch(() => {});
   }
 });
 
-// ── boot ──────────────────────────────────────────────────────────────────
-
 async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
   HAS_TOKEN = !!stored.has_token;
-  showServer();
-
-  // Subscribe before anything else: the bridge is already running by the time
-  // the webview loads, and its next snapshot is the first thing to render.
-  await listen("live", (e) => onUpdate(e.payload));
-  // Opening settings from the tray menu is the same view as the footer button.
-  await listen("open-settings", () => openSettings());
-
+  await listen("live", (event) => onUpdate(event.payload));
+  await listen("open-settings", openSettings);
   await pullOverview();
   setInterval(pullOverview, OVERVIEW_MS);
   setInterval(redraw, REDRAW_MS);
 }
 
 if (!invoke || !listen) {
-  fail("Tauri IPC 不可用:请检查 tauri.conf.json 的 withGlobalTauri");
+  renderUnknown("Tauri IPC 不可用");
 } else {
-  boot().catch((e) => fail(String(e)));
+  boot().catch((error) => renderUnknown(String(error)));
 }
