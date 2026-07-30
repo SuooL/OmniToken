@@ -143,17 +143,36 @@ SSE 只剩这条路。URL 里的令牌会进访问日志和 `Referer`,所以这�
 在被统计机器上把服务端的端口拉到本地,再让 agent 连本地:
 
 ```sh
-# 被统计机器 → 服务端:把服务端的 8787 映射成本机的 8787
-ssh -N -L 8787:127.0.0.1:8787 user@server        # 常驻可交给 autossh / systemd
+# 被统计机器 → 服务端:把服务端的 8787 映射成本机的 47871
+ssh -N -L 47871:127.0.0.1:8787 user@server       # 常驻交给 launchd(见下)/ autossh / systemd
 ```
 
 ```jsonc
 // 被统计机器 ~/.omnitoken/agent.json:token 留空即可,读写都由 SSH 保护
-{ "server": "http://127.0.0.1:8787", "name": "macmini" }
+{ "server": "http://127.0.0.1:47871", "name": "macmini" }
 ```
 
 反过来,只有服务端能主动连出去时用反向隧道:在**服务端**上跑
-`ssh -N -R 8787:127.0.0.1:8787 user@被统计机器`,被统计机器那侧的 `agent.json` 写法不变。
+`ssh -N -R 47871:127.0.0.1:8787 user@被统计机器`,被统计机器那侧的 `agent.json` 写法不变。
+
+**隧道的本地端口和服务端的 `listen` 端口是两回事。** 冒号左边的 47871 是隧道落地端口,
+右边的 `127.0.0.1:8787` 是服务端**自己**监听的地址 —— A/B/D 里的 8787 是产品默认值,
+不要跟着改。
+
+为什么不用 8787 当落地端口:它是本机随手就会被占的端口(比如这台机器上也跑着一个
+`omnitoken serve`),撞上之后的现象很难认。挑 **40000–49151** 之间的一个数,
+这段实践中没有常见占用,更要紧的是它**低于 macOS 的临时端口起点**
+(`net.inet.ip.portrange.first`,本机是 49152)。落地端口若落在临时端口区间里,
+可能在隧道 bind 之前先被某条出站连接抢走,于是 `ExitOnForwardFailure`(见下一节)
+时灵时不灵地把隧道踢掉,看起来像网络抽风,其实是端口撞车。
+
+```sh
+sysctl net.inet.ip.portrange.first               # 确认这台机器的临时端口起点
+lsof -nP -iTCP:47871 -sTCP:LISTEN                # 无输出 = 空闲
+```
+
+第二条要在**隧道 bind 的那台机器**上跑 —— `-L` 是被统计机器,`-R` 是**被统计机器**
+(不是服务端:反向隧道的监听端口开在 ssh 连过去的那一头,这一点最容易搞反)。
 
 **D. 远端不允许装任何东西 —— SSH 拉取**(ADR-0003 第 2 条)
 
@@ -167,6 +186,156 @@ SSH 通道:
 ```
 
 实时性受拉取周期限制(自动降频至 ≥60s),换来的是远端完全不用动。
+
+#### 常驻:让隧道和 agent 活过重启与断线(macOS launchd)
+
+上面四条讲「怎么接通」,这一段讲「怎么一直通」。手敲的 `ssh -N` 随终端一起死,
+前台跑的 `omnitoken agent` 也一样,重启后更是什么都不剩 —— 表现出来是面板上某台设备
+时有时无,像是 OmniToken 坏了。macOS 上交给 launchd,最多两个 job:一个管隧道
+(只有 C 需要),一个管 agent(A/B/C 都需要;D 是远端零部署,两个都不需要)。
+
+**先决定隧道装在哪台机器上。** 规则只有一条:**ssh 客户端跑在能主动连出去的那一台,
+launchd job 就装在那一台。**
+
+- 被统计机器能 SSH 到服务端 → 用 `-L`,隧道 job 和 agent job **都在被统计机器上**,
+  服务端一个字节都不用改。两个方向都通时选它 —— 常驻状态集中在一台机器,排查只看一处。
+- 只有服务端能 SSH 到被统计机器(对方在 NAT 后、无公网,但你能从服务端登进去)→ 用
+  `-R`,隧道 job 装在**服务端**,agent job 仍在被统计机器上。代价是常驻状态分在两台机器,
+  而且转发失败发生在远端:被统计机器上只看得到 connection refused,原因得回服务端看。
+
+下面以 `-R`(装在服务端)为例,`-L` 只是把 `-R 47871:127.0.0.1:8787 user@被统计机器`
+换成 `-L 47871:127.0.0.1:8787 user@服务端`,plist 其余部分一模一样。落地端口沿用 C 里
+选好的 47871,右边的 8787 始终是服务端自己的 `listen`,不要一起改。
+
+服务端 `~/Library/LaunchAgents/com.omnitoken.tunnel.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.omnitoken.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-T</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-i</string><string>/Users/me/.ssh/id_ed25519_omnitoken</string>
+    <string>-R</string><string>47871:127.0.0.1:8787</string>
+    <string>user@被统计机器</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/me/.omnitoken/tunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/me/.omnitoken/tunnel.log</string>
+</dict>
+</plist>
+```
+
+plist 里**不展开 `~`**,所有路径写绝对路径。`ssh` 也要写 `/usr/bin/ssh`:launchd 不读
+shell profile,job 拿到的是一份最小环境。
+
+每个参数为什么在那里:
+
+| 参数 | 理由 |
+|---|---|
+| `-N` | 只做端口转发,不在对端执行任何命令 |
+| `-T` | 不要 tty。与 `-N` 同时写其实是冗余的(不执行命令本来就不分配 tty),留着无害 |
+| `BatchMode=yes` | 无人值守下密码/口令提示是最坏的失败:ssh 会挂在那里等一个永远不会来的输入,而 launchd 认为它「还活着」。改成直接失败退出,交给 `KeepAlive` 重来。前提是这把密钥免口令 |
+| `ServerAliveInterval=30` + `ServerAliveCountMax=3` | 半死的 TCP 链路(NAT 表项超时、Wi-Fi 切网、睡眠唤醒)不会给任何一端发 FIN,ssh 会永远挂着,agent 看到的是一个黑洞 —— 连得上、发得出去、永远没有响应。这两项让 ssh 在约 90 秒内自己判死并退出,launchd 才有机会重启它。90 秒不是巧合:菜单栏客户端的静默看门狗为同一种失败存在(ADR-0014) |
+| `ExitOnForwardFailure=yes` | **最容易漏的一条。** 断链后远端 sshd 可能还占着 47871 没释放,新连接的转发请求会被拒绝;没有这一项,ssh 会照常保持登录、只是**一个转发都没有** —— 隧道「在」,数据一个字节过不去,`ps` 里看着完全正常。有了它 ssh 直接退出,launchd 隔 `ThrottleInterval` 再试,等远端端口释放后自愈 |
+| `-i` | 显式指定密钥最省事。gui 域的 job 是有 `HOME` 的,`~/.ssh/config` 通常读得到;但**能不能用上 ssh-agent / 钥匙串里的带口令密钥,取决于 job 拿不拿得到 `SSH_AUTH_SOCK`,这一点我没有逐版本验证过** —— 别赌,给这条隧道单独生成一把免口令密钥,在对端 `authorized_keys` 里用 `restrict,permitlisten="127.0.0.1:47871"` 限死它只能开这一个转发(具体写法见 `man authorized_keys`) |
+
+`KeepAlive=true` 本身就意味着「一直跑」,加载时也会拉起,所以它和 `RunAtLoad` 并存时
+后者是冗余的;写着无害,而且一旦把 `KeepAlive` 改成条件字典,`RunAtLoad` 就成了唯一的
+开机开关。`ThrottleInterval` 默认就是 10 秒,写出来只是让「重启不会空转成 busy loop」
+这件事显式。
+
+加载与卸载:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.omnitoken.tunnel.plist
+launchctl print     gui/$(id -u)/com.omnitoken.tunnel | grep -E 'state|pid|last exit'
+launchctl kickstart -k gui/$(id -u)/com.omnitoken.tunnel   # 重启进程
+launchctl bootout   gui/$(id -u)/com.omnitoken.tunnel      # 卸载
+```
+
+**改了 plist 要 `bootout` 再 `bootstrap`** —— launchd 记的是加载时读到的那份定义,
+`kickstart -k` 只重启进程,不重读文件。老写法 `launchctl load -w` / `unload -w` 现在
+仍然能用,但已是遗留接口,别和 bootstrap/bootout 混着用。
+
+`~/Library/LaunchAgents` 下的 job **在用户登录后才启动**。一台重启后停在登录界面、
+没人登录的机器上,它不会跑;要真正的开机即起,得放 `/Library/LaunchDaemons` 由 root 跑
+(那样密钥也得是 root 的),或者给那台机器打开自动登录。
+
+**agent 自己也要一个 job**(装在被统计机器上,`Label` 用 `com.omnitoken.agent`)。外壳
+与上面那份完全一样,只列出不同的键:
+
+```xml
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/omnitoken</string>
+    <string>agent</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/me/.omnitoken/agent.log</string>
+  <key>StandardErrorPath</key><string>/Users/me/.omnitoken/agent.log</string>
+```
+
+- `PATH` 这一条不是仪式:agent 会调 `git` 判定 repo 归属,调不到时是**静默退化**成
+  「事件没有 repo」,不报错。launchd 的默认 PATH 里没有 Homebrew 目录,所以显式补上。
+- 日志走标准错误(`agent: reported N events` / `agent: report failed (will retry)`),
+  两个路径指同一个文件即可。launchd 不做轮转,这个文件会一直长,自己定期清。
+- 隧道抖动**不会丢数据**:上报失败时 offset 不推进(日志本身就是重传缓冲),隧道恢复后
+  下一轮自动补齐,只是晚到。所以隧道 job 和 agent job 谁先起来都无所谓。
+
+**验证它真的在工作**,五条命令:
+
+```sh
+# 1. 两个 job 都在跑,且不是在起—崩—起的循环里(看 state / pid / last exit status)
+launchctl print gui/$(id -u)/com.omnitoken.tunnel | grep -E 'state|pid|last exit'
+launchctl print gui/$(id -u)/com.omnitoken.agent  | grep -E 'state|pid|last exit'
+
+# 2. 隧道落地端口在「被统计机器」上真的听着(-R 默认只绑对端 loopback)
+lsof -nP -iTCP:47871 -sTCP:LISTEN
+
+# 3. 打得通服务端。health 免鉴权,专门用来区分「地址错了」和「令牌错了」
+curl -fsS http://127.0.0.1:47871/api/v1/health
+
+# 4. 事件进来了,而且挂在正确的设备名下
+curl -fsS 'http://127.0.0.1:47871/api/v1/breakdown?by=device&days=1'
+
+# 5. agent 自己怎么说
+tail -f ~/.omnitoken/agent.log
+```
+
+第 2、3、5 条在被统计机器上跑。第 4 条设备名对不上就查 `agent.json` 的 `name` ——
+设备归属自报优先(ADR-0015)。
+
+**完整卸掉**(装什么都得说清楚怎么删):
+
+```sh
+launchctl bootout gui/$(id -u)/com.omnitoken.tunnel   # 在装了隧道 job 的那台
+launchctl bootout gui/$(id -u)/com.omnitoken.agent    # 在被统计机器上
+rm ~/Library/LaunchAgents/com.omnitoken.tunnel.plist ~/Library/LaunchAgents/com.omnitoken.agent.plist
+rm ~/.omnitoken/agent.json ~/.omnitoken/agent-state.json ~/.omnitoken/agent.log ~/.omnitoken/tunnel.log
+rm /usr/local/bin/omnitoken                           # 或你实际放的位置
+```
+
+`bootout` 之后进程立即结束,`KeepAlive` 不再兜底。另外把对端 `authorized_keys` 里那把
+专用公钥删掉 —— 卸载没删的密钥是最容易留下的一条后门。`agent-state.json` 是读取位点:
+删了将来重装会从头扫一遍(幂等,不会重复计数,只是慢),留着则接着上次。这些都只在
+被统计机器上,**已入库的历史事件在服务端,删这些不影响它们**。
 
 ### 重扫 `-rescan`
 
