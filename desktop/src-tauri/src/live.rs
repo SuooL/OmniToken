@@ -51,8 +51,21 @@ pub enum Mode {
 pub enum ConnectionKind {
     Live,
     Polling,
+    Stale,
     Unauthorized,
     Offline,
+}
+
+impl ConnectionKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Polling => "polling",
+            Self::Stale => "stale",
+            Self::Unauthorized => "unauthorized",
+            Self::Offline => "offline",
+        }
+    }
 }
 
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
@@ -84,28 +97,73 @@ impl Mode {
 /// The last payload plus the state that tells consumers how trustworthy it is.
 #[derive(Default, Clone)]
 struct Snapshot {
+    endpoint: Option<String>,
     data: Option<Value>,
     connection: ConnectionState,
 }
 
 impl Snapshot {
-    fn record_success(&mut self, payload: Value, now_ms: i64) {
+    fn bind_endpoint(&mut self, endpoint: &str) -> bool {
+        let endpoint = normalize_endpoint_identity(endpoint);
+        if self.endpoint.as_deref() == Some(endpoint.as_str()) {
+            return false;
+        }
+        self.endpoint = Some(endpoint);
+        self.data = None;
+        self.connection = ConnectionState::default();
+        true
+    }
+
+    fn accepts_endpoint(&mut self, endpoint: &str) -> bool {
+        let endpoint = normalize_endpoint_identity(endpoint);
+        match self.endpoint.as_deref() {
+            Some(active) => active == endpoint,
+            None => {
+                self.endpoint = Some(endpoint);
+                true
+            }
+        }
+    }
+
+    fn record_success(&mut self, endpoint: &str, payload: Value, now_ms: i64, mode: Mode) -> bool {
+        if !self.accepts_endpoint(endpoint) {
+            return false;
+        }
         self.data = Some(payload);
         self.connection.last_success_at_ms = Some(now_ms);
         self.connection.error = None;
-        self.connection.kind = ConnectionKind::Live;
+        self.connection.kind = mode.connection_kind();
+        true
     }
 
-    fn record_failure(&mut self, kind: ConnectionKind, error: impl Into<String>) {
-        self.connection.kind = kind;
+    fn record_failure(
+        &mut self,
+        endpoint: &str,
+        kind: ConnectionKind,
+        error: impl Into<String>,
+        now_ms: i64,
+    ) -> bool {
+        if !self.accepts_endpoint(endpoint) {
+            return false;
+        }
+        self.connection.kind = if kind == ConnectionKind::Offline
+            && self.data.is_some()
+            && self
+                .age_ms(now_ms)
+                .is_some_and(|age| age >= stale_after_ms())
+        {
+            ConnectionKind::Stale
+        } else {
+            kind
+        };
         self.connection.error = Some(error.into());
+        true
     }
 
     fn data(&self) -> Option<&Value> {
         self.data.as_ref()
     }
 
-    #[cfg(test)]
     fn age_ms(&self, now_ms: i64) -> Option<i64> {
         self.connection
             .last_success_at_ms
@@ -113,13 +171,8 @@ impl Snapshot {
     }
 }
 
-impl Mode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Mode::Live => "live",
-            Mode::Polling => "polling",
-        }
-    }
+fn normalize_endpoint_identity(endpoint: &str) -> String {
+    endpoint.trim_end_matches('/').to_string()
 }
 
 /// What the frontend receives. `data` is absent when there is nothing to show,
@@ -167,6 +220,10 @@ const POLL_WHILE_DEGRADED: Duration = Duration::from_secs(60);
 /// Observed while building this: a server that abandoned the response without
 /// closing left the bridge blocked forever with no way to notice.
 const IDLE_LIMIT: Duration = Duration::from_secs(90);
+
+fn stale_after_ms() -> i64 {
+    IDLE_LIMIT.as_millis().try_into().unwrap_or(i64::MAX)
+}
 
 // ── alerts ────────────────────────────────────────────────────────────────
 
@@ -280,6 +337,8 @@ pub fn respawn(app: &tauri::AppHandle) {
     if let Some(old) = slot.take() {
         old.abort();
     }
+    let endpoint = settings::load(app).server;
+    publish_endpoint_change(app, &endpoint);
     let handle = app.clone();
     *slot = Some(tauri::async_runtime::spawn(
         async move { run(handle).await },
@@ -368,7 +427,7 @@ async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
         let Ok(event) = event else { break };
         if let Some(payload) = snapshot_from(&event.event, &event.data) {
             connected = true;
-            apply(app, &payload, Mode::Live);
+            apply(app, base, &payload, Mode::Live);
         }
     }
     connected
@@ -379,35 +438,33 @@ async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
 async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
     match crate::get_json(base, "/api/v1/live", token).await {
         Ok(payload) => {
-            apply(app, &payload, Mode::Polling);
+            apply(app, base, &payload, Mode::Polling);
             true
         }
         Err(error) => {
-            let kind = match error {
-                crate::FetchError::Unauthorized(_) => ConnectionKind::Unauthorized,
-                crate::FetchError::Other(_) => ConnectionKind::Offline,
-            };
-            publish_failure(app, kind, error.to_string());
+            let kind = connection_kind_for(&error);
+            publish_failure(app, base, kind, error.to_string());
             false
         }
     }
 }
 
 /// One snapshot, four consumers.
-fn apply(app: &tauri::AppHandle, payload: &Value, mode: Mode) {
+fn apply(app: &tauri::AppHandle, endpoint: &str, payload: &Value, mode: Mode) {
     let snapshot = {
         let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
             return;
         };
-        state.record_success(payload.clone(), now_ms());
-        state.connection.kind = mode.connection_kind();
+        if !state.record_success(endpoint, payload.clone(), now_ms(), mode) {
+            return;
+        }
         state.clone()
     };
     paint_snapshot(app, &snapshot);
     let _ = app.emit(
         EVENT,
         Update {
-            mode: mode.as_str(),
+            mode: snapshot.connection.kind.as_str(),
             connection: &snapshot.connection,
             data: snapshot.data(),
         },
@@ -415,7 +472,13 @@ fn apply(app: &tauri::AppHandle, payload: &Value, mode: Mode) {
     notify(app, payload);
 }
 
-fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
+fn tray_readings(snapshot: &Snapshot) -> (Option<f64>, Option<f64>) {
+    if !matches!(
+        snapshot.connection.kind,
+        ConnectionKind::Live | ConnectionKind::Polling
+    ) {
+        return (None, None);
+    }
     let percent = snapshot
         .data()
         .and_then(|data| data.get("quotas"))
@@ -427,34 +490,65 @@ fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
         .and_then(|s| s.get("tps"))
         .and_then(Value::as_f64);
 
+    (percent, tps)
+}
+
+fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    let (percent, tps) = tray_readings(snapshot);
     let _ = tray::paint(app, percent, tps);
 }
 
 /// Publish a transport failure while keeping every consumer on the same
-/// last-good snapshot. The tray title therefore remains unknown only when no
-/// successful reading has ever arrived; it is never synthesized as zero.
-fn publish_failure(app: &tauri::AppHandle, kind: ConnectionKind, error: String) {
+/// last-good snapshot. The UI receives that payload for an aged/dimmed view,
+/// while the tray deliberately suppresses its figures so stale values cannot
+/// masquerade as live ones.
+fn publish_failure(app: &tauri::AppHandle, endpoint: &str, kind: ConnectionKind, error: String) {
     let snapshot = {
         let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
             return;
         };
-        state.record_failure(kind, error);
+        if !state.record_failure(endpoint, kind, error, now_ms()) {
+            return;
+        }
         state.clone()
     };
     paint_snapshot(app, &snapshot);
     let _ = app.emit(
         EVENT,
         Update {
-            mode: match snapshot.connection.kind {
-                ConnectionKind::Live => "live",
-                ConnectionKind::Polling => "polling",
-                ConnectionKind::Unauthorized => "unauthorized",
-                ConnectionKind::Offline => "offline",
-            },
+            mode: snapshot.connection.kind.as_str(),
             connection: &snapshot.connection,
             data: snapshot.data(),
         },
     );
+}
+
+fn publish_endpoint_change(app: &tauri::AppHandle, endpoint: &str) {
+    let snapshot = {
+        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
+            return;
+        };
+        if !state.bind_endpoint(endpoint) {
+            return;
+        }
+        state.clone()
+    };
+    paint_snapshot(app, &snapshot);
+    let _ = app.emit(
+        EVENT,
+        Update {
+            mode: snapshot.connection.kind.as_str(),
+            connection: &snapshot.connection,
+            data: snapshot.data(),
+        },
+    );
+}
+
+fn connection_kind_for(error: &crate::FetchError) -> ConnectionKind {
+    match error {
+        crate::FetchError::Unauthorized(_) => ConnectionKind::Unauthorized,
+        crate::FetchError::Other(_) => ConnectionKind::Offline,
+    }
 }
 
 fn now_ms() -> i64 {
@@ -677,8 +771,13 @@ mod tests {
         let payload = json!({"speed": {"tps": 68.0}});
         let mut snapshot = Snapshot::default();
 
-        snapshot.record_success(payload.clone(), 1_000);
-        snapshot.record_failure(ConnectionKind::Offline, "network unavailable");
+        snapshot.record_success("http://server-a", payload.clone(), 1_000, Mode::Live);
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "network unavailable",
+            1_250,
+        );
 
         assert_eq!(snapshot.data(), Some(&payload));
         assert_eq!(snapshot.connection.last_success_at_ms, Some(1_000));
@@ -691,13 +790,133 @@ mod tests {
     }
 
     #[test]
-    fn unauthorized_and_offline_have_distinct_connection_states() {
+    fn failed_refresh_becomes_stale_at_the_stream_freshness_boundary() {
         let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a", json!({"quotas": []}), 1_000, Mode::Live);
 
-        snapshot.record_failure(ConnectionKind::Unauthorized, "401 unauthorized");
-        assert_eq!(snapshot.connection.kind, ConnectionKind::Unauthorized);
-
-        snapshot.record_failure(ConnectionKind::Offline, "connection refused");
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            90_999,
+        );
         assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            91_000,
+        );
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Stale);
+        assert!(snapshot.data().is_some());
+    }
+
+    #[test]
+    fn all_connection_states_have_distinct_wire_labels() {
+        assert_eq!(ConnectionKind::Live.as_str(), "live");
+        assert_eq!(ConnectionKind::Polling.as_str(), "polling");
+        assert_eq!(ConnectionKind::Stale.as_str(), "stale");
+        assert_eq!(ConnectionKind::Unauthorized.as_str(), "unauthorized");
+        assert_eq!(ConnectionKind::Offline.as_str(), "offline");
+    }
+
+    #[test]
+    fn fetch_errors_are_classified_as_unauthorized_or_offline() {
+        let unauthorized = crate::FetchError::Unauthorized("401 unauthorized".into());
+        let unavailable = crate::FetchError::Other("connection refused".into());
+
+        assert_eq!(
+            connection_kind_for(&unauthorized),
+            ConnectionKind::Unauthorized
+        );
+        assert_eq!(connection_kind_for(&unavailable), ConnectionKind::Offline);
+    }
+
+    #[test]
+    fn tray_hides_last_good_numbers_when_connection_is_degraded() {
+        let payload = json!({
+            "quotas": [{"used_percent": 42.0}],
+            "speed": {"tps": 68.0}
+        });
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a", payload, 1_000, Mode::Live);
+        assert_eq!(tray_readings(&snapshot), (Some(42.0), Some(68.0)));
+
+        snapshot.connection.kind = ConnectionKind::Polling;
+        assert_eq!(tray_readings(&snapshot), (Some(42.0), Some(68.0)));
+
+        for kind in [
+            ConnectionKind::Stale,
+            ConnectionKind::Offline,
+            ConnectionKind::Unauthorized,
+        ] {
+            snapshot.connection.kind = kind;
+            assert_eq!(tray_readings(&snapshot), (None, None));
+            assert!(snapshot.data().is_some());
+        }
+    }
+
+    #[test]
+    fn normalized_equivalent_endpoint_keeps_last_good_snapshot() {
+        let payload = json!({"speed": {"tps": 68.0}});
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a/", payload.clone(), 1_000, Mode::Live);
+
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            1_250,
+        );
+
+        assert_eq!(snapshot.data(), Some(&payload));
+        assert_eq!(snapshot.connection.last_success_at_ms, Some(1_000));
+    }
+
+    #[test]
+    fn changing_endpoint_discards_the_previous_servers_snapshot() {
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 68.0}}),
+            1_000,
+            Mode::Live,
+        );
+
+        snapshot.bind_endpoint("http://server-b");
+        snapshot.record_failure(
+            "http://server-b",
+            ConnectionKind::Offline,
+            "connection refused",
+            1_250,
+        );
+
+        assert_eq!(snapshot.data(), None);
+        assert_eq!(snapshot.connection.last_success_at_ms, None);
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+    }
+
+    #[test]
+    fn late_response_from_previous_endpoint_is_ignored() {
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 68.0}}),
+            1_000,
+            Mode::Live,
+        );
+        snapshot.bind_endpoint("http://server-b");
+
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 99.0}}),
+            2_000,
+            Mode::Live,
+        );
+
+        assert_eq!(snapshot.data(), None);
+        assert_eq!(snapshot.connection.last_success_at_ms, None);
+        assert_eq!(snapshot.endpoint.as_deref(), Some("http://server-b"));
     }
 }
