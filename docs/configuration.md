@@ -158,8 +158,14 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 
 ```sh
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8899/anthropic   # Claude Code
-export OPENAI_BASE_URL=http://127.0.0.1:8899/openai         # Codex 等
 ```
+
+**Claude Code 指过来是安全的**:代理会为第一方 Anthropic 请求算出与日志完全相同的
+event_id(`cc:<message.id>:<request-id>`),两次观测在入库时合成一行 —— 日志出
+repo 归属,代理出 TTFT,token 只计一次(ADR-0013)。
+
+**Codex / OpenAI 侧目前不要指过来**:那边没有可共享的标识,日志与代理会各记一条,
+token 会计两遍。只有自己写的、不落日志的脚本适合走 `/openai` 前缀。
 
 请求被透明转发(方法/头/体原样,Authorization 一并转发,仅剥 Accept-Encoding
 由 Go 透明解压),同时产出 `source=proxy` 事件:token 四分量、**精确 TTFT 与耗时**、
