@@ -218,11 +218,12 @@ pub fn respawn(app: &tauri::AppHandle) {
 async fn run(app: tauri::AppHandle) {
     let mut backoff = BACKOFF_MIN;
     loop {
-        let base = settings::load(&app).server;
+        let stored = settings::load(&app);
+        let (base, token) = (stored.server, stored.token);
 
         // Normal path. Returns when the server closes the stream or the
         // connection breaks; either way we come back round and reconnect.
-        let streamed = stream_once(&app, &base).await;
+        let streamed = stream_once(&app, &base, &token).await;
         if streamed {
             // We were connected, so this is not a failing server — reconnect
             // promptly rather than treating a clean end as an outage.
@@ -232,7 +233,7 @@ async fn run(app: tauri::AppHandle) {
 
         // Degraded. Keep the figures moving over plain GET, and say which
         // channel they came from.
-        let polled = poll_once(&app, &base).await;
+        let polled = poll_once(&app, &base, &token).await;
         publish_mode(&app, if polled { Mode::Polling } else { Mode::Offline });
 
         let wait = if polled {
@@ -254,10 +255,16 @@ async fn run(app: tauri::AppHandle) {
 ///
 /// Returns whether the connection was ever established, which is what tells the
 /// caller apart "the stream ended" from "the stream never started".
-async fn stream_once(app: &tauri::AppHandle, base: &str) -> bool {
+async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
     let url = format!("{}/api/v1/stream", base.trim_end_matches('/'));
-    let res = match crate::http()
-        .get(&url)
+    let mut req = crate::http().get(&url);
+    if !token.is_empty() {
+        // A header, not `?access_token=` — the browser panel needs the query
+        // fallback because EventSource cannot set headers, but this side can and
+        // a credential in a URL lands in access logs (ADR-0016).
+        req = req.bearer_auth(token);
+    }
+    let res = match req
         .header("Accept", "text/event-stream")
         // No read timeout: an idle stream is the normal state of this endpoint —
         // it sends a comment heartbeat every 30s and nothing else until usage
@@ -299,8 +306,8 @@ async fn stream_once(app: &tauri::AppHandle, base: &str) -> bool {
 
 /// The degraded path: the single-shot GET twin of the stream, built by the same
 /// `livePayload` on the server, so a fallback cannot report different numbers.
-async fn poll_once(app: &tauri::AppHandle, base: &str) -> bool {
-    match crate::get_json(base, "/api/v1/live").await {
+async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
+    match crate::get_json(base, "/api/v1/live", token).await {
         Ok(payload) => {
             apply(app, &payload, Mode::Polling);
             true

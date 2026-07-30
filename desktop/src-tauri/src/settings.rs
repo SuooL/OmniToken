@@ -1,8 +1,15 @@
 //! Where the panel points, and how that survives a restart.
 //!
-//! Only the server address lives here. The panel reads and never writes, and
-//! every read endpoint is unauthenticated by design (ADR-0008) — so there is no
-//! token to keep, and nothing here is a secret.
+//! ADR-0008 said "address only, no token", on the grounds that every read
+//! endpoint was unauthenticated. ADR-0016 revised that: a server reachable from
+//! another machine authenticates its reads, and a menubar client pointed at one
+//! is exactly that case. So a token lives here too.
+//!
+//! It is stored in plain text in the app config dir, like the address. That is a
+//! deliberate, limited choice: the token is a LAN/tailnet bearer credential the
+//! user also pastes into a browser's localStorage, and the Keychain would add a
+//! prompt and a platform dependency without changing who can read the file — any
+//! process running as this user already can. Documented rather than hidden.
 
 use std::path::PathBuf;
 
@@ -39,6 +46,10 @@ pub enum TrayTitle {
 pub struct Settings {
     #[serde(default = "default_server")]
     pub server: String,
+    /// Bearer token for a server that authenticates reads (ADR-0016). Empty for
+    /// the common case — a server on this machine, listening on loopback.
+    #[serde(default)]
+    pub token: String,
     #[serde(default)]
     pub tray_title: TrayTitle,
     /// Warn before the wall, not after. Enabled by default because it is the
@@ -68,6 +79,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             server: default_server(),
+            token: String::new(),
             tray_title: TrayTitle::default(),
             notify: true,
             autostart: false,

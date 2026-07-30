@@ -3,7 +3,9 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -83,6 +85,12 @@ func (s *Server) startProxy() {
 }
 
 func (s *Server) Run() error {
+	// Checked before anything starts collecting or listening: a misconfigured
+	// server should not have written a row or accepted a request.
+	if err := s.requireAuthConsistency(); err != nil {
+		return err
+	}
+
 	go s.runCollectors()
 	s.startProxy()
 
@@ -91,44 +99,164 @@ func (s *Server) Run() error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", s.auth(s.handleIngest))
-	mux.HandleFunc("GET /api/v1/overview", s.handleOverview)
-	mux.HandleFunc("GET /api/v1/breakdown", s.handleBreakdown)
-	mux.HandleFunc("GET /api/v1/blocks", s.handleBlocks)
-	mux.HandleFunc("GET /api/v1/reports", s.handleReports)
-	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
-	mux.HandleFunc("GET /api/v1/cache", s.handleCache)
-	mux.HandleFunc("GET /api/v1/speed", s.handleSpeed)
-	mux.HandleFunc("GET /api/v1/quota", s.handleQuota)
-	mux.HandleFunc("GET /api/v1/heatmap", s.handleHeatmap)
-	mux.HandleFunc("GET /api/v1/devices", s.handleDevices)
-	mux.HandleFunc("GET /api/v1/models", s.handleModels)
-	mux.HandleFunc("GET /api/v1/settings", s.handleGetSettings)
+	// Every read goes through readAuth. It is a no-op on a loopback-only
+	// server, so wrapping them all costs nothing in the common case and means
+	// adding an endpoint cannot accidentally leave one open.
+	mux.HandleFunc("GET /api/v1/overview", s.readAuth(s.handleOverview))
+	mux.HandleFunc("GET /api/v1/breakdown", s.readAuth(s.handleBreakdown))
+	mux.HandleFunc("GET /api/v1/blocks", s.readAuth(s.handleBlocks))
+	mux.HandleFunc("GET /api/v1/reports", s.readAuth(s.handleReports))
+	mux.HandleFunc("GET /api/v1/events", s.readAuth(s.handleEvents))
+	mux.HandleFunc("GET /api/v1/cache", s.readAuth(s.handleCache))
+	mux.HandleFunc("GET /api/v1/speed", s.readAuth(s.handleSpeed))
+	mux.HandleFunc("GET /api/v1/quota", s.readAuth(s.handleQuota))
+	mux.HandleFunc("GET /api/v1/heatmap", s.readAuth(s.handleHeatmap))
+	mux.HandleFunc("GET /api/v1/devices", s.readAuth(s.handleDevices))
+	mux.HandleFunc("GET /api/v1/models", s.readAuth(s.handleModels))
+	mux.HandleFunc("GET /api/v1/settings", s.readAuth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
-	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
-	mux.HandleFunc("GET /api/v1/live", s.handleLive)
+	mux.HandleFunc("GET /api/v1/stream", s.readAuthStream(s.handleStream))
+	mux.HandleFunc("GET /api/v1/live", s.readAuth(s.handleLive))
+	// Health stays open on purpose: it carries no usage data, and it is what a
+	// client probes to tell "wrong address" from "wrong token".
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"status": "ok"})
+		writeJSON(w, map[string]any{"status": "ok", "auth_required": !s.loopbackOnly()})
 	})
+	// The panel itself is usage data once it loads, but it cannot send a header
+	// on the initial navigation — so the shell is served open and every XHR it
+	// makes is authenticated. Nothing in the static files is private.
 	mux.Handle("GET /", http.FileServerFS(web.FS))
 
-	log.Printf("omnitoken server listening on %s (db: %s)", s.cfg.Listen, s.cfg.DBPath)
+	if s.loopbackOnly() {
+		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
+	} else {
+		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
+	}
 	return http.ListenAndServe(s.cfg.Listen, mux)
 }
 
-// auth guards ingestion with the shared token (viewing APIs stay open —
-// intended for LAN/tailnet exposure, put a reverse proxy in front otherwise).
+// auth guards the write endpoints with the shared token, whenever one is set.
+//
+// Writes and reads are guarded by different rules on purpose. A write with no
+// token configured is accepted — that is how a single-machine setup ingests from
+// its own agent with zero configuration. Reads use readAuth, which derives the
+// requirement from the listen address instead (ADR-0016).
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token != "" {
-			got := r.Header.Get("Authorization")
-			want := "Bearer " + s.cfg.Token
-			if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			if !s.tokenOK(r) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) tokenOK(r *http.Request) bool {
+	got := r.Header.Get("Authorization")
+	want := "Bearer " + s.cfg.Token
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// queryTokenOK accepts the credential as `?access_token=` — for the one endpoint
+// where a header is not available.
+//
+// The browser's EventSource API cannot set headers, so an SSE stream has no other
+// way to authenticate. A token in a URL is genuinely worse than one in a header:
+// it lands in access logs and in `Referer`. It is therefore accepted on
+// /api/v1/stream and nowhere else, so the weaker channel cannot be used to reach
+// the other thirteen endpoints. The desktop client does not use it at all — its
+// stream runs through Rust, which can set headers (ADR-0014).
+func (s *Server) queryTokenOK(r *http.Request) bool {
+	got := r.URL.Query().Get("access_token")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+}
+
+// readAuth guards the read endpoints — but only when the server is reachable
+// from somewhere other than this machine (ADR-0016).
+//
+// Every GET here was unauthenticated by design, and ADR-0008 leaned on that: it
+// is why the menubar client stores an address and no token. The premise that
+// made it safe was written down at the time — "服务端只听 127.0.0.1". The moment
+// a second machine has to reach this server, that premise is gone and fourteen
+// endpoints plus the whole panel become readable by anyone who can route to it.
+//
+// So the rule is derived from the listen address rather than left to a flag:
+//
+//   - loopback only        → reads stay open. Single-machine setups, which are
+//     the common case, keep working with no config at all.
+//   - reachable + token    → reads require the token, like ingest.
+//   - reachable + no token → refused at startup (see requireAuthConsistency);
+//     never served open.
+//
+// Deriving it means a user cannot accidentally expose the panel by editing one
+// line, which is exactly how the old default (`:8787`, all interfaces) would
+// have done it.
+func (s *Server) readAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.readAuthWith(next, false)
+}
+
+// readAuthStream is readAuth plus the query-parameter fallback, for SSE only.
+func (s *Server) readAuthStream(next http.HandlerFunc) http.HandlerFunc {
+	return s.readAuthWith(next, true)
+}
+
+func (s *Server) readAuthWith(next http.HandlerFunc, allowQuery bool) http.HandlerFunc {
+	if s.loopbackOnly() {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.tokenOK(r) && !(allowQuery && s.queryTokenOK(r)) {
+			// WWW-Authenticate so a browser hitting the panel directly gets a
+			// prompt rather than a bare 401 with no way forward.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// loopbackOnly reports whether cfg.Listen can only be reached from this machine.
+//
+// An empty host ("" as in ":8787") means every interface, which is the opposite
+// of loopback — getting that backwards would silently serve the panel to the
+// network, so it is spelled out rather than inferred.
+func (s *Server) loopbackOnly() bool {
+	host, _, err := net.SplitHostPort(s.cfg.Listen)
+	if err != nil {
+		// Unparseable: assume the worst rather than the convenient.
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// requireAuthConsistency refuses to start a server that would serve everyone's
+// usage data to the network with no credential.
+//
+// A warning was the alternative and it is not enough: the previous default was
+// `:8787` — every interface — with unauthenticated reads, so the insecure setup
+// was what a fresh install got, and a log line nobody reads was the only thing
+// standing in front of it. Failing loudly at startup, with the two ways to fix
+// it named, is the only version of this that actually protects anybody.
+func (s *Server) requireAuthConsistency() error {
+	if s.loopbackOnly() || s.cfg.Token != "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"listen=%q 可被其它机器访问,但没有配置 token —— 读接口会把全部用量数据对外公开。\n"+
+			"  二选一:\n"+
+			"    1) 配 \"token\": \"<随机串>\"(读写都要它,面板与桌面端在设置里填同一个);\n"+
+			"    2) 改回 \"listen\": \"127.0.0.1:8787\",让其它机器经 SSH 反向隧道或中继上报(ADR-0003)",
+		s.cfg.Listen)
 }
 
 type ingestRequest struct {

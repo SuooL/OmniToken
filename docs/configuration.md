@@ -22,17 +22,17 @@
 > 生成的文件里 `db` / `state` / `mirror` 是**解析后的绝对路径**,指向 `~/.omnitoken/`。
 > 想在一台机器上跑第二个实例,记得把这三项改掉 —— 否则两个实例会写同一个 SQLite 库。
 
-生成的文件权限为 `0600`,因为它承载 ingest token。
+生成的文件权限为 `0600`,因为它承载读写共用的 token。
 
 ## 服务端 `~/.omnitoken/config.json`
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `listen` | `:8787` | HTTP 监听地址 |
+| `listen` | `127.0.0.1:8787` | HTTP 监听地址。**默认只听本机**;填非 loopback 地址时必须配 `token`,见下 |
 | `db` | `~/.omnitoken/omnitoken.db` | SQLite 路径 |
 | `state` | `~/.omnitoken/server-state.json` | 采集 offset/repo 缓存 |
 | `mirror` | `~/.omnitoken/mirror` | SSH 拉取镜像根目录 |
-| `token` | 空 | ingest bearer token;空 = 不鉴权(启动警告) |
+| `token` | 空 | 共享 bearer token,读写共用。写接口:配了就要,空 = 不鉴权(启动警告)。读接口:`listen` 非 loopback 时必须有,见下 |
 | `device_name` | hostname | 本机作为被统计设备的名字 |
 | `pricing_overrides` | — | `{模型: {input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok}}`(单位 USD/百万 token) |
 | `worktime_idle_minutes` | 5 | 工时空闲停表阈值(ADR-0006) |
@@ -44,6 +44,129 @@
 | `collect.ssh_hosts` | — | `[{host, name}]`,host 可用 ~/.ssh/config 别名 |
 | `proxy_listen` | 空 | 在服务端内起本地 API 代理(F14),如 `127.0.0.1:8899`;空 = 不启用 |
 | `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` |
+
+### 读接口鉴权:由 `listen` 推导(ADR-0016)
+
+要不要令牌不是一个开关,而是从监听地址算出来的:
+
+| `listen` | `token` | 读接口 | 启动 |
+|---|---|---|---|
+| loopback(`127.0.0.1` / `localhost` / `[::1]`) | 空或有 | 免鉴权 | 正常 |
+| 非 loopback(`0.0.0.0`、`:8787`、`192.168.x.x`、组网 IP…) | 有 | 要 `Authorization: Bearer <token>` | 正常 |
+| 非 loopback | 空 | —— | **拒绝启动,退出码 1** |
+
+> `":8787"` 的主机名是空的,那表示**所有网络接口**,不是本机。所以它属于第二、三行。
+
+拒绝启动而不是打警告,是因为旧默认值(`:8787` + 免鉴权读)已经证明警告拦不住什么:
+那份配置会把全部用量历史对同网段公开,而唯一的提示说的是写接口。错误信息里直接给出
+两条修法。
+
+**破坏性变更:配置文件里显式写着 `"listen": ":8787"` 的部署,升级后会启动失败。**
+默认值改了救不了它 —— 显式值优先。首次运行自动生成的 `config.json` 里就带着旧的
+`":8787"`,所以命中的是「装完没动过配置」这类部署。二选一:
+
+```jsonc
+// 1) 保持对外可达,配一个令牌(面板、桌面端、agent、statusline 填同一个)
+{ "listen": ":8787", "token": "生成一个随机串,如 openssl rand -hex 24" }
+
+// 2) 改回只听本机,让别的机器经隧道/中继上报(下一节)
+{ "listen": "127.0.0.1:8787" }
+```
+
+配了 token 之后:
+
+- **网页面板**:设置 → 访问令牌,填 `config.json` 里的同一个 `token`。就是原来那个
+  「写入令牌」框,读写共用一个,存在本浏览器的 localStorage。没填时面板顶部会挂一条
+  横幅提示,不会九个页面都报 401 而不说原因。
+- **桌面端**:设置里在服务端地址下面填同一个 token。它明文存在应用配置目录里
+  (与地址并列),理由见 ADR-0016 第 8 条。
+- **agent / statusline**:各自配置里的 `token` 字段,同一个串。
+- **curl**:`curl -H "Authorization: Bearer $TOK" http://host:8787/api/v1/overview`。
+
+`GET /api/v1/health` 与面板外壳 `GET /` 始终免鉴权:前者不含任何用量数据,是用来
+区分「地址错了」与「令牌错了」的探针(返回 `auth_required`);后者是因为浏览器首次
+导航没法带请求头,而静态文件里没有私有内容 —— 它之后的每一次请求都要令牌。
+
+**`?access_token=` 只有 `/api/v1/stream` 认。** 浏览器的 `EventSource` 不能设请求头,
+SSE 只剩这条路。URL 里的令牌会进访问日志和 `Referer`,所以这个口子被限死在这一个
+端点上,拿它去请求 `/api/v1/live` 会照样 401。自己写脚本消费 SSE 时能设头就设头。
+
+### 多设备怎么配
+
+不需要为多设备发明新机制,ADR-0003 的四条(直连 / 组网 / 中继 / SSH 拉取)已经够用,
+可任意混用,服务端不区分来路。按「第二台机器能不能直接连上服务端」选:
+
+**A. 内网/组网可直达 —— agent 出站直连**(ADR-0003 第 1 条)
+
+服务端对外可达,所以必须有 token:
+
+```jsonc
+// 服务端 ~/.omnitoken/config.json
+{ "listen": ":8787", "token": "<随机串>" }
+```
+
+```jsonc
+// 被统计机器 ~/.omnitoken/agent.json
+{ "server": "http://192.168.1.10:8787", "token": "<同一个随机串>", "name": "macmini" }
+```
+
+`server` 填组网虚拟 IP(Tailscale / EasyTier)完全同理 —— agent 不感知拓扑,
+对它来说都只是一个 URL。
+
+**B. 只能经某台同伴到达 —— 链式中继**(ADR-0003 第 3 条)
+
+机器 d 连不到服务端但能连到 c。c 上的 agent 开一个中继端口,原样转发 ingest:
+
+```jsonc
+// 机器 c 的 agent.json:自己上报,同时替 d 转发
+{ "server": "http://192.168.1.10:8787", "token": "<随机串>", "relay_listen": ":8788" }
+```
+
+```jsonc
+// 机器 d 的 agent.json:指向 c
+{ "server": "http://c.local:8788", "token": "<同一个随机串>", "name": "d" }
+```
+
+中继无状态、不落盘(日志本身就是重传缓冲),转发失败向下游透传错误。token 是原样
+带过去的,所以三处必须一致。
+
+**C. 想让服务端继续只听本机 —— SSH 隧道**
+
+这是不想管令牌时最省事、也是鉴权最强的一种:加密与鉴权都由 SSH 承担,服务端一个
+字节都不对外。
+
+```jsonc
+// 服务端:不动,保持默认
+{ "listen": "127.0.0.1:8787" }
+```
+
+在被统计机器上把服务端的端口拉到本地,再让 agent 连本地:
+
+```sh
+# 被统计机器 → 服务端:把服务端的 8787 映射成本机的 8787
+ssh -N -L 8787:127.0.0.1:8787 user@server        # 常驻可交给 autossh / systemd
+```
+
+```jsonc
+// 被统计机器 ~/.omnitoken/agent.json:token 留空即可,读写都由 SSH 保护
+{ "server": "http://127.0.0.1:8787", "name": "macmini" }
+```
+
+反过来,只有服务端能主动连出去时用反向隧道:在**服务端**上跑
+`ssh -N -R 8787:127.0.0.1:8787 user@被统计机器`,被统计机器那侧的 `agent.json` 写法不变。
+
+**D. 远端不允许装任何东西 —— SSH 拉取**(ADR-0003 第 2 条)
+
+服务端 rsync 远端日志目录到本地镜像再解析,远端零部署,只需要一条你本来就有的
+SSH 通道:
+
+```jsonc
+// 服务端 config.json:host 可以是 ~/.ssh/config 里的别名
+{ "listen": "127.0.0.1:8787",
+  "collect": { "ssh_hosts": [{ "host": "macmini", "name": "macmini" }] } }
+```
+
+实时性受拉取周期限制(自动降频至 ≥60s),换来的是远端完全不用动。
 
 ### 重扫 `-rescan`
 
@@ -113,7 +236,7 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `server` | `http://127.0.0.1:8787` | OmniToken 服务端地址 |
-| `token` | 空 | 服务端要求鉴权时填 |
+| `token` | 空 | 服务端 `listen` 非 loopback 时必填 —— 它读 `/api/v1/overview` 与 `/api/v1/quota`,那也是读接口(ADR-0016) |
 | `segments` | `["session","today","quota"]` | 段顺序,可裁剪 |
 | `separator` | ` · ` | 段分隔符 |
 | `cache_path` | `~/.omnitoken/statusline-cache.json` | 兜底缓存 |

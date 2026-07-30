@@ -7,3 +7,5 @@
 # machine-local, not project config
 .DS_Store
 .claude/settings.local.json
+# Scratch git worktrees for parallel subagents; each is its own checkout.
+.claude/worktrees/
