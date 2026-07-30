@@ -231,13 +231,23 @@ body::before {
 }
 .card:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
 h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
-.card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.card-head h2 { margin-bottom: 0; }
+/* Wraps as a whole: a legend wide enough to crowd the title takes its own line
+   instead of squeezing it. Without this the flex row shrinks the heading first,
+   and "每日模型构成 · 前 4 个模型" broke across two lines while the legend beside
+   it sat on one. The heading therefore refuses to shrink, but is still capped
+   at the container so a long one wraps inside itself rather than overflowing. */
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.card-head h2 { margin-bottom: 0; flex: 0 0 auto; max-width: 100%; }
 /* Wraps rather than overflowing: this slot holds button groups and legends
    that are wider than a phone screen. min-width: 0 because a flex item's auto
    minimum would otherwise keep it from shrinking below its content. */
 .head-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 
+/* Tiles stretch to fill the row rather than stopping at a cap. A cap was tried
+   and reverted: it keeps a tile the size of its number, but it also leaves a
+   dead column of background on a wide screen, and blank space to the right is
+   the thing the full-bleed shell exists to eliminate. A row that is too empty
+   is a sign the page needs another tile, not a narrower grid. */
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-tile {
   background:
