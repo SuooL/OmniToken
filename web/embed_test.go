@@ -155,6 +155,27 @@ func TestPollingViewsGuardEveryAsyncCompletionAndRenderEmpty(t *testing.T) {
 	}
 }
 
+func TestFleetViewsRenderRegisteredIdentityLivenessAndBacklog(t *testing.T) {
+	devices := embeddedAsset(t, "devicesview.js")
+	for _, contract := range []string{
+		"identity_status",
+		"connection_state",
+		"display_name",
+		"last_seen_at",
+		"queued_batches",
+	} {
+		if !strings.Contains(devices, contract) {
+			t.Errorf("devices view must render registry field %q", contract)
+		}
+	}
+	live := embeddedAsset(t, "live.js")
+	for _, contract := range []string{"display_name", "connection_state", "last_seen_at"} {
+		if !strings.Contains(live, contract) {
+			t.Errorf("live view must render registry field %q", contract)
+		}
+	}
+}
+
 func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 	source := embeddedAsset(t, "settingsview.js")
 	for _, contract := range []string{

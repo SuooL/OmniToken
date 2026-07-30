@@ -253,8 +253,9 @@ a.ghost-btn { text-decoration: none; }
 
 /* device state: color + text label together, never color alone */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--text-muted); }
-.dot.active { background: #0ca30c; }
+.dot.active, .dot.online { background: #0ca30c; }
 .dot.idle { background: #fab219; }
+.dot.offline, .dot.stale { background: var(--text-muted); }
 .dev-row .sub2 { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 .subtle { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
 

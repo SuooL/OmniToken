@@ -109,10 +109,10 @@ const Live = {
     devEl.innerHTML = devs.length ? devs.map((v) => `
       <div class="row dev-row">
         <div class="row-head">
-          <span class="key"><span class="dot ${v.state}"></span>${esc(v.device)} <span class="extra">${this.stateLabel(v.state)}</span></span>
+          <span class="key"><span class="dot ${v.state}"></span>${esc(v.display_name || v.device)} <span class="extra">${this.connectionLabel(v)}</span></span>
           <span class="val">${compact(v.today_tokens)} <span class="extra">今日</span></span>
         </div>
-        <div class="row-head sub2"><span class="key">最后活动 ${relTime(v.last_ts)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
+        <div class="row-head sub2"><span class="key">最后活动 ${this.deviceLastSeen(v)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
       </div>`).join("") : `<span class="empty">暂无设备</span>`;
 
     const sesEl = document.getElementById("live-sessions");
@@ -235,6 +235,16 @@ const Live = {
 
   stateLabel(s) {
     return { active: "活跃", idle: "空闲", stale: "离线" }[s] || s;
+  },
+
+  connectionLabel(v) {
+    if (v.identity_status !== "registered") return this.stateLabel(v.state);
+    return { online: "在线", stale: "延迟", offline: "离线" }[v.connection_state] || "未知";
+  },
+
+  deviceLastSeen(v) {
+    const timestamp = v.identity_status === "registered" ? v.last_seen_at : v.last_ts;
+    return timestamp ? relTime(timestamp) : "从未连接";
   },
 
   trunc(s, n) {

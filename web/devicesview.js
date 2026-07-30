@@ -15,7 +15,8 @@ const DEVICE_SERIES_VARS = ["--series-1", "--series-2", "--series-3", "--series-
 const DEVICE_SERIES_MAX = 4;
 
 function devicesIsEmpty(data) {
-  return !(data.summary || []).some((row) => (row.total_tokens || 0) > 0);
+  return !(data.summary || []).some((row) =>
+    (row.total_tokens || 0) > 0 || row.identity_status === "registered");
 }
 
 const DevicesView = {
@@ -72,8 +73,9 @@ const DevicesView = {
   render(d) {
     const root = document.getElementById("view-devices");
     const days = d.days || 30;
-    const summary = (d.summary || []).filter((r) => r.total_tokens > 0);
-    const series = this.series(summary);
+    const summary = d.summary || [];
+    const usageSummary = summary.filter((r) => r.total_tokens > 0);
+    const series = this.series(usageSummary);
     const matrix = this.matrix(d.daily || [], series, days);
     // Built once: an ECharts instance cannot survive its container being
     // rewritten on every poll.
@@ -99,6 +101,9 @@ const DevicesView = {
   },
 
   label(device) {
+    if (device && typeof device === "object") {
+      return device.display_name || device.device || "(未知设备)";
+    }
     return device || "(未知设备)";
   },
 
@@ -106,7 +111,7 @@ const DevicesView = {
   series(summary) {
     const out = summary.slice(0, DEVICE_SERIES_MAX).map((r, i) => ({
       key: r.device,
-      label: this.label(r.device),
+      label: this.label(r),
       varName: DEVICE_SERIES_VARS[i],
     }));
     const rest = summary.slice(DEVICE_SERIES_MAX);
@@ -160,7 +165,7 @@ const DevicesView = {
       </div>
       <div class="stat-tile">
         <div class="label">最活跃设备</div>
-        <div class="value">${top ? esc(this.label(top.device)) : "—"}</div>
+        <div class="value">${top ? esc(this.label(top)) : "—"}</div>
         <div class="sub">${top ? `${compact(top.total_tokens)} tokens · ${share}` : "暂无数据"}</div>
       </div>`;
   },
@@ -223,7 +228,7 @@ const DevicesView = {
   table(summary) {
     if (!summary.length) return `<span class="empty">暂无数据</span>`;
     return `<table><thead><tr>
-        <th>设备</th><th>今日</th><th>区间 tokens</th><th>成本</th>
+        <th>设备</th><th>连接</th><th>待发送</th><th>今日</th><th>区间 tokens</th><th>成本</th>
         <th>最后活动</th><th>项目</th><th>主力模型</th>
       </tr></thead><tbody>` +
       summary.map((r) => {
@@ -236,16 +241,34 @@ const DevicesView = {
         const model = r.top_model
           ? `${esc(r.top_model)} <span class="dev-share">${compact(r.top_model_tokens)}</span>`
           : "—";
+        const connection = r.identity_status === "registered"
+          ? this.connectionLabel(r.connection_state)
+          : "旧版设备";
+        const lastSeen = r.identity_status === "registered" ? r.last_seen_at : r.last_ts;
+        const backlog = r.identity_status === "registered"
+          ? (r.queued_batches
+            ? `${full(r.queued_batches)} 批 · ${compact(r.queued_bytes || 0)}B`
+            : "已清空")
+          : "—";
         return `<tr>
-          <td title="${esc(this.label(r.device))}">${esc(this.label(r.device))}</td>
+          <td title="${esc(r.device || "")}">
+            ${esc(this.label(r))}
+            ${r.display_name && r.device_id ? `<span class="dev-share">${esc(r.device_id.slice(0, 8))}</span>` : ""}
+          </td>
+          <td><span class="dot ${r.connection_state || "stale"}"></span>${connection}</td>
+          <td>${backlog}</td>
           <td>${compact(r.today_tokens || 0)}</td>
           <td>${full(r.total_tokens)}</td>
           <td>${cost}</td>
-          <td>${r.last_ts ? relTime(r.last_ts) : "—"}</td>
+          <td>${lastSeen ? relTime(lastSeen) : "从未连接"}</td>
           <td>${full(r.repos)}</td>
           <td>${model}</td>
         </tr>`;
       }).join("") +
       `</tbody></table>`;
+  },
+
+  connectionLabel(state) {
+    return { online: "在线", stale: "延迟", offline: "离线", unknown: "未知" }[state] || "未知";
   },
 };
