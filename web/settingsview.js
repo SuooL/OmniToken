@@ -7,8 +7,11 @@
 // Renders into #view-settings. Writes go to PUT /api/v1/settings, which is
 // token-protected; the token is kept in localStorage (this panel is meant for
 // a LAN/tailnet, the token is the same one the agents use).
-
-const SETTINGS_TOKEN_KEY = "omnitoken.token";
+//
+// Since ADR-0016 the same token also authenticates *reads* whenever the server
+// listens on anything but loopback — so this box is the one place a token is
+// entered, and Api owns the storage.
+const SETTINGS_TOKEN_KEY = Api.TOKEN_KEY;
 
 const SettingsView = {
   _rows: [],       // pricing overrides being edited: {model, in, out, cr, cw}
@@ -40,7 +43,14 @@ const SettingsView = {
       document.getElementById("refresh-note").textContent =
         "设置已载入 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
-      root.innerHTML = `<section class="card"><span class="empty">设置读取失败:${esc(e.message)}</span></section>`;
+      // The token card must survive this. A server that authenticates reads
+      // (ADR-0016) 401s the settings fetch until a token is stored — and the
+      // box for storing it lives on this page, so bailing out entirely left the
+      // user with a banner telling them to come here and nothing to type into.
+      root.innerHTML =
+        `<section class="card"><span class="empty">设置读取失败:${esc(e.message)}</span></section>` +
+        this.tokenCard();
+      this.bind(root);
     }
   },
 
@@ -137,14 +147,16 @@ const SettingsView = {
     return `
       <section class="card" id="card-token">
         <div class="card-head">
-          <h2>写入令牌</h2>
+          <h2>访问令牌</h2>
           <div class="head-tools"><button class="ghost-btn" data-act="save-token">记住</button></div>
         </div>
         <div class="filter-row">
           <input class="form-input" id="settings-token" type="password" size="36"
                  value="${esc(tok)}" placeholder="config.json 里的 token,未配置则留空">
         </div>
-        <p class="subtle">保存设置属于写接口,需与 agent 相同的 bearer token。令牌只存在本浏览器的 localStorage,不会上报。</p>
+        <p class="subtle">与 agent 相同的 bearer token,来自 <code>config.json</code> 的 <code>token</code>。
+          保存设置(写接口)一直需要它;服务端若监听非 loopback 地址,读接口也需要它(ADR-0016)。
+          只监听 127.0.0.1 时留空即可。令牌只存在本浏览器的 localStorage,不会上报。</p>
         <div class="save-note" data-note="token">&nbsp;</div>
       </section>`;
   },
@@ -170,9 +182,14 @@ const SettingsView = {
         this.saveDevices();
       } else if (act === "save-token") {
         const v = document.getElementById("settings-token").value.trim();
-        if (v) localStorage.setItem(SETTINGS_TOKEN_KEY, v);
-        else localStorage.removeItem(SETTINGS_TOKEN_KEY);
+        // Api owns the storage so reads pick it up immediately — without this
+        // the panel would keep 401ing until a reload.
+        Api.saveToken(v);
         this.note("token", true, v ? "令牌已记住(仅本浏览器)" : "令牌已清除");
+        // Reload the page's own data: entering the token is the fix for a 401,
+        // so the cards it was blocking should come back without a manual
+        // refresh. Only when there is one — clearing it would just 401 again.
+        if (v && !this._loaded) this.load();
       }
     };
   },

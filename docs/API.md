@@ -1,7 +1,20 @@
 # HTTP / SSE 接口契约
 
-服务端所有接口挂在 `omnitoken serve` 的监听地址下。写接口(ingest)受 bearer token
-保护(配置 `token`;未配置时不鉴权并在启动时警告);读接口面向内网/组网。
+服务端所有接口挂在 `omnitoken serve` 的监听地址下。写接口(`POST /api/v1/ingest`、
+`PUT /api/v1/settings`)在配置了 `token` 时受 bearer token 保护,未配置时不鉴权并在
+启动时警告。读接口要不要凭据不由开关决定,而是**由监听地址推导**(ADR-0016),
+用的是与写接口同一个 `token`:
+
+| 监听地址 | 读接口 |
+|---|---|
+| 仅 loopback(`127.0.0.1` / `localhost` / `[::1]`,默认) | 免鉴权,零配置 |
+| 可被其它机器访问 + 配了 `token` | 必带 `Authorization: Bearer <token>` |
+| 可被其它机器访问 + 没配 `token` | 服务端启动即拒绝(退出码 1) |
+
+空主机名(`":8787"`)算**每一个网络接口**,不算 loopback。读接口的 401 带
+`WWW-Authenticate: Bearer realm="omnitoken"`。`GET /api/v1/health` 与面板外壳
+(`GET /`)始终免鉴权 —— 浏览器首次导航没法带头,而外壳是空壳,它之后发出的每一次
+XHR 都走读鉴权。
 
 ## 写入
 
@@ -98,7 +111,11 @@ Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-
 
 ### GET /api/v1/health
 
-`{"status":"ok"}`,中继节点返回 `{"status":"relay"}`。
+`{"status":"ok","auth_required":<bool>}`,中继节点返回 `{"status":"relay"}`。
+
+免鉴权,且不携带任何用量数据 —— 它是客户端用来区分「地址错了」与「令牌错了」的
+唯一手段。`auth_required` 即上表的判定结果:面板启动时探一次,服务端要 token 而本
+浏览器没有时挂横幅指向**设置 → 访问令牌**。
 
 ## 实时
 
@@ -107,6 +124,10 @@ Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-
 契约对齐 token-monitor hub(见 references.md):响应头含
 `x-accel-buffering: no`;连接即推 `snapshot` 事件,之后每次入库(本地采集与
 HTTP ingest 两条路径都触发)推 `live` 事件(≥1s 合并去抖);每 30s 注释行心跳。
+
+浏览器的 `EventSource` 不能设请求头,所以读接口要鉴权时,此端点额外接受
+`?access_token=<token>`。这条较弱的通道**只在这一个端点上被接受**,其余读接口带
+query 令牌一律 401(ADR-0016);桌面端的流走 Rust,能设头,不用它。
 
 事件 data:`devices`(每设备最后活跃、今日用量、online 状态:active <2min /
 idle / stale >10min,以及 `has_procs` / `running`)、`sessions`(近 10 分钟活跃会话:
@@ -126,6 +147,9 @@ reporters: [{device, observed_at}], ttl_seconds: 90}`。`reporters` 是**有进�
 
 上面那份 `snapshot` 的单次 GET 版本,字段完全相同(同一个 `livePayload`)。
 
-给轮询的客户端用 —— 菜单栏应用不常驻 SSE 连接(ADR-0008 把 SSE 桥接推到 v1 之后)。
+给**拿不到流**的客户端用。菜单栏应用早期只轮询它(ADR-0008 把 SSE 桥接推到 v1 之后),
+ADR-0014 之后它改为在 Rust 侧常驻一条 `/api/v1/stream`,这个端点降为它的断流兜底 ——
+流断了就退回轮询,并在界面上标注当前是降级状态。
+
 两者共用一份构造是有意为之:燃烧速率只定义一次,面板与 Live 页不会对同一个
-十分钟给出不同的数。网页面板仍走 SSE,不要用这个端点轮询。
+十分钟给出不同的数。网页面板走 SSE,不要用这个端点轮询。

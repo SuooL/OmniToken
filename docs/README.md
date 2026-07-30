@@ -2,7 +2,7 @@
 
 | 文档 | 内容 | 何时读/改 |
 |---|---|---|
-| [requirements.md](requirements.md) | 需求规格:背景、目标、F1–F18 功能表、非功能约束、验收基准 | 需求变更时先改这里 |
+| [requirements.md](requirements.md) | 需求规格:背景、目标、F1–F26 功能表、非功能约束、验收基准 | 需求变更时先改这里 |
 | [architecture.md](architecture.md) | 架构设计:分层、设计模式、不变量、数据模型、待实现部分设计 | 动结构性代码前 |
 | [adr/](adr/README.md) | 架构决策记录:每个重大决策的背景/决策/后果 | 做/推翻重大决策时 |
 | [references.md](references.md) | 参考项目调研(ccusage、token-monitor)与日志格式实测记录 | 写/改解析器前必读 |

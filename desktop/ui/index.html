@@ -91,6 +91,10 @@
     <input id="server-input" type="text" placeholder="127.0.0.1:8787"
            spellcheck="false" autocapitalize="off" autocorrect="off">
     <div class="hint">运行 <code>omnitoken serve</code> 的地址。省略 http:// 也可以。</div>
+    <label class="eyebrow" for="token-input">访问令牌</label>
+    <input id="token-input" type="password" placeholder="服务端只监听本机时留空"
+           spellcheck="false" autocapitalize="off" autocorrect="off">
+    <div class="hint">服务端监听非 loopback 地址时,读取需要 <code>config.json</code> 里的 <code>token</code>。</div>
     <div class="msg" id="settings-msg" aria-live="polite"></div>
     <div class="actions">
       <button type="button" id="settings-cancel">取消</button>

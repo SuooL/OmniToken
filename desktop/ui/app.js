@@ -23,6 +23,9 @@ const listen = window.__TAURI__ && window.__TAURI__.event.listen;
 // Set from the stored settings before the first snapshot. Rust owns the value
 // and the normalisation; this is only the copy the panel reads between saves.
 let SERVER = "";
+// Kept only so the settings box can be pre-filled. Every request's credential is
+// attached on the Rust side (ADR-0016).
+let TOKEN = "";
 
 // Live data is pushed, not pulled: Rust holds one /api/v1/stream connection and
 // forwards each snapshot here, to the tray glyph and to the quota alerts at the
@@ -39,9 +42,11 @@ let overview = null;
 let latest = null;
 
 // All HTTP goes through Rust: the webview is on tauri://localhost and the
-// server sends no CORS headers on purpose (ADR-0008).
+// server sends no CORS headers on purpose (ADR-0008). Rust also holds the token
+// (ADR-0016) — the webview never sees it, so it cannot end up in a rendered
+// string or an error message.
 async function apiGet(path) {
-  return invoke("api_get", { base: SERVER, path });
+  return invoke("api_get", { path });
 }
 
 const $ = (id) => document.getElementById(id);
@@ -447,6 +452,7 @@ const els = {
   main: $("main"),
   settings: $("settings"),
   input: $("server-input"),
+  token: $("token-input"),
   msg: $("settings-msg"),
   save: $("settings-save"),
 };
@@ -465,6 +471,7 @@ function say(text, kind) {
 
 function openSettings() {
   els.input.value = SERVER;
+  els.token.value = TOKEN;
   say("");
   els.main.hidden = true;
   els.settings.hidden = false;
@@ -492,8 +499,12 @@ async function saveSettings() {
     // Persist first, then check. The address may well be right and the server
     // simply not started yet, and throwing away what was just typed would be a
     // poor way to report that.
-    const stored = await invoke("settings_set", { server: els.input.value });
+    const stored = await invoke("settings_set", {
+      server: els.input.value,
+      token: els.token.value,
+    });
     SERVER = stored.server;
+    TOKEN = stored.token;
     showServer();
     els.input.value = SERVER;
 
@@ -516,10 +527,12 @@ async function saveSettings() {
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 els.save.addEventListener("click", saveSettings);
-els.input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") saveSettings();
-  if (e.key === "Escape") closeSettings();
-});
+for (const el of [els.input, els.token]) {
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveSettings();
+    if (e.key === "Escape") closeSettings();
+  });
+}
 
 // The full panel is one click from the popover as well as from the tray menu:
 // looking at a figure and wanting the history behind it is the common path, and
@@ -542,6 +555,7 @@ document.addEventListener("keydown", (e) => {
 async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
+  TOKEN = stored.token || "";
   showServer();
 
   // Subscribe before anything else: the bridge is already running by the time

@@ -237,6 +237,20 @@ a.ghost-btn { text-decoration: none; }
 .stat-tile .sub.proj.over { color: var(--meter-critical); font-weight: 600; }
 .chip.authoritative { border-color: var(--series-2); color: var(--series-2); padding: 1px 7px; font-size: 11px; }
 .stat-tile .label .chip { padding: 1px 7px; font-size: 11px; margin-left: 4px; }
+/* Shown once, at the top, when the server wants a token the browser does not
+   have (ADR-0016). Without it the panel is nine pages of identical 401s and no
+   indication of where the fix lives. */
+.auth-banner {
+  grid-column: 1 / -1;
+  margin: 0; padding: 10px var(--gutter);
+  font-size: 12px; line-height: 1.6;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--meter-warn) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--meter-warn) 45%, transparent);
+}
+.auth-banner a { color: var(--accent); }
+.auth-banner code { font-family: var(--font-display); }
+
 /* device state: color + text label together, never color alone */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--text-muted); }
 .dot.active { background: #0ca30c; }

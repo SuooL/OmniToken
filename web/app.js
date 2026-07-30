@@ -101,4 +101,24 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (currentView === "overview" && Overview.lastData) Overview.render(Overview.lastData);
 });
 
+// Before the first request: a server reachable from other machines needs the
+// token on reads too (ADR-0016), and every view fetches on enter.
+Api.loadToken();
+
+// A server that wants a token we do not have would otherwise show nine pages of
+// identical 401s with no hint about where to fix it. /api/v1/health is
+// unauthenticated precisely so this check is possible.
+(async function checkAuth() {
+  try {
+    const h = await (await fetch(Api.url("/api/v1/health"))).json();
+    if (h.auth_required && !Api.token) {
+      document.querySelector(".viz-root").insertAdjacentHTML("afterbegin",
+        `<div class="auth-banner">这台服务端可被其它机器访问,读取需要令牌。
+           请到 <a href="#settings">设置 → 访问令牌</a> 填写 <code>config.json</code> 里的 <code>token</code>。</div>`);
+    }
+  } catch (e) {
+    // Server down or not ours; the views report that themselves.
+  }
+})();
+
 route();

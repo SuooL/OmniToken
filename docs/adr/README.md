@@ -19,3 +19,4 @@ ADR 标注 supersedes,不改写历史。
 | [0012](0012-live-process-state.md) | 活跃会话的地面真值:agent 侧读本机进程表 | 已采纳 |
 | [0013](0013-proxy-log-same-request.md) | 同一次请求被日志与代理同时观测:共享 event_id、字段归属、代理边界 | 已采纳 |
 | [0014](0014-menubar-realtime-and-interaction.md) | 菜单栏客户端:SSE 实时桥、交互与视觉对齐(修订 0008) | 已采纳 |
+| [0016](0016-read-endpoint-auth.md) | 读接口鉴权由监听地址推导,默认监听改回 loopback(修订 0008) | 已采纳 |

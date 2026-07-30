@@ -36,22 +36,31 @@ pub(crate) fn http() -> &'static reqwest::Client {
 /// its read endpoints are unauthenticated, so allowing arbitrary origins would
 /// let any page the user visits read their usage data. Rust is not bound by
 /// the same-origin policy, so the request happens here instead.
-pub(crate) async fn get_json(base: &str, path: &str) -> Result<Value, String> {
+pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Value, String> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let res = http()
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("{url}: {e}"))?;
+    let mut req = http().get(&url);
+    if !token.is_empty() {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| format!("{url}: {e}"))?;
+    if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // Named, because "wrong token" and "wrong address" are different
+        // problems and a bare 401 does not say which (ADR-0016).
+        return Err(format!("{url}: 401 未授权 —— 请在设置里填写服务端的 token"));
+    }
     if !res.status().is_success() {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
     res.json::<Value>().await.map_err(|e| format!("{url}: {e}"))
 }
 
+/// The frontend passes only the path: the address and the token are the Rust
+/// side's business, and handing a credential to the webview to hand back would
+/// be a way for it to leak into a rendered string.
 #[tauri::command]
-async fn api_get(base: String, path: String) -> Result<Value, String> {
-    get_json(&base, &path).await
+async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
+    let s = settings::load(&app);
+    get_json(&s.server, &path, &s.token).await
 }
 
 #[tauri::command]
@@ -66,9 +75,14 @@ fn settings_get(app: tauri::AppHandle) -> settings::Settings {
 /// typed would be the wrong way to say so. The frontend probes afterwards and
 /// reports the result separately.
 #[tauri::command]
-fn settings_set(app: tauri::AppHandle, server: String) -> Result<settings::Settings, String> {
+fn settings_set(
+    app: tauri::AppHandle,
+    server: String,
+    token: String,
+) -> Result<settings::Settings, String> {
     let mut next = settings::load(&app);
     next.server = settings::normalize(&server)?;
+    next.token = token.trim().to_string();
     settings::save(&app, &next)?;
 
     // Point the bridge at the new address now instead of waiting for the old

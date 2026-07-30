@@ -88,7 +88,13 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) applyDefaults() {
 	dd := DataDir()
 	if c.Listen == "" {
-		c.Listen = ":8787"
+		// Loopback, not `:8787`. The old default listened on every interface
+		// while the read endpoints were unauthenticated (ADR-0008), so a fresh
+		// install published its owner's entire usage history to the network —
+		// the insecure setup was the one you got by doing nothing.
+		// Reaching this server from another machine is now a deliberate act:
+		// either set a token (ADR-0016) or tunnel/relay to it (ADR-0003).
+		c.Listen = "127.0.0.1:8787"
 	}
 	if c.DBPath == "" {
 		c.DBPath = filepath.Join(dd, "omnitoken.db")
