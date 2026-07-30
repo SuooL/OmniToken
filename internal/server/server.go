@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
@@ -114,7 +115,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("GET /api/v1/devices", s.readAuth(s.handleDevices))
 	mux.HandleFunc("GET /api/v1/models", s.readAuth(s.handleModels))
 	mux.HandleFunc("GET /api/v1/settings", s.readAuth(s.handleGetSettings))
-	mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
+	mux.HandleFunc("PUT /api/v1/settings", s.adminAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/v1/stream", s.readAuthStream(s.handleStream))
 	mux.HandleFunc("GET /api/v1/live", s.readAuth(s.handleLive))
 	// Health stays open on purpose: it carries no usage data, and it is what a
@@ -144,7 +145,7 @@ func (s *Server) Run() error {
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token != "" {
-			if !s.tokenOK(r) {
+			if !credentialOK(r, s.cfg.Token) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -153,9 +154,21 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) tokenOK(r *http.Request) bool {
+// adminAuth guards settings mutation with the independently scoped admin
+// credential. An empty credential retains the legacy loopback/no-auth setup.
+func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminToken != "" && !credentialOK(r, s.cfg.AdminToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func credentialOK(r *http.Request, token string) bool {
 	got := r.Header.Get("Authorization")
-	want := "Bearer " + s.cfg.Token
+	want := "Bearer " + token
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
@@ -170,7 +183,7 @@ func (s *Server) tokenOK(r *http.Request) bool {
 // stream runs through Rust, which can set headers (ADR-0014).
 func (s *Server) queryTokenOK(r *http.Request) bool {
 	got := r.URL.Query().Get("access_token")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.ReadToken)) == 1
 }
 
 // readAuth guards the read endpoints — but only when the server is reachable
@@ -207,7 +220,7 @@ func (s *Server) readAuthWith(next http.HandlerFunc, allowQuery bool) http.Handl
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.tokenOK(r) && !(allowQuery && s.queryTokenOK(r)) {
+		if !credentialOK(r, s.cfg.ReadToken) && !(allowQuery && s.queryTokenOK(r)) {
 			// WWW-Authenticate so a browser hitting the panel directly gets a
 			// prompt rather than a bare 401 with no way forward.
 			w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken"`)
@@ -248,15 +261,32 @@ func (s *Server) loopbackOnly() bool {
 // standing in front of it. Failing loudly at startup, with the two ways to fix
 // it named, is the only version of this that actually protects anybody.
 func (s *Server) requireAuthConsistency() error {
-	if s.loopbackOnly() || s.cfg.Token != "" {
+	if s.loopbackOnly() {
 		return nil
 	}
-	return fmt.Errorf(
-		"listen=%q 可被其它机器访问,但没有配置 token —— 读接口会把全部用量数据对外公开。\n"+
-			"  二选一:\n"+
-			"    1) 配 \"token\": \"<随机串>\"(读写都要它,面板与桌面端在设置里填同一个);\n"+
-			"    2) 改回 \"listen\": \"127.0.0.1:8787\",让其它机器经 SSH 反向隧道或中继上报(ADR-0003)",
-		s.cfg.Listen)
+	if s.cfg.ReadToken == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但没有配置 read_token —— 读接口会把全部用量数据对外公开",
+			s.cfg.Listen)
+	}
+	if s.cfg.AdminToken == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但没有配置 admin_token —— settings 写接口缺少管理凭据",
+			s.cfg.Listen)
+	}
+	return nil
+}
+
+// authenticateIngestV2 binds the authenticated principal to the device_id in
+// the decoded envelope. A credential issued to one device therefore cannot be
+// used to submit a batch claiming another device's identity.
+func (s *Server) authenticateIngestV2(r *http.Request, envelope model.IngestEnvelopeV2) (store.DeviceRecord, bool, error) {
+	const prefix = "Bearer "
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, prefix) {
+		return store.DeviceRecord{}, false, nil
+	}
+	return s.store.AuthenticateDevice(envelope.DeviceID, strings.TrimPrefix(authorization, prefix))
 }
 
 type ingestRequest struct {

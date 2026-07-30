@@ -16,7 +16,12 @@ type Config struct {
 	StatePath  string `json:"state"`
 	MirrorRoot string `json:"mirror"`
 	Token      string `json:"token"` // shared bearer token for push-mode agents; empty = no auth
+	ReadToken  string `json:"read_token,omitempty"`
+	AdminToken string `json:"admin_token,omitempty"`
 	DeviceName string `json:"device_name"`
+
+	readTokenConfigured  bool `json:"-"`
+	adminTokenConfigured bool `json:"-"`
 
 	// PricingOverrides: per-1M-token USD prices keyed by model id (ADR-0005).
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides,omitempty"`
@@ -80,6 +85,12 @@ func LoadConfig(path string) (*Config, error) {
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return nil, err
+		}
+		_, cfg.readTokenConfigured = fields["read_token"]
+		_, cfg.adminTokenConfigured = fields["admin_token"]
 	}
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
@@ -102,6 +113,16 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) applyDefaults() {
+	// A legacy config had one shared token. Preserve its effective behavior
+	// only when the new scoped fields are absent; an explicitly empty scoped
+	// field remains empty and is caught by the non-loopback safety check.
+	if !c.readTokenConfigured {
+		c.ReadToken = c.Token
+	}
+	if !c.adminTokenConfigured {
+		c.AdminToken = c.Token
+	}
+
 	dd := DataDir()
 	if c.Listen == "" {
 		// Loopback, not `:8787`. The old default listened on every interface

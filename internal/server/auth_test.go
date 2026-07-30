@@ -3,13 +3,32 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/store"
 )
 
 // The rule these tests pin down (ADR-0016): whether a read needs a credential is
 // derived from the listen address, never from a flag someone has to remember.
 func srv(listen, token string) *Server {
-	return &Server{cfg: &Config{Listen: listen, Token: token}}
+	return &Server{cfg: &Config{
+		Listen:     listen,
+		Token:      token,
+		ReadToken:  token,
+		AdminToken: token,
+	}}
+}
+
+func scopedSrv(listen, ingestToken, readToken, adminToken string) *Server {
+	return &Server{cfg: &Config{
+		Listen:     listen,
+		Token:      ingestToken,
+		ReadToken:  readToken,
+		AdminToken: adminToken,
+	}}
 }
 
 func TestLoopbackOnly(t *testing.T) {
@@ -147,5 +166,157 @@ func TestDefaultListenIsLoopback(t *testing.T) {
 	}
 	if err := (&Server{cfg: cfg}).requireAuthConsistency(); err != nil {
 		t.Errorf("default config must start with no token: %v", err)
+	}
+}
+
+func TestLoadConfigFallsBackToLegacyTokenOnlyWhenScopedFieldsAreMissing(t *testing.T) {
+	writeConfig := func(t *testing.T, body string) *Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	legacy := writeConfig(t, `{"token":"legacy"}`)
+	if legacy.ReadToken != "legacy" || legacy.AdminToken != "legacy" {
+		t.Fatalf("legacy fallback = read:%q admin:%q", legacy.ReadToken, legacy.AdminToken)
+	}
+
+	scoped := writeConfig(t, `{
+		"token":"ingest",
+		"read_token":"read",
+		"admin_token":"admin"
+	}`)
+	if scoped.Token != "ingest" || scoped.ReadToken != "read" || scoped.AdminToken != "admin" {
+		t.Fatalf("scoped tokens = ingest:%q read:%q admin:%q", scoped.Token, scoped.ReadToken, scoped.AdminToken)
+	}
+
+	explicitEmpty := writeConfig(t, `{
+		"token":"legacy",
+		"read_token":"",
+		"admin_token":""
+	}`)
+	if explicitEmpty.ReadToken != "" || explicitEmpty.AdminToken != "" {
+		t.Fatalf("explicitly empty scoped tokens must not fall back: read:%q admin:%q", explicitEmpty.ReadToken, explicitEmpty.AdminToken)
+	}
+}
+
+func TestScopedTokensAuthorizeOnlyTheirOwnOperations(t *testing.T) {
+	s := scopedSrv("192.168.1.10:8787", "ingest", "read", "admin")
+	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) }
+
+	cases := []struct {
+		name       string
+		handler    http.HandlerFunc
+		token      string
+		wantStatus int
+	}{
+		{name: "read token reads", handler: s.readAuth(ok), token: "read", wantStatus: http.StatusTeapot},
+		{name: "ingest token cannot read", handler: s.readAuth(ok), token: "ingest", wantStatus: http.StatusUnauthorized},
+		{name: "admin token cannot read", handler: s.readAuth(ok), token: "admin", wantStatus: http.StatusUnauthorized},
+		{name: "ingest token ingests v1", handler: s.auth(ok), token: "ingest", wantStatus: http.StatusTeapot},
+		{name: "read token cannot ingest v1", handler: s.auth(ok), token: "read", wantStatus: http.StatusUnauthorized},
+		{name: "admin token cannot ingest v1", handler: s.auth(ok), token: "admin", wantStatus: http.StatusUnauthorized},
+		{name: "admin token writes settings", handler: s.adminAuth(ok), token: "admin", wantStatus: http.StatusTeapot},
+		{name: "read token cannot write settings", handler: s.adminAuth(ok), token: "read", wantStatus: http.StatusUnauthorized},
+		{name: "ingest token cannot write settings", handler: s.adminAuth(ok), token: "ingest", wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/api/v1/x", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			tc.handler(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestReachableServerRequiresReadAndAdminTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		read  string
+		admin string
+		ok    bool
+	}{
+		{name: "both present", read: "read", admin: "admin", ok: true},
+		{name: "missing read", admin: "admin"},
+		{name: "missing admin", read: "read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := scopedSrv("0.0.0.0:8787", "", tc.read, tc.admin).requireAuthConsistency()
+			if (err == nil) != tc.ok {
+				t.Fatalf("error = %v, want success %v", err, tc.ok)
+			}
+		})
+	}
+}
+
+func TestV2DeviceAuthenticationIsBoundToEnvelopeDeviceID(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "devices.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const deviceA = "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001"
+	const deviceB = "018f2d5a-7b31-7d98-bf8e-3c2f35a1a002"
+	if _, err := st.RegisterDevice(deviceA, "A", "device-a-token", nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RegisterDevice(deviceB, "B", "device-b-token", nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+
+	request := func(token string) *http.Request {
+		req := httptest.NewRequest("POST", "/api/v2/ingest", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req
+	}
+
+	record, ok, err := s.authenticateIngestV2(
+		request("device-a-token"),
+		model.IngestEnvelopeV2{DeviceID: deviceA},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || record.DeviceID != deviceA {
+		t.Fatalf("device A authentication = record:%#v ok:%v", record, ok)
+	}
+
+	_, ok, err = s.authenticateIngestV2(
+		request("device-b-token"),
+		model.IngestEnvelopeV2{DeviceID: deviceA},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("device B credential impersonated envelope device A")
+	}
+
+	if err := st.RevokeDevice(deviceA, 99); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err = s.authenticateIngestV2(
+		request("device-a-token"),
+		model.IngestEnvelopeV2{DeviceID: deviceA},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("revoked device authenticated for v2 ingest")
 	}
 }
