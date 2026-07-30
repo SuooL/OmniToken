@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -39,8 +39,78 @@ pub enum Mode {
     Live,
     /// Stream unavailable, but plain GET works. Figures move, just slowly.
     Polling,
-    /// No reading at all.
+}
+
+/// The transport state for the snapshot currently displayed by the menu bar.
+///
+/// A failed refresh changes this state but does not destroy the last successful
+/// payload. Consumers can therefore dim the old values and show their age
+/// rather than rendering an outage as zero activity.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionKind {
+    Live,
+    Polling,
+    Unauthorized,
     Offline,
+}
+
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct ConnectionState {
+    pub kind: ConnectionKind,
+    pub last_success_at_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self {
+            kind: ConnectionKind::Offline,
+            last_success_at_ms: None,
+            error: None,
+        }
+    }
+}
+
+impl Mode {
+    fn connection_kind(self) -> ConnectionKind {
+        match self {
+            Mode::Live => ConnectionKind::Live,
+            Mode::Polling => ConnectionKind::Polling,
+        }
+    }
+}
+
+/// The last payload plus the state that tells consumers how trustworthy it is.
+#[derive(Default, Clone)]
+struct Snapshot {
+    data: Option<Value>,
+    connection: ConnectionState,
+}
+
+impl Snapshot {
+    fn record_success(&mut self, payload: Value, now_ms: i64) {
+        self.data = Some(payload);
+        self.connection.last_success_at_ms = Some(now_ms);
+        self.connection.error = None;
+        self.connection.kind = ConnectionKind::Live;
+    }
+
+    fn record_failure(&mut self, kind: ConnectionKind, error: impl Into<String>) {
+        self.connection.kind = kind;
+        self.connection.error = Some(error.into());
+    }
+
+    fn data(&self) -> Option<&Value> {
+        self.data.as_ref()
+    }
+
+    #[cfg(test)]
+    fn age_ms(&self, now_ms: i64) -> Option<i64> {
+        self.connection
+            .last_success_at_ms
+            .map(|then| now_ms.saturating_sub(then))
+    }
 }
 
 impl Mode {
@@ -48,7 +118,6 @@ impl Mode {
         match self {
             Mode::Live => "live",
             Mode::Polling => "polling",
-            Mode::Offline => "offline",
         }
     }
 }
@@ -58,6 +127,7 @@ impl Mode {
 #[derive(Serialize, Clone)]
 struct Update<'a> {
     mode: &'a str,
+    connection: &'a ConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<&'a Value>,
 }
@@ -192,6 +262,7 @@ pub struct State {
     /// one instead of leaving two streams writing to the same tray.
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     alerts: Mutex<Alerts>,
+    snapshot: Mutex<Snapshot>,
 }
 
 // ── the bridge ────────────────────────────────────────────────────────────
@@ -234,7 +305,6 @@ async fn run(app: tauri::AppHandle) {
         // Degraded. Keep the figures moving over plain GET, and say which
         // channel they came from.
         let polled = poll_once(&app, &base, &token).await;
-        publish_mode(&app, if polled { Mode::Polling } else { Mode::Offline });
 
         let wait = if polled {
             // Plain GET works, so it is the stream specifically that is
@@ -312,10 +382,12 @@ async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
             apply(app, &payload, Mode::Polling);
             true
         }
-        Err(_) => {
-            // Unreachable, or serving something that is not the API. Either way
-            // there is no reading, and the offline glyph says so.
-            let _ = tray::paint(app, None, None);
+        Err(error) => {
+            let kind = match error {
+                crate::FetchError::Unauthorized(_) => ConnectionKind::Unauthorized,
+                crate::FetchError::Other(_) => ConnectionKind::Offline,
+            };
+            publish_failure(app, kind, error.to_string());
             false
         }
     }
@@ -323,36 +395,75 @@ async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
 
 /// One snapshot, four consumers.
 fn apply(app: &tauri::AppHandle, payload: &Value, mode: Mode) {
-    let percent = payload
-        .get("quotas")
-        .and_then(Value::as_array)
-        .and_then(|q| gauge::tightest_percent(q));
-    let tps = payload
-        .get("speed")
-        .and_then(|s| s.get("tps"))
-        .and_then(Value::as_f64);
-
-    let _ = tray::paint(app, percent, tps);
+    let snapshot = {
+        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
+            return;
+        };
+        state.record_success(payload.clone(), now_ms());
+        state.connection.kind = mode.connection_kind();
+        state.clone()
+    };
+    paint_snapshot(app, &snapshot);
     let _ = app.emit(
         EVENT,
         Update {
             mode: mode.as_str(),
-            data: Some(payload),
+            connection: &snapshot.connection,
+            data: snapshot.data(),
         },
     );
     notify(app, payload);
 }
 
-/// Tell the frontend the channel changed even though there is no new payload —
-/// otherwise a popover opened during an outage would keep claiming "live".
-fn publish_mode(app: &tauri::AppHandle, mode: Mode) {
+fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    let percent = snapshot
+        .data()
+        .and_then(|data| data.get("quotas"))
+        .and_then(Value::as_array)
+        .and_then(|q| gauge::tightest_percent(q));
+    let tps = snapshot
+        .data()
+        .and_then(|data| data.get("speed"))
+        .and_then(|s| s.get("tps"))
+        .and_then(Value::as_f64);
+
+    let _ = tray::paint(app, percent, tps);
+}
+
+/// Publish a transport failure while keeping every consumer on the same
+/// last-good snapshot. The tray title therefore remains unknown only when no
+/// successful reading has ever arrived; it is never synthesized as zero.
+fn publish_failure(app: &tauri::AppHandle, kind: ConnectionKind, error: String) {
+    let snapshot = {
+        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
+            return;
+        };
+        state.record_failure(kind, error);
+        state.clone()
+    };
+    paint_snapshot(app, &snapshot);
     let _ = app.emit(
         EVENT,
         Update {
-            mode: mode.as_str(),
-            data: None,
+            mode: match snapshot.connection.kind {
+                ConnectionKind::Live => "live",
+                ConnectionKind::Polling => "polling",
+                ConnectionKind::Unauthorized => "unauthorized",
+                ConnectionKind::Offline => "offline",
+            },
+            connection: &snapshot.connection,
+            data: snapshot.data(),
         },
     );
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 fn notify(app: &tauri::AppHandle, payload: &Value) {
@@ -557,5 +668,36 @@ mod tests {
             title_for(TrayTitle::Speed, None, Some(68.4)).unwrap(),
             "68/s"
         );
+    }
+
+    // Regression: a failed transport refresh used to discard the last payload,
+    // which made an outage indistinguishable from an empty system.
+    #[test]
+    fn failed_refresh_keeps_last_good_payload_and_ages_it() {
+        let payload = json!({"speed": {"tps": 68.0}});
+        let mut snapshot = Snapshot::default();
+
+        snapshot.record_success(payload.clone(), 1_000);
+        snapshot.record_failure(ConnectionKind::Offline, "network unavailable");
+
+        assert_eq!(snapshot.data(), Some(&payload));
+        assert_eq!(snapshot.connection.last_success_at_ms, Some(1_000));
+        assert_eq!(snapshot.age_ms(1_250), Some(250));
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+        assert_eq!(
+            snapshot.connection.error.as_deref(),
+            Some("network unavailable")
+        );
+    }
+
+    #[test]
+    fn unauthorized_and_offline_have_distinct_connection_states() {
+        let mut snapshot = Snapshot::default();
+
+        snapshot.record_failure(ConnectionKind::Unauthorized, "401 unauthorized");
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Unauthorized);
+
+        snapshot.record_failure(ConnectionKind::Offline, "connection refused");
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
     }
 }

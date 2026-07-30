@@ -36,22 +36,43 @@ pub(crate) fn http() -> &'static reqwest::Client {
 /// its read endpoints are unauthenticated, so allowing arbitrary origins would
 /// let any page the user visits read their usage data. Rust is not bound by
 /// the same-origin policy, so the request happens here instead.
-pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Value, String> {
+#[derive(Debug)]
+pub(crate) enum FetchError {
+    Unauthorized(String),
+    Other(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized(message) | Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Value, FetchError> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
     let mut req = http().get(&url);
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
-    let res = req.send().await.map_err(|e| format!("{url}: {e}"))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| FetchError::Other(format!("{url}: {e}")))?;
     if res.status() == reqwest::StatusCode::UNAUTHORIZED {
         // Named, because "wrong token" and "wrong address" are different
         // problems and a bare 401 does not say which (ADR-0016).
-        return Err(format!("{url}: 401 未授权 —— 请在设置里填写服务端的 token"));
+        return Err(FetchError::Unauthorized(format!(
+            "{url}: 401 未授权 —— 请在设置里填写服务端的 token"
+        )));
     }
     if !res.status().is_success() {
-        return Err(format!("{url}: HTTP {}", res.status()));
+        return Err(FetchError::Other(format!("{url}: HTTP {}", res.status())));
     }
-    res.json::<Value>().await.map_err(|e| format!("{url}: {e}"))
+    res.json::<Value>()
+        .await
+        .map_err(|e| FetchError::Other(format!("{url}: {e}")))
 }
 
 /// The frontend passes only the path: the address and the token are the Rust
@@ -60,7 +81,9 @@ pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Valu
 #[tauri::command]
 async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
     let s = settings::load(&app);
-    get_json(&s.server, &path, &s.token).await
+    get_json(&s.server, &path, &s.token)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
