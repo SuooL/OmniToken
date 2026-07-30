@@ -83,8 +83,12 @@ function route() {
   document.querySelectorAll("#nav a").forEach((a) => {
     a.toggleAttribute("aria-current", a.dataset.view === next);
   });
+  const active = document.querySelector(`#nav a[data-view="${next}"]`);
+  if (active && matchMedia("(max-width: 860px)").matches) {
+    active.scrollIntoView({block: "nearest", inline: "center"});
+  }
   // The rail no longer carries the page name, so the head does.
-  const link = document.querySelector(`#nav a[data-view="${next}"]`);
+  const link = active;
   document.getElementById("page-title").textContent = link ? link.textContent : "";
   document.getElementById("page-sub").textContent = PAGE_SUB[next] || "";
 }

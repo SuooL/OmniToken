@@ -177,6 +177,38 @@ func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 	}
 }
 
+func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
+	tokens := embeddedAsset(t, "tokens.css")
+	for _, contract := range []string{
+		"--font-body: -apple-system",
+		"--font-display: ui-monospace",
+	} {
+		if !strings.Contains(tokens, contract) {
+			t.Errorf("font-role tokens missing %q", contract)
+		}
+	}
+
+	style := embeddedAsset(t, "style.css")
+	for _, contract := range []string{
+		":focus-visible",
+		"@media (prefers-reduced-motion: reduce)",
+		"#view-live .card",
+		"#view-speed .card",
+		"position: sticky",
+		"overflow-x: auto",
+		"scrollbar-width: none",
+	} {
+		if !strings.Contains(style, contract) {
+			t.Errorf("quiet instrument CSS contract missing %q", contract)
+		}
+	}
+
+	app := embeddedAsset(t, "app.js")
+	if !strings.Contains(app, `active.scrollIntoView({block: "nearest", inline: "center"})`) {
+		t.Error("active mobile navigation item must be scrolled into view")
+	}
+}
+
 func TestStateDecisionHelpersInNode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
