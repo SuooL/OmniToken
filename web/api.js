@@ -129,38 +129,42 @@ const Api = {
   // client sets an absolute base such as "http://192.0.2.1:8787".
   base: "",
 
-  // The bearer token, for a server that is reachable from other machines
-  // (ADR-0016). A loopback-only server needs none and this stays empty — which
-  // is why the single-machine panel keeps working with nothing configured.
-  //
-  // Deliberately the SAME key the settings page already used for writes:
-  // `cfg.Token` is one shared secret, so a second box to fill in with the same
-  // string would only be a way to get them out of step.
-  //
-  // localStorage rather than a cookie: the token belongs to this browser, and
-  // the server is stateless about who is reading.
+  // `token` remains the read credential and retains its legacy storage key so
+  // existing browsers migrate without losing access. Admin writes use a
+  // separate credential. localStorage rather than a cookie keeps both scoped
+  // credentials browser-local and leaves the server stateless.
   token: "",
+  adminToken: "",
   TOKEN_KEY: "omnitoken.token",
+  ADMIN_TOKEN_KEY: "omnitoken.admin_token",
 
   loadToken() {
     try {
       this.token = localStorage.getItem(this.TOKEN_KEY) || "";
+      const storedAdmin = localStorage.getItem(this.ADMIN_TOKEN_KEY);
+      // Missing means an old single-token browser and falls back for migration.
+      // An explicitly stored empty string means "no admin credential".
+      this.adminToken = storedAdmin == null ? this.token : storedAdmin;
     } catch (e) {
       // Private mode or storage disabled; the panel still works against a
       // loopback server.
       this.token = "";
+      this.adminToken = "";
     }
     return this.token;
   },
 
-  saveToken(t) {
-    this.token = t || "";
+  saveTokens(readToken, adminToken) {
+    this.token = readToken || "";
+    this.adminToken = adminToken || "";
     try {
       if (this.token) localStorage.setItem(this.TOKEN_KEY, this.token);
       else localStorage.removeItem(this.TOKEN_KEY);
+      // Store even the empty value: absence is reserved for legacy fallback.
+      localStorage.setItem(this.ADMIN_TOKEN_KEY, this.adminToken);
       return true;
     } catch (e) {
-      // The in-memory credential remains useful for this browser session even
+      // Both in-memory credentials remain useful for this browser session even
       // when private mode or policy blocks persistence.
       return false;
     }
@@ -189,15 +193,14 @@ const Api = {
   // Returns the raw Response rather than parsed JSON: the settings page
   // distinguishes 401 from other failures and reads the body as text for its
   // error note.
-  put(path, body, token) {
+  put(path, body) {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    if (this.adminToken) {
+      headers.set("Authorization", "Bearer " + this.adminToken);
+    }
     return fetch(this.url(path), {
       method: "PUT",
-      headers: this.headers({
-        "Content-Type": "application/json",
-        // The write token is passed explicitly by the settings page and wins:
-        // it is what the user just typed into the box.
-        ...(token ? { Authorization: "Bearer " + token } : {}),
-      }),
+      headers,
       body: JSON.stringify(body),
     });
   },

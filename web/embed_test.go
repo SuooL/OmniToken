@@ -63,7 +63,7 @@ func TestAPIHeadersAcceptEveryHeadersInitForm(t *testing.T) {
 		t.Fatal("Api.headers must normalize Headers, tuple arrays, and plain objects through the standard Headers constructor")
 	}
 	if !strings.Contains(source, `h.set("Authorization", "Bearer " + this.token)`) {
-		t.Fatal("Api.headers must merge bearer authentication with normalized caller headers")
+		t.Fatal("Api.headers must merge the read bearer credential with normalized caller headers")
 	}
 }
 
@@ -110,7 +110,8 @@ func TestSettingsDraftUpdatesOnInputAndClearsAfterSave(t *testing.T) {
 		"this.updateDraft(ev.target)",
 		"this._draft.pricing = null",
 		"this._draft.devices = null",
-		"this._draft.token = null",
+		"this._draft.readToken = null",
+		"this._draft.adminToken = null",
 		"await refreshAuthState()",
 	} {
 		if !strings.Contains(source, contract) {
@@ -164,7 +165,8 @@ func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 		"row[target.dataset.f] = target.value",
 		"buildPricingPayload(snapshot)",
 		"Api.token",
-		"const persisted = Api.saveToken(value)",
+		"Api.adminToken",
+		"const persisted = Api.saveTokens(readValue, adminValue)",
 	} {
 		if !strings.Contains(source, contract) {
 			t.Errorf("settings revision/token contract missing %q", contract)
@@ -227,25 +229,130 @@ test('apiFetch wraps transport TypeError and classifier does not mislabel render
   assert.notEqual(run(context, 'classifyAPIError(new TypeError("render bug")).title'), '服务不可达');
 });
 
-test('token remains in memory when persistence fails', () => {
+test('scoped tokens migrate missing admin key but preserve explicit empty admin', () => {
+  const legacyValues = new Map([['omnitoken.token', 'read-secret']]);
+  const legacyStorage = {getItem(key) { return legacyValues.has(key) ? legacyValues.get(key) : null; }};
+  const legacy = load('api.js', {localStorage: legacyStorage});
+  run(legacy, 'Api.loadToken()');
+  assert.equal(run(legacy, 'Api.token'), 'read-secret');
+  assert.equal(run(legacy, 'Api.adminToken'), 'read-secret');
+
+  const explicitValues = new Map([
+    ['omnitoken.token', 'read-secret'],
+    ['omnitoken.admin_token', ''],
+  ]);
+  const explicitStorage = {getItem(key) { return explicitValues.has(key) ? explicitValues.get(key) : null; }};
+  const explicit = load('api.js', {localStorage: explicitStorage});
+  run(explicit, 'Api.loadToken()');
+  assert.equal(run(explicit, 'Api.token'), 'read-secret');
+  assert.equal(run(explicit, 'Api.adminToken'), '');
+});
+
+test('read credentials authorize headers and SSE while PUT uses only admin', async () => {
+  const values = new Map([
+    ['omnitoken.token', 'read-secret'],
+    ['omnitoken.admin_token', 'admin-secret'],
+  ]);
+  let request = null;
+  let streamURL = '';
+  const context = load('api.js', {
+    localStorage: {getItem(key) { return values.has(key) ? values.get(key) : null; }},
+    fetch: async (url, init) => {
+      request = {url, authorization: new Headers(init.headers).get('Authorization')};
+      return {ok: true, status: 200, json: async () => ({})};
+    },
+    EventSource: class { constructor(url) { streamURL = url; } },
+  });
+  run(context, 'Api.loadToken()');
+  assert.equal(run(context, 'Api.headers().get("Authorization")'), 'Bearer read-secret');
+  await run(context, 'Api.get("/api/v1/settings")');
+  assert.equal(request.authorization, 'Bearer read-secret');
+  run(context, 'Api.stream("/api/v1/stream")');
+  assert.match(streamURL, /access_token=read-secret/);
+  await run(context, 'Api.put("/api/v1/settings", {x:1})');
+  assert.equal(request.authorization, 'Bearer admin-secret');
+
+  const explicitEmpty = load('api.js', {
+    localStorage: {getItem(key) {
+      if (key === 'omnitoken.token') return 'read-secret';
+      if (key === 'omnitoken.admin_token') return '';
+      return null;
+    }},
+    fetch: async (url, init) => {
+      request = {url, authorization: new Headers(init.headers).get('Authorization')};
+      return {ok: true, status: 200};
+    },
+  });
+  run(explicitEmpty, 'Api.loadToken()');
+  await run(explicitEmpty, 'Api.put("/api/v1/settings", {x:1})');
+  assert.equal(request.authorization, null);
+});
+
+test('saving an explicit empty admin credential keeps the migration sentinel', () => {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  const context = load('api.js', {localStorage: storage});
+  assert.equal(run(context, 'Api.saveTokens("read-secret", "")'), true);
+  assert.equal(values.get('omnitoken.token'), 'read-secret');
+  assert.equal(values.has('omnitoken.admin_token'), true);
+  assert.equal(values.get('omnitoken.admin_token'), '');
+});
+
+test('scoped tokens remain in memory when persistence fails', () => {
   const storage = {
     getItem() { throw new Error('blocked'); },
     setItem() { throw new Error('blocked'); },
     removeItem() { throw new Error('blocked'); },
   };
   const context = load('api.js', {localStorage: storage});
-  assert.equal(run(context, 'Api.saveToken("session-secret")'), false);
-  assert.equal(run(context, 'Api.token'), 'session-secret');
+  assert.equal(run(context, 'Api.saveTokens("read-session", "admin-session")'), false);
+  assert.equal(run(context, 'Api.token'), 'read-session');
+  assert.equal(run(context, 'Api.adminToken'), 'admin-session');
 
   const settings = load('settingsview.js', {
-    Api: {TOKEN_KEY: 'omnitoken.token', token: 'session-secret'},
+    Api: {token: 'read-session', adminToken: 'admin-session'},
     esc: String,
   });
-  assert.match(run(settings, 'SettingsView.tokenCard()'), /session-secret/);
+  const card = run(settings, 'SettingsView.tokenCard()');
+  assert.match(card, /read-session/);
+  assert.match(card, /admin-session/);
+});
+
+test('settings saves separate read and admin drafts and refreshes read auth', async () => {
+  const calls = [];
+  const context = load('settingsview.js', {
+    Api: {
+      token: 'old-read',
+      adminToken: 'old-admin',
+      saveTokens(readToken, adminToken) {
+        calls.push({kind: 'save', readToken, adminToken});
+        this.token = readToken;
+        this.adminToken = adminToken;
+        return true;
+      },
+    },
+    esc: String,
+    refreshAuthState: async () => { calls.push({kind: 'refresh'}); },
+    reloadSettings: async () => { calls.push({kind: 'load'}); },
+  });
+  run(context, 'SettingsView.load = reloadSettings; SettingsView.note = function() { return false; };');
+  run(context, 'SettingsView._draft.readToken = " new-read "; SettingsView._draft.adminToken = " new-admin ";');
+  await run(context, 'SettingsView.saveTokens()');
+  assert.deepEqual(calls, [
+    {kind: 'save', readToken: 'new-read', adminToken: 'new-admin'},
+    {kind: 'refresh'},
+    {kind: 'load'},
+  ]);
+  assert.equal(run(context, 'SettingsView._draft.readToken'), null);
+  assert.equal(run(context, 'SettingsView._draft.adminToken'), null);
 });
 
 test('pricing payload validates raw numeric drafts only at save time', () => {
-  const context = load('settingsview.js', {Api: {TOKEN_KEY: 'omnitoken.token', token: ''}});
+  const context = load('settingsview.js', {Api: {token: '', adminToken: ''}});
   const valid = json(context, 'buildPricingPayload([{model:"m",in:"1.5",out:"2",cr:"0",cw:"3"}])');
   assert.equal(valid.ok, true);
   assert.equal(valid.value.m.input_per_mtok, 1.5);

@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +67,24 @@ func TestOpenMigratesDeviceRegistry(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("device registry columns = %v, want %v", got, want)
+	}
+
+	var tableSQL string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices'`).Scan(&tableSQL); err != nil {
+		t.Fatal(err)
+	}
+	for _, constraint := range []string{
+		"device_id TEXT PRIMARY KEY",
+		"display_name TEXT NOT NULL",
+		"token_hash TEXT NOT NULL UNIQUE",
+		"capabilities TEXT NOT NULL DEFAULT '[]'",
+		"created_at INTEGER NOT NULL",
+		"last_seen_at INTEGER NOT NULL DEFAULT 0",
+		"revoked_at INTEGER NOT NULL DEFAULT 0",
+	} {
+		if !strings.Contains(tableSQL, constraint) {
+			t.Errorf("device registry schema missing constraint %q: %s", constraint, tableSQL)
+		}
 	}
 }
 
@@ -135,6 +155,7 @@ func TestRegisterDeviceEnforcesStableUUIDAndUniqueCredential(t *testing.T) {
 	for _, invalid := range []string{
 		"",
 		"not-a-uuid",
+		"00000000-0000-0000-0000-000000000000",
 		"018F2D5A-7B31-7D98-BF8E-3C2F35A1A003",
 	} {
 		if _, err := s.RegisterDevice(invalid, "invalid", "unique-"+invalid, nil, 30); err == nil {
@@ -143,6 +164,51 @@ func TestRegisterDeviceEnforcesStableUUIDAndUniqueCredential(t *testing.T) {
 	}
 	if _, err := s.RegisterDevice("018f2d5a-7b31-7d98-bf8e-3c2f35a1a003", "empty", "", nil, 30); err == nil {
 		t.Fatal("empty device credential was accepted")
+	}
+}
+
+func TestUpdateDeviceMetadataPreservesIdentityCredentialAndTimestamps(t *testing.T) {
+	s := openTestStore(t)
+	createdAt := int64(10)
+	if _, err := s.RegisterDevice(testDeviceIDA, "Before", "token-a", []string{"events"}, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchDevice(testDeviceIDA, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeDevice(testDeviceIDA, 30); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.deviceByID(testDeviceIDA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateDeviceMetadata(testDeviceIDA, "After", []string{"events", "procs"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.deviceByID(testDeviceIDA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if after.DisplayName != "After" || !reflect.DeepEqual(after.Capabilities, []string{"events", "procs"}) {
+		t.Fatalf("updated metadata = display:%q capabilities:%v", after.DisplayName, after.Capabilities)
+	}
+	if after.DeviceID != before.DeviceID ||
+		after.TokenHash != before.TokenHash ||
+		after.CreatedAt != before.CreatedAt ||
+		after.LastSeenAt != before.LastSeenAt ||
+		after.RevokedAt != before.RevokedAt {
+		t.Fatalf("immutable fields changed: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestUpdateDeviceMetadataReturnsNotFound(t *testing.T) {
+	s := openTestStore(t)
+	err := s.UpdateDeviceMetadata(testDeviceIDA, "Missing", []string{"events"})
+	if !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("error = %v, want ErrDeviceNotFound", err)
 	}
 }
 

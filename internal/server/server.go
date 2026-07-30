@@ -264,6 +264,11 @@ func (s *Server) requireAuthConsistency() error {
 	if s.loopbackOnly() {
 		return nil
 	}
+	if s.cfg.Token == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但 v1 ingest 路由仍启用且没有配置 token",
+			s.cfg.Listen)
+	}
 	if s.cfg.ReadToken == "" {
 		return fmt.Errorf(
 			"listen=%q 可被其它机器访问,但没有配置 read_token —— 读接口会把全部用量数据对外公开",
@@ -281,12 +286,27 @@ func (s *Server) requireAuthConsistency() error {
 // the decoded envelope. A credential issued to one device therefore cannot be
 // used to submit a batch claiming another device's identity.
 func (s *Server) authenticateIngestV2(r *http.Request, envelope model.IngestEnvelopeV2) (store.DeviceRecord, bool, error) {
-	const prefix = "Bearer "
-	authorization := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authorization, prefix) {
+	credential, ok := bearerCredential(r)
+	if !ok {
 		return store.DeviceRecord{}, false, nil
 	}
-	return s.store.AuthenticateDevice(envelope.DeviceID, strings.TrimPrefix(authorization, prefix))
+	return s.store.AuthenticateDevice(envelope.DeviceID, credential)
+}
+
+func bearerCredential(r *http.Request) (string, bool) {
+	authorization := r.Header.Get("Authorization")
+	separator := strings.IndexByte(authorization, ' ')
+	if separator <= 0 || separator == len(authorization)-1 {
+		return "", false
+	}
+	if !strings.EqualFold(authorization[:separator], "Bearer") {
+		return "", false
+	}
+	credential := authorization[separator+1:]
+	if strings.ContainsAny(credential, " \t\r\n") {
+		return "", false
+	}
+	return credential, true
 }
 
 type ingestRequest struct {

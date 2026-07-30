@@ -72,8 +72,11 @@ func (s *Store) RegisterDevice(deviceID, displayName, plaintextToken string, cap
 }
 
 // AuthenticateDevice verifies a credential against the principal named by
-// deviceID. The hash comparison is constant-time. Revoked principals never
-// authenticate, even when the credential is otherwise correct.
+// deviceID. The fixed-length secret hash comparison is constant-time. The
+// preceding database lookup is not an anti-enumeration guarantee: device IDs
+// are public principals and may have observably different lookup timing.
+// Revoked principals never authenticate, even when the credential is otherwise
+// correct.
 func (s *Store) AuthenticateDevice(deviceID, plaintextToken string) (DeviceRecord, bool, error) {
 	record, err := s.deviceByID(deviceID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -102,6 +105,27 @@ func (s *Store) TouchDevice(deviceID string, receivedAt int64) error {
 	result, err := s.db.Exec(
 		`UPDATE devices SET last_seen_at = MAX(last_seen_at, ?) WHERE device_id = ?`,
 		receivedAt, deviceID,
+	)
+	if err != nil {
+		return err
+	}
+	return requireAffectedDevice(result)
+}
+
+// UpdateDeviceMetadata changes only user-facing mutable metadata. Device
+// identity, credentials, lifecycle timestamps, and revocation state remain
+// untouched.
+func (s *Store) UpdateDeviceMetadata(deviceID, displayName string, capabilities []string) error {
+	if capabilities == nil {
+		capabilities = []string{}
+	}
+	encodedCapabilities, err := json.Marshal(capabilities)
+	if err != nil {
+		return fmt.Errorf("encode device capabilities: %w", err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE devices SET display_name = ?, capabilities = ? WHERE device_id = ?`,
+		displayName, string(encodedCapabilities), deviceID,
 	)
 	if err != nil {
 		return err
@@ -166,6 +190,9 @@ func hashDeviceToken(plaintext string) string {
 
 func isCanonicalUUID(value string) bool {
 	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	if value == "00000000-0000-0000-0000-000000000000" {
 		return false
 	}
 	for i := range value {

@@ -243,17 +243,19 @@ func TestScopedTokensAuthorizeOnlyTheirOwnOperations(t *testing.T) {
 
 func TestReachableServerRequiresReadAndAdminTokens(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		read  string
-		admin string
-		ok    bool
+		name   string
+		ingest string
+		read   string
+		admin  string
+		ok     bool
 	}{
-		{name: "both present", read: "read", admin: "admin", ok: true},
-		{name: "missing read", admin: "admin"},
-		{name: "missing admin", read: "read"},
+		{name: "all present", ingest: "ingest", read: "read", admin: "admin", ok: true},
+		{name: "missing ingest", read: "read", admin: "admin"},
+		{name: "missing read", ingest: "ingest", admin: "admin"},
+		{name: "missing admin", ingest: "ingest", read: "read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := scopedSrv("0.0.0.0:8787", "", tc.read, tc.admin).requireAuthConsistency()
+			err := scopedSrv("0.0.0.0:8787", tc.ingest, tc.read, tc.admin).requireAuthConsistency()
 			if (err == nil) != tc.ok {
 				t.Fatalf("error = %v, want success %v", err, tc.ok)
 			}
@@ -318,5 +320,52 @@ func TestV2DeviceAuthenticationIsBoundToEnvelopeDeviceID(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("revoked device authenticated for v2 ingest")
+	}
+}
+
+func TestV2BearerParserIsStrictAndSchemeIsCaseInsensitive(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "devices.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const deviceID = "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001"
+	if _, err := st.RegisterDevice(deviceID, "A", "device-token", nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	envelope := model.IngestEnvelopeV2{DeviceID: deviceID}
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		ok     bool
+	}{
+		{name: "canonical scheme", header: "Bearer device-token", ok: true},
+		{name: "lowercase scheme", header: "bearer device-token", ok: true},
+		{name: "uppercase scheme", header: "BEARER device-token", ok: true},
+		{name: "missing header"},
+		{name: "empty credential", header: "Bearer "},
+		{name: "wrong scheme", header: "Basic device-token"},
+		{name: "missing separator", header: "Bearerdevice-token"},
+		{name: "multiple separators", header: "Bearer  device-token"},
+		{name: "trailing material", header: "Bearer device-token extra"},
+		{name: "leading whitespace", header: " Bearer device-token"},
+		{name: "trailing whitespace", header: "Bearer device-token "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/v2/ingest", nil)
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			_, ok, err := s.authenticateIngestV2(req, envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok != tc.ok {
+				t.Fatalf("authentication = %v, want %v for %q", ok, tc.ok, tc.header)
+			}
+		})
 	}
 }
