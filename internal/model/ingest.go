@@ -14,6 +14,12 @@ const (
 	maxCapturedAtMilli int64 = 253402300799999
 )
 
+const (
+	IngestKindEvents = "events"
+	IngestKindQuotas = "quotas"
+	IngestKindProcs  = "procs"
+)
+
 // Stable machine-readable validation codes. Clients may persist these in a
 // dead-letter record, so changing a value is a protocol change.
 const (
@@ -26,6 +32,15 @@ const (
 	RejectionEventID             = "invalid_event_id"
 	RejectionDuplicateEventID    = "duplicate_event_id"
 	RejectionEventDeviceMismatch = "event_device_mismatch"
+	RejectionKind                = "invalid_kind"
+	RejectionMissingEvents       = "missing_events_payload"
+	RejectionMissingQuotas       = "missing_quotas_payload"
+	RejectionMissingProcs        = "missing_procs_payload"
+	RejectionUnexpectedEvents    = "unexpected_events_payload"
+	RejectionUnexpectedQuotas    = "unexpected_quotas_payload"
+	RejectionUnexpectedProcs     = "unexpected_procs_payload"
+	RejectionQuotaDeviceMismatch = "quota_device_mismatch"
+	RejectionProcDeviceMismatch  = "proc_device_mismatch"
 )
 
 // IngestEnvelopeV2 is one acknowledged edge-to-hub delivery batch.
@@ -43,10 +58,11 @@ type IngestEnvelopeV2 struct {
 }
 
 // IngestAckV2 explicitly acknowledges a batch. An HTTP success status alone is
-// not sufficient: uploaders must also match ProtocolVersion, BatchID, and
-// AckSequence before deleting durable outbox data.
+// not sufficient: uploaders must also match ProtocolVersion, DeviceID, BatchID,
+// and AckSequence before deleting durable outbox data.
 type IngestAckV2 struct {
 	ProtocolVersion int               `json:"protocol_version"`
+	DeviceID        string            `json:"device_id"`
 	BatchID         string            `json:"batch_id"`
 	AckSequence     uint64            `json:"ack_sequence"`
 	Accepted        int               `json:"accepted"`
@@ -55,8 +71,8 @@ type IngestAckV2 struct {
 	ServerTime      int64             `json:"server_time"`
 }
 
-// IngestRejection identifies a permanently invalid envelope or event. Index is
-// present only for event-level failures.
+// IngestRejection identifies a permanently invalid envelope or payload record.
+// Index is present only for failures tied to an element in a slice payload.
 type IngestRejection struct {
 	Code    string `json:"code"`
 	Index   *int   `json:"index,omitempty"`
@@ -104,28 +120,73 @@ func ValidateIngestEnvelope(envelope IngestEnvelopeV2) []IngestRejection {
 	if envelope.CapturedAt <= 0 || envelope.CapturedAt > maxCapturedAtMilli {
 		rejected = append(rejected, IngestRejection{Code: RejectionCapturedAt})
 	}
-	if len(envelope.Events) > MaxIngestBatchEvents {
-		rejected = append(rejected, IngestRejection{Code: RejectionBatchTooLarge})
-	}
 
-	seen := make(map[string]struct{}, len(envelope.Events))
-	for i, event := range envelope.Events {
-		if event.EventID == "" {
-			rejected = append(rejected, eventRejection(RejectionEventID, i, ""))
-		} else {
-			if _, duplicate := seen[event.EventID]; duplicate {
-				rejected = append(rejected, eventRejection(RejectionDuplicateEventID, i, event.EventID))
+	switch envelope.Kind {
+	case IngestKindEvents:
+		if len(envelope.Events) == 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionMissingEvents})
+		}
+		if len(envelope.Quotas) > 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedQuotas})
+		}
+		if envelope.Procs != nil {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedProcs})
+		}
+		if len(envelope.Events) > MaxIngestBatchEvents {
+			rejected = append(rejected, IngestRejection{Code: RejectionBatchTooLarge})
+		}
+
+		seen := make(map[string]struct{}, len(envelope.Events))
+		for i, event := range envelope.Events {
+			if event.EventID == "" {
+				rejected = append(rejected, recordRejection(RejectionEventID, i, ""))
+			} else {
+				if _, duplicate := seen[event.EventID]; duplicate {
+					rejected = append(rejected, recordRejection(RejectionDuplicateEventID, i, event.EventID))
+				}
+				seen[event.EventID] = struct{}{}
 			}
-			seen[event.EventID] = struct{}{}
+			if deviceValid && event.Device != envelope.DeviceID {
+				rejected = append(rejected, recordRejection(RejectionEventDeviceMismatch, i, event.EventID))
+			}
 		}
-		if deviceValid && event.Device != envelope.DeviceID {
-			rejected = append(rejected, eventRejection(RejectionEventDeviceMismatch, i, event.EventID))
+	case IngestKindQuotas:
+		if len(envelope.Quotas) == 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionMissingQuotas})
 		}
+		if len(envelope.Events) > 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedEvents})
+		}
+		if envelope.Procs != nil {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedProcs})
+		}
+		if deviceValid {
+			for i, quota := range envelope.Quotas {
+				if quota.Device != envelope.DeviceID {
+					rejected = append(rejected, recordRejection(RejectionQuotaDeviceMismatch, i, ""))
+				}
+			}
+		}
+	case IngestKindProcs:
+		if envelope.Procs == nil {
+			rejected = append(rejected, IngestRejection{Code: RejectionMissingProcs})
+		}
+		if len(envelope.Events) > 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedEvents})
+		}
+		if len(envelope.Quotas) > 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionUnexpectedQuotas})
+		}
+		if deviceValid && envelope.Procs != nil && envelope.Procs.Device != envelope.DeviceID {
+			rejected = append(rejected, IngestRejection{Code: RejectionProcDeviceMismatch})
+		}
+	default:
+		rejected = append(rejected, IngestRejection{Code: RejectionKind})
 	}
 	return rejected
 }
 
-func eventRejection(code string, index int, eventID string) IngestRejection {
+func recordRejection(code string, index int, eventID string) IngestRejection {
 	return IngestRejection{Code: code, Index: &index, EventID: eventID}
 }
 
@@ -141,7 +202,6 @@ func validUUID(value string) bool {
 			}
 		case value[i] >= '0' && value[i] <= '9':
 		case value[i] >= 'a' && value[i] <= 'f':
-		case value[i] >= 'A' && value[i] <= 'F':
 		default:
 			return false
 		}
