@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS events (
 	event_id TEXT PRIMARY KEY,
 	ts INTEGER NOT NULL,
 	device TEXT NOT NULL DEFAULT '',
+	device_origin TEXT NOT NULL DEFAULT 'observed',
 	source TEXT NOT NULL DEFAULT '',
 	model TEXT NOT NULL DEFAULT '',
 	provider TEXT NOT NULL DEFAULT '',
@@ -72,8 +73,27 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateEventsDeviceOrigin(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
+
+// DeviceOrigin records how a row's device attribution was obtained (ADR-0015).
+// It is a property of the channel the events arrived on, not of the event, so
+// it is passed alongside a batch instead of living on model.Event.
+type DeviceOrigin string
+
+const (
+	// OriginSelf: the machine reported its own work — an agent push, serve's
+	// scan of its own logs, or the proxy (which only ever sees local traffic).
+	OriginSelf DeviceOrigin = "self"
+	// OriginObserved: we are reading a copy of someone else's log — an SSH
+	// mirror pull, where the device name is inferred from the configured host
+	// and may well be wrong if that host holds a synced home directory.
+	OriginObserved DeviceOrigin = "observed"
+)
 
 // migrateEventsGenMS adds the gen_ms column to databases created before
 // ADR-0009. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so the
@@ -95,13 +115,48 @@ func migrateEventsGenMS(db *sql.DB) error {
 	return err
 }
 
+// migrateEventsDeviceOrigin adds the device_origin column to databases created
+// before ADR-0015. Existing rows read as 'observed' on purpose: we have no way
+// to tell after the fact which machine actually ran them, and 'observed' is the
+// level a later self-report is allowed to correct — declaring them 'self' would
+// freeze whatever the first scan happened to guess.
+func migrateEventsDeviceOrigin(db *sql.DB) error {
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema already has it
+	}
+	if err != nil {
+		return err
+	}
+	if strings.Contains(sqlText, "device_origin") {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE events ADD COLUMN device_origin TEXT NOT NULL DEFAULT 'observed'`)
+	return err
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertEvents is idempotent: duplicates (same event_id) are ignored, so
 // agents and collectors can safely re-send anything. Returns inserted count.
+//
+// Everything that reaches this entry point is a self-report (ADR-0015): an
+// agent push describes the pushing machine's own logs, and the proxy only ever
+// sees traffic leaving the machine it runs on. The one channel that is merely
+// an observer — the SSH mirror pull — calls InsertEventsFrom explicitly.
 func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error) {
+	return s.InsertEventsFrom(events, receivedAt, OriginSelf)
+}
+
+// InsertEventsFrom is InsertEvents with the device attribution's provenance
+// spelled out; see DeviceOrigin and ADR-0015.
+func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin DeviceOrigin) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
+	}
+	if origin == "" {
+		origin = OriginObserved
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -109,11 +164,11 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 	}
 	defer tx.Rollback()
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
-		(event_id, ts, device, source, model, provider, account_label,
+		(event_id, ts, device, device_origin, source, model, provider, account_label,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		 cache_1h_tokens, cache_5m_tokens, duration_ms, gen_ms, ttft_ms,
 		 session_id, cwd, git_branch, repo, app_version, received_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -188,12 +243,36 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 	}
 	defer promote.Close()
 
-	inserted, filled := 0, 0
+	// The second sanctioned overwrite, and it goes one way only (ADR-0015): the
+	// machine that ran the request is its origin, a machine that merely holds a
+	// copy of the log is only an observer. Synced home directories are common
+	// (iCloud, rsync, a restored backup), and when the same log exists on two
+	// machines whichever one we scanned first would otherwise own the row
+	// forever — measured at 92% of a second Mac's events on real data.
+	//
+	// The `device_origin = 'observed'` guard carries both remaining rules: an
+	// observer can never take a row (this statement only runs for a self-report),
+	// and the first self-report keeps it (the guard fails on the second one).
+	// First-self-wins is a heuristic — the originating machine reports within
+	// seconds while a synced copy surfaces on the other machine later — not
+	// ground truth; see ADR-0015.
+	//
+	// Like `promote` it never touches a count column: which device column a
+	// request lands in has nothing to do with how many times it is charged.
+	reattribute, err := tx.Prepare(
+		`UPDATE events SET device = ?1, device_origin = 'self'
+		 WHERE event_id = ?2 AND device_origin = 'observed' AND ?1 != ''`)
+	if err != nil {
+		return 0, err
+	}
+	defer reattribute.Close()
+
+	inserted, filled, reattributed := 0, 0, 0
 	for _, e := range events {
 		if e.EventID == "" {
 			continue
 		}
-		res, err := stmt.Exec(e.EventID, e.TS, e.Device, e.Source, e.Model, e.Provider, e.AccountLabel,
+		res, err := stmt.Exec(e.EventID, e.TS, e.Device, string(origin), e.Source, e.Model, e.Provider, e.AccountLabel,
 			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
 			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
 			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt)
@@ -206,6 +285,15 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 		}
 		// Already known: contribute whatever this observation adds.
 		changed := false
+		if origin == OriginSelf && e.Device != "" {
+			r, err := reattribute.Exec(e.Device, e.EventID)
+			if err != nil {
+				return inserted, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				reattributed++
+			}
+		}
 		if e.GenMS > 0 || e.TTFTMS > 0 {
 			r, err := numFill.Exec(e.GenMS, e.TTFTMS, e.EventID)
 			if err != nil {
@@ -244,6 +332,9 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 	}
 	if filled > 0 {
 		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", filled)
+	}
+	if reattributed > 0 {
+		log.Printf("store: %d existing events re-attributed to the machine that reported them itself (ADR-0015)", reattributed)
 	}
 	return inserted, tx.Commit()
 }

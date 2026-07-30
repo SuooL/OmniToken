@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
@@ -50,11 +51,18 @@ func LocalSpecs(claudeDirs, codexDirs []string) []SourceSpec {
 // ScanSources incrementally parses all *.jsonl under each spec's dirs,
 // attributing events to device and resolving repos via resolveRepo.
 // quotaSink may be nil.
-func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink) (int, error) {
+//
+// notBefore is the start of collection for this source: events with an earlier
+// timestamp are dropped instead of being handed to the sink, and an event
+// exactly at that instant is kept. The zero time means no window. It exists for
+// SSH hosts (SSHHost.Since) — adding a machine years after the fact should not
+// back-import its whole log history — and is left zero for this machine's own
+// logs, which are the one set of logs we can attribute with confidence.
+func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
 	total := 0
 	for _, spec := range specs {
 		for _, f := range listJSONL(spec.Dirs) {
-			n, err := scanFile(f, spec, device, st, resolveRepo, sink, quotaSink)
+			n, err := scanFile(f, spec, device, st, resolveRepo, sink, quotaSink, notBefore)
 			total += n
 			if err != nil {
 				return total, err
@@ -62,6 +70,23 @@ func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(
 		}
 	}
 	return total, nil
+}
+
+// dropBefore removes events older than notBefore. The boundary instant itself
+// is kept: a window that starts on a date should contain everything from that
+// date's first millisecond on.
+func dropBefore(events []model.Event, notBefore time.Time) []model.Event {
+	if notBefore.IsZero() {
+		return events
+	}
+	cutoff := notBefore.UnixMilli()
+	kept := events[:0]
+	for _, e := range events {
+		if e.TS >= cutoff {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 func listJSONL(dirs []string) []string {
@@ -81,7 +106,7 @@ func listJSONL(dirs []string) []string {
 	return files
 }
 
-func scanFile(path string, spec SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink) (int, error) {
+func scanFile(path string, spec SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, nil
@@ -107,7 +132,7 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 	}
 
 	res := spec.Parse(fh, device, st.TurnStartFor(path))
-	events := res.Events
+	events := dropBefore(res.Events, notBefore)
 	for i := range events {
 		if events[i].CWD != "" && resolveRepo != nil {
 			events[i].Repo = st.RepoFor(device, events[i].CWD, resolveRepo)
@@ -126,6 +151,8 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 			log.Printf("collect: quota sink for %s: %v", path, err)
 		}
 	}
+	// The offset covers the dropped lines as well: they were read and
+	// deliberately left out of the window, not deferred to a later pass.
 	if err := st.Commit(path, offset+res.Consumed, res.TurnStartMS); err != nil {
 		log.Printf("collect: commit state for %s: %v", path, err)
 	}

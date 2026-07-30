@@ -82,7 +82,23 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validate rejects configuration that would silently do the wrong thing. A
+// mistyped ssh_hosts[].since is the case that matters: ignoring it would
+// back-import the whole history the user asked to leave out (ADR-0015), and
+// there is no way to take that back once it is in the database.
+func (c *Config) validate() error {
+	for _, h := range c.Collect.SSHHosts {
+		if _, err := h.SinceTime(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Config) applyDefaults() {

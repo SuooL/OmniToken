@@ -41,7 +41,7 @@
 | `collect.local` | true | 是否采集本机日志 |
 | `collect.local_dirs` | 自动探测 | Claude Code 日志目录 |
 | `collect.codex_dirs` | 自动探测 | Codex 日志目录(`$CODEX_HOME` 生效) |
-| `collect.ssh_hosts` | — | `[{host, name}]`,host 可用 ~/.ssh/config 别名 |
+| `collect.ssh_hosts` | — | `[{host, name, since}]`,host 可用 ~/.ssh/config 别名;`since` 为 `YYYY-MM-DD`,该日零点之前的事件不从这台机器入库(留空 = 不限,ADR-0015)。日期写错会直接拒绝启动 |
 | `proxy_listen` | 空 | 在服务端内起本地 API 代理(F14),如 `127.0.0.1:8899`;空 = 不启用 |
 | `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` |
 
