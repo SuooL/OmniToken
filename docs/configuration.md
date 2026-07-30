@@ -451,12 +451,22 @@ SSH 拉取的旁观推断(ADR-0015)。所以给一台家目录是同步副本的
 实测数据:第二台 Mac 的日志事件里 **92% 已经存在于第一台名下** —— 543 个 Codex
 rollout 文件有 539 个连 UUID 都一模一样。
 
-判断方法:在两台机器上比一下文件名。
+判断方法:在两台机器上比一下**会话文件名**。Codex 的 rollout 文件名里带 UUID,
+Claude 的会话文件名就是 session id —— 两边出现同名文件,只可能是同一批日志。
 
 ```sh
-ssh 另一台 'ls ~/.codex/sessions | sort' > /tmp/b.txt
-ls ~/.codex/sessions | sort | comm -12 - /tmp/b.txt | wc -l   # 非 0 就说明有同步
+# Codex:注意目录是 sessions/YYYY/MM/DD/,要 find 到文件,不能 ls 顶层
+ssh 另一台 'find ~/.codex/sessions -name "*.jsonl" -exec basename {} \; | sort' > /tmp/b.txt
+find ~/.codex/sessions -name "*.jsonl" -exec basename {} \; | sort | comm -12 - /tmp/b.txt | wc -l
+
+# Claude:会话文件散在 projects/<项目>/ 下
+ssh 另一台 'find ~/.claude/projects -name "*.jsonl" -exec basename {} \; | sort' > /tmp/b.txt
+find ~/.claude/projects -name "*.jsonl" -exec basename {} \; | sort | comm -12 - /tmp/b.txt | wc -l
 ```
+
+任一条输出非 0 就说明有同步。**必须 `find` 到文件再比**:`ls ~/.codex/sessions`
+只会列出 `2026` 这一个年份目录,两边一比得到 1,看着像「几乎没重叠」,而真实答案
+可能是 539 —— 这个假阴性恰好出现在最需要这条检查的场合。
 
 有重叠就把 `since` 设成你真正希望它开始计入的那天。**只影响归属与上报范围,不影响
 计数** —— 同一次请求无论被几台机器看到都只计一次,这条不变。
