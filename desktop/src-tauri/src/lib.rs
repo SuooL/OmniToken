@@ -1,23 +1,30 @@
-//! OmniToken menubar client (ADR-0008).
+//! OmniToken menubar client (ADR-0008, ADR-0014).
 //!
 //! A thin client: it renders what an `omnitoken serve` instance already knows
 //! and collects nothing itself. Collection stays with `serve` and `agent`, so
 //! there is only ever one writer behind event_id dedup and offset advancement.
+//! Everything added since v1 — the stream, the menu, the notifications — is
+//! display and interaction only, which is the condition that made the third
+//! toolchain acceptable in the first place.
 
 mod gauge;
+mod live;
+mod notify;
 mod settings;
+mod tray;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, PhysicalPosition, WindowEvent};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-/// Reused across polls so connections are pooled; building a Client per call
+/// Reused across requests so connections are pooled; building a Client per call
 /// would open a fresh connection every few seconds.
-fn http() -> &'static reqwest::Client {
+pub(crate) fn http() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
 }
@@ -29,7 +36,7 @@ fn http() -> &'static reqwest::Client {
 /// its read endpoints are unauthenticated, so allowing arbitrary origins would
 /// let any page the user visits read their usage data. Rust is not bound by
 /// the same-origin policy, so the request happens here instead.
-async fn get_json(base: &str, path: &str) -> Result<Value, String> {
+pub(crate) async fn get_json(base: &str, path: &str) -> Result<Value, String> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
     let res = http()
         .get(&url)
@@ -60,56 +67,38 @@ fn settings_get(app: tauri::AppHandle) -> settings::Settings {
 /// reports the result separately.
 #[tauri::command]
 fn settings_set(app: tauri::AppHandle, server: String) -> Result<settings::Settings, String> {
-    let next = settings::Settings {
-        server: settings::normalize(&server)?,
-    };
+    let mut next = settings::load(&app);
+    next.server = settings::normalize(&server)?;
     settings::save(&app, &next)?;
 
-    // Repaint now instead of waiting out the poll interval: the icon would
-    // otherwise keep reporting the old server for up to a minute after the
-    // user pointed it somewhere else.
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move { refresh_tray(&handle).await });
-
+    // Point the bridge at the new address now instead of waiting for the old
+    // connection to break on its own — otherwise the tray would keep reporting
+    // the previous server, possibly for as long as it stays up.
+    live::respawn(&app);
     Ok(next)
 }
 
-const TRAY_ID: &str = "gauge";
-
-/// Coarser than the panel's 15s: the icon only moves between five buckets, and
-/// a menubar glyph that twitches is worse than one that lags a minute.
-const TRAY_POLL: Duration = Duration::from_secs(60);
-
-/// Repaint the tray from the server's current quota.
-///
-/// Reads the address every time rather than caching it, so changing it in
-/// settings takes effect on the next tick with no extra plumbing.
-async fn refresh_tray(app: &tauri::AppHandle) {
-    let base = settings::load(app).server;
-    let percent = match get_json(&base, "/api/v1/live").await {
-        Ok(v) => v
-            .get("quotas")
-            .and_then(|q| q.as_array())
-            .and_then(|q| gauge::tightest_percent(q)),
-        // Unreachable, or serving something that is not the API. Either way
-        // there is no reading, and the offline glyph says so.
-        Err(_) => None,
-    };
-
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return;
-    };
-    let Ok(image) = gauge::icon(percent) else {
-        return;
-    };
-    if tray.set_icon(Some(image)).is_ok() {
-        // tray-icon 0.24 hardcodes `false` for the template flag inside
-        // set_icon (platform_impl/macos/mod.rs), silently undoing what the
-        // builder set. Without re-asserting it here every swap would ship a
-        // literal dark-grey glyph that all but vanishes on a dark menubar.
-        let _ = tray.set_icon_as_template(true);
-    }
+/// The tray's own poll is gone: the bridge pushes every snapshot to both the
+/// glyph and the popover, so "refresh" means "reconnect", not "fetch once".
+#[tauri::command]
+fn refresh_now(app: tauri::AppHandle) {
+    live::respawn(&app);
 }
+
+/// Open the full nine-page panel in the default browser.
+///
+/// The popover deliberately is not the panel (ADR-0008 §4, kept by ADR-0014):
+/// statistics, reports and heatmaps stay in a browser, and this is the door.
+#[tauri::command]
+fn open_full_panel(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = settings::load(&app).server;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+// ── the popover ───────────────────────────────────────────────────────────
 
 fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -128,14 +117,23 @@ const DISMISS_DEBOUNCE_MS: u64 = 250;
 
 /// Place the panel just under the tray icon and horizontally centred on it,
 /// which is where a menubar popover is expected to appear.
-fn show_under_tray(app: &tauri::AppHandle, window: &tauri::WebviewWindow, icon_rect: tauri::Rect) {
-    let size = window.outer_size().unwrap_or_default();
-    if let (tauri::Position::Physical(pos), tauri::Size::Physical(icon)) =
-        (icon_rect.position, icon_rect.size)
-    {
-        let x = pos.x + (icon.width as i32 / 2) - (size.width as i32 / 2);
-        let y = pos.y + icon.height as i32;
-        let _ = window.set_position(PhysicalPosition::new(x, y));
+///
+/// Anchoring by the *top* edge is what lets the frontend resize the window to
+/// fit its content without re-positioning: growing downwards leaves this corner
+/// where it is.
+fn show_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
+    let Some(window) = app.get_webview_window("panel") else {
+        return;
+    };
+    if let Some(rect) = rect {
+        let size = window.outer_size().unwrap_or_default();
+        if let (tauri::Position::Physical(pos), tauri::Size::Physical(icon)) =
+            (rect.position, rect.size)
+        {
+            let x = pos.x + (icon.width as i32 / 2) - (size.width as i32 / 2);
+            let y = pos.y + icon.height as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
     }
     let _ = window.show();
 
@@ -150,13 +148,134 @@ fn show_under_tray(app: &tauri::AppHandle, window: &tauri::WebviewWindow, icon_r
     let _ = window.set_focus();
 }
 
+fn toggle_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
+    let Some(window) = app.get_webview_window("panel") else {
+        return;
+    };
+    let just_dismissed =
+        now_ms().saturating_sub(LAST_DISMISS_MS.load(Ordering::Relaxed)) < DISMISS_DEBOUNCE_MS;
+    if window.is_visible().unwrap_or(false) || just_dismissed {
+        let _ = window.hide();
+    } else {
+        show_panel(app, rect.or_else(|| app.state::<tray::State>().rect()));
+    }
+}
+
+/// ⌥⌘O. Not a const: `Shortcut::new` is not const, and a `OnceLock` keeps the
+/// single definition the handler and the register/unregister paths compare
+/// against — three copies of a chord is how they drift.
+fn hotkey() -> &'static Shortcut {
+    static HOTKEY: OnceLock<Shortcut> = OnceLock::new();
+    HOTKEY.get_or_init(|| Shortcut::new(Some(Modifiers::ALT.union(Modifiers::SUPER)), Code::KeyO))
+}
+
+/// Register or drop the global shortcut to match the setting.
+///
+/// Failures are ignored on purpose: another app may already own the chord, and
+/// that is not something this app should refuse to start over — the menu tick
+/// simply will not do anything.
+fn apply_hotkey(app: &tauri::AppHandle, on: bool) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    if on {
+        let _ = gs.register(*hotkey());
+    } else {
+        let _ = gs.unregister(*hotkey());
+    }
+}
+
+fn apply_autostart(app: &tauri::AppHandle, on: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let m = app.autolaunch();
+    let _ = if on { m.enable() } else { m.disable() };
+}
+
+// ── menu handling ─────────────────────────────────────────────────────────
+
+/// Mutate the stored settings, then re-apply everything that reads them.
+fn update_settings(app: &tauri::AppHandle, f: impl FnOnce(&mut settings::Settings)) {
+    let mut s = settings::load(app);
+    f(&mut s);
+    if settings::save(app, &s).is_err() {
+        // Could not write the file. Re-syncing the ticks from what is actually
+        // stored keeps the menu honest instead of showing a change that did not
+        // survive.
+        tray::sync_checks(app);
+        return;
+    }
+    tray::sync_checks(app);
+}
+
+fn on_menu(app: &tauri::AppHandle, id: &str) {
+    use tauri::Emitter;
+
+    match id {
+        "open_panel" => {
+            let _ = open_full_panel(app.clone());
+        }
+        "refresh" => live::respawn(app),
+        "settings" => {
+            show_panel(app, app.state::<tray::State>().rect());
+            // The popover owns its own view switching; telling it to show
+            // settings is one event rather than a second entry point into the
+            // same UI state.
+            let _ = app.emit("open-settings", ());
+        }
+        "title_off" => set_title_mode(app, settings::TrayTitle::Off),
+        "title_quota" => set_title_mode(app, settings::TrayTitle::Quota),
+        "title_speed" => set_title_mode(app, settings::TrayTitle::Speed),
+        "notify" => update_settings(app, |s| s.notify = !s.notify),
+        "autostart" => {
+            update_settings(app, |s| s.autostart = !s.autostart);
+            apply_autostart(app, settings::load(app).autostart);
+        }
+        "hotkey" => {
+            update_settings(app, |s| s.hotkey = !s.hotkey);
+            apply_hotkey(app, settings::load(app).hotkey);
+        }
+        _ => {}
+    }
+}
+
+fn set_title_mode(app: &tauri::AppHandle, which: settings::TrayTitle) {
+    update_settings(app, |s| s.tray_title = which);
+    // Reconnect so the new figure appears immediately rather than at the next
+    // change the server happens to broadcast — on an idle machine that could be
+    // a long wait, and a menubar that ignores a setting looks broken.
+    live::respawn(app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        // The LaunchAgent flavour, not a Login Item: it survives without the app
+        // having been in /Applications, which matters for a binary distributed
+        // through GitHub Releases rather than the App Store.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    // Act on press only. Without the state check this fires
+                    // twice per keystroke and the popover toggles back shut.
+                    if shortcut == hotkey() && event.state() == ShortcutState::Pressed {
+                        toggle_panel(app, app.state::<tray::State>().rect());
+                    }
+                })
+                .build(),
+        )
+        .manage(live::State::default())
+        .manage(tray::State::default())
         .invoke_handler(tauri::generate_handler![
             api_get,
             settings_get,
-            settings_set
+            settings_set,
+            refresh_now,
+            open_full_panel
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -168,20 +287,35 @@ pub fn run() {
             }
 
             // Accessory: menubar-only, no dock icon and no app-switcher entry.
-            // See show_under_tray for the activation this makes necessary.
+            // See show_panel for the activation this makes necessary.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            let stored = settings::load(app.handle());
+
+            let (menu, items) = tray::menu(app.handle(), &stored)?;
             let handle = app.handle().clone();
-            TrayIconBuilder::with_id(TRAY_ID)
-                // Starts with no reading: the first poll has not landed yet,
+            TrayIconBuilder::with_id(tray::TRAY_ID)
+                // Starts with no reading: the first snapshot has not landed yet,
                 // and an arbitrary fill level would be a number we made up.
                 .icon(gauge::icon(None)?)
                 // Template mode lets macOS recolour the icon for light and dark
                 // menubars instead of us shipping two assets.
                 .icon_as_template(true)
                 .tooltip("OmniToken")
-                .on_tray_icon_event(move |_tray, event| {
+                .menu(&menu)
+                // Left click belongs to the popover; the menu is the right-click
+                // gesture. With the default (true) a left click would open the
+                // menu and the popover would be unreachable by mouse.
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
+                .on_tray_icon_event(move |tray, event| {
+                    // Remember where the icon is from any event that reports it,
+                    // so the menu and the shortcut can anchor the popover too —
+                    // neither of them arrives with a rect.
+                    if let Some(rect) = event_rect(&event) {
+                        tray.app_handle().state::<tray::State>().remember_rect(rect);
+                    }
                     // Act on release, not press: a press also begins a drag,
                     // which should not toggle the panel.
                     if let TrayIconEvent::Click {
@@ -191,30 +325,21 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let Some(window) = handle.get_webview_window("panel") else {
-                            return;
-                        };
-                        let just_dismissed = now_ms()
-                            .saturating_sub(LAST_DISMISS_MS.load(Ordering::Relaxed))
-                            < DISMISS_DEBOUNCE_MS;
-                        if window.is_visible().unwrap_or(false) || just_dismissed {
-                            let _ = window.hide();
-                        } else {
-                            show_under_tray(&handle, &window, rect);
-                        }
+                        toggle_panel(&handle, Some(rect));
                     }
                 })
                 .build(app)?;
+            tray::remember_items(app.handle(), items);
 
-            // Own thread rather than a timer on the main loop: the poll blocks
-            // on the network, and the menubar must stay responsive while a
-            // dead server times out. set_icon marshals itself back to the main
-            // thread, so painting from here is safe.
-            let poller = app.handle().clone();
-            std::thread::spawn(move || loop {
-                tauri::async_runtime::block_on(refresh_tray(&poller));
-                std::thread::sleep(TRAY_POLL);
-            });
+            // Keep the OS in step with what the file says. Someone may have
+            // removed the LaunchAgent by hand, or the chord may have been taken
+            // by another app since last launch.
+            apply_autostart(app.handle(), stored.autostart);
+            apply_hotkey(app.handle(), stored.hotkey);
+
+            // One stream, feeding the popover, the glyph, the figure and the
+            // alerts. Replaces both of v1's polling loops.
+            live::respawn(app.handle());
 
             Ok(())
         })
@@ -227,4 +352,16 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// The icon's screen rect, for whichever events carry one.
+fn event_rect(event: &TrayIconEvent) -> Option<tauri::Rect> {
+    match event {
+        TrayIconEvent::Click { rect, .. }
+        | TrayIconEvent::DoubleClick { rect, .. }
+        | TrayIconEvent::Enter { rect, .. }
+        | TrayIconEvent::Move { rect, .. }
+        | TrayIconEvent::Leave { rect, .. } => Some(*rect),
+        _ => None,
+    }
 }

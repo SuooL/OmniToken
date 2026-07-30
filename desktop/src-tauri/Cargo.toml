@@ -33,6 +33,20 @@ tauri = { version = "2.11.3", features = [
   "image-png",
 ] }
 tauri-plugin-log = "2"
+# Menubar-resident essentials (ADR-0014). Each is display or interaction only —
+# none of them touches a write path, which is the condition under which ADR-0008
+# accepted the desktop client's third toolchain at all.
+#
+# opener: "open the full panel" hands the server URL to the default browser.
+# autostart: a menubar app the user has to launch by hand every morning is a
+#   menubar app they stop using.
+# notification: the highest-value thing this app can do is tell you before you
+#   hit the wall, not after.
+# global-shortcut: opt-in, so it never silently claims a chord.
+tauri-plugin-opener = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
 # The webview runs on tauri://localhost while the server sits elsewhere, and
 # the server deliberately sends no CORS headers (ADR-0008: its read endpoints
 # are unauthenticated, so allowing arbitrary origins would expose usage data to
@@ -41,7 +55,21 @@ tauri-plugin-log = "2"
 #
 # rustls rather than the system TLS stack, to match the project's preference
 # for builds that do not depend on what the host happens to provide.
+#
+# `stream` is what makes bytes_stream() available, which the SSE bridge needs to
+# read /api/v1/stream as it arrives rather than waiting for a body that never
+# ends (ADR-0014).
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls",
+  "stream",
 ] }
+# SSE framing only. Writing it by hand looks easy until multi-line `data:`,
+# `event:` before or after `data:`, CRLF, and `:` comment heartbeats all have to
+# be right — and the server sends the last of those every 30 seconds.
+eventsource-stream = "0.2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Just the reconnect timer. tauri's async runtime *is* tokio, so this adds no new
+# dependency tree — only the ability to sleep without parking a blocking thread
+# for the length of the backoff.
+tokio = { version = "1", default-features = false, features = ["time"] }
