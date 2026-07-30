@@ -51,16 +51,29 @@ const Views = {
 
 let currentView = null;
 
+function parseRouteHash(hash) {
+  const raw = (hash || "#live").replace(/^#/, "");
+  const split = raw.indexOf("?");
+  return {
+    name: split < 0 ? raw : raw.slice(0, split),
+    params: new URLSearchParams(split < 0 ? "" : raw.slice(split + 1)),
+  };
+}
+
 function route() {
   // Lands on live: the panel's job is now what the machines are doing, with
   // the retrospective views a click away.
-  const name = (location.hash || "#live").slice(1);
-  const next = Views[name] ? name : "live";
-  if (next === currentView) return;
+  const parsed = parseRouteHash(location.hash);
+  const next = Views[parsed.name] ? parsed.name : "live";
+  if (next === currentView) {
+    if (next === "details") Details.applyRoute(parsed.params);
+    return;
+  }
   if (currentView) {
     Views[currentView].leave();
     Views[currentView].el().hidden = true;
   }
+  if (next === "details") Details.applyRoute(parsed.params, false);
   currentView = next;
   Views[next].el().hidden = false;
   Views[next].enter();
@@ -78,7 +91,7 @@ function route() {
 
 // One line each, saying what the page answers rather than what it contains.
 const PAGE_SUB = {
-  live: "这台机器现在在生成什么",
+  live: "全部设备现在在生成什么",
   speed: "现在多快,以及各模型的吐字速度",
   overview: "累计与趋势",
   reports: "按日/周/月/会话聚合,可导出",

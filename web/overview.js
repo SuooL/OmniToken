@@ -111,6 +111,7 @@ const Overview = {
     const chart = echartsFor(el);
     const days = this.fillDays(daily);
     chart.setOption({
+      aria: { enabled: true },
       grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis",

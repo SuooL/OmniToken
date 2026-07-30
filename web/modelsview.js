@@ -239,6 +239,7 @@ const ModelsView = {
     const costs = shown.map((m) => (m.unpriced ? "无定价" : usd(m.cost)));
 
     echartsFor(el).setOption({
+      aria: { enabled: true },
       grid: { left: 8, right: 90, top: 28, bottom: 0, containLabel: true },
       tooltip: {
         trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
@@ -308,6 +309,7 @@ const ModelsView = {
     }
     const buckets = this.fillDays(daily, series, days);
     echartsFor(el).setOption({
+      aria: { enabled: true },
       grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),

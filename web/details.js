@@ -1,6 +1,10 @@
 "use strict";
 // Details view: filterable, paginated raw-event drill-down (F13).
 
+function detailsSessionHref(sessionID) {
+  return "#details?session=" + encodeURIComponent(sessionID);
+}
+
 const Details = {
   filters: { device: "", source: "", model: "", repo: "", session: "", days: "7" },
   limit: 100,
@@ -20,6 +24,15 @@ const Details = {
 
   leave() {},
 
+  applyRoute(params, shouldLoad = true) {
+    const session = params.get("session") || "";
+    const changed = session !== this.filters.session;
+    this.filters.session = session;
+    if (changed) this.offset = 0;
+    if (this.built) this.renderChips();
+    if (shouldLoad && this.built && changed) this.load();
+  },
+
   build() {
     document.getElementById("view-details").innerHTML = `
     <section class="card">
@@ -28,11 +41,11 @@ const Details = {
         <div class="head-tools"><span class="subtle" id="d-note"></span></div>
       </div>
       <div class="filter-row">
-        <select id="d-f-device"><option value="">全部设备</option></select>
-        <select id="d-f-source"><option value="">全部来源</option></select>
-        <select id="d-f-model"><option value="">全部模型</option></select>
-        <select id="d-f-repo"><option value="">全部项目</option></select>
-        <select id="d-f-days">
+        <select id="d-f-device" aria-label="设备筛选"><option value="">全部设备</option></select>
+        <select id="d-f-source" aria-label="来源筛选"><option value="">全部来源</option></select>
+        <select id="d-f-model" aria-label="模型筛选"><option value="">全部模型</option></select>
+        <select id="d-f-repo" aria-label="项目筛选"><option value="">全部项目</option></select>
+        <select id="d-f-days" aria-label="时间范围">
           <option value="7">近 7 天</option>
           <option value="30">近 30 天</option>
           <option value="90">近 90 天</option>
@@ -66,20 +79,6 @@ const Details = {
         this.offset += this.limit;
         this.load();
       }
-    });
-    // Session drill-down: click a session id in the table to filter by it.
-    document.getElementById("d-table").addEventListener("click", (ev) => {
-      const el = ev.target.closest("[data-session]");
-      if (!el) return;
-      this.filters.session = el.dataset.session;
-      this.offset = 0;
-      this.load();
-    });
-    document.getElementById("d-chips").addEventListener("click", (ev) => {
-      if (!ev.target.closest("#d-clear-session")) return;
-      this.filters.session = "";
-      this.offset = 0;
-      this.load();
     });
   },
 
@@ -152,7 +151,7 @@ const Details = {
       ${num(e.input_tokens)}${num(e.output_tokens)}${num(e.cache_read_tokens)}${num(e.cache_creation_tokens)}
       <td>${e.cost_usd != null ? usd(e.cost_usd) : "—"}</td>
       <td>${sid
-        ? `<a class="session-link" data-session="${esc(sid)}" title="按此会话过滤:${esc(sid)}">${esc(sid.slice(0, 8))}</a>`
+        ? `<a class="session-link" href="${detailsSessionHref(sid)}" title="按此会话过滤:${esc(sid)}">${esc(sid.slice(0, 8))}</a>`
         : "—"}</td>
     </tr>`;
   },
@@ -160,7 +159,7 @@ const Details = {
   renderChips() {
     document.getElementById("d-chips").innerHTML = this.filters.session
       ? `<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
-          <button id="d-clear-session" class="chip-x" title="清除会话过滤">×</button></span>`
+          <a id="d-clear-session" class="chip-x" href="#details" aria-label="清除会话过滤">×</a></span>`
       : "";
   },
 

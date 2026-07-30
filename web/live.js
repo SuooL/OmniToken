@@ -69,10 +69,14 @@ const Live = {
         <div class="track">${blocks(s.spans)}</div>
         <div class="rate">${(s.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
       </div>`).join("");
+    const hidden = Math.max(0, sessions.length - 8);
+    const more = hidden
+      ? `<p class="subtle lane-more">另有 ${hidden} 个会话</p>`
+      : "";
 
-    el.innerHTML = rows + `
+    el.innerHTML = rows + more + `
       <div class="lane union">
-        <div class="who">本机(并集)</div>
+        <div class="who">全部设备(并集)</div>
         <div class="track">${blocks(sp.spans)}</div>
         <div class="rate">${(sp.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
       </div>`;
