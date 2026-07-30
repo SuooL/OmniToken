@@ -100,6 +100,7 @@ func (s *Server) Run() error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", s.auth(s.handleIngest))
+	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
 	// Every read goes through readAuth. It is a no-op on a loopback-only
 	// server, so wrapping them all costs nothing in the common case and means
 	// adding an endpoint cannot accidentally leave one open.
