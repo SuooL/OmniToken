@@ -109,7 +109,7 @@ const Live = {
     devEl.innerHTML = devs.length ? devs.map((v) => `
       <div class="row dev-row">
         <div class="row-head">
-          <span class="key"><span class="dot ${v.state}"></span>${esc(v.display_name || v.device)} <span class="extra">${this.connectionLabel(v)}</span></span>
+          <span class="key"><span class="dot ${this.visualState(v)}"></span>${esc(v.display_name || v.device)} <span class="extra">${this.connectionLabel(v)}</span></span>
           <span class="val">${compact(v.today_tokens)} <span class="extra">今日</span></span>
         </div>
         <div class="row-head sub2"><span class="key">最后活动 ${this.deviceLastSeen(v)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
@@ -239,7 +239,21 @@ const Live = {
 
   connectionLabel(v) {
     if (v.identity_status !== "registered") return this.stateLabel(v.state);
-    return { online: "在线", stale: "延迟", offline: "离线" }[v.connection_state] || "未知";
+    return { online: "在线", stale: "延迟", offline: "离线" }[this.effectiveConnectionState(v)] || "未知";
+  },
+
+  effectiveConnectionState(v, nowMS = Date.now()) {
+    if (v.identity_status !== "registered") return v.connection_state || "unknown";
+    if (!v.last_seen_at) return "offline";
+    const age = Math.max(0, nowMS - v.last_seen_at);
+    if (age <= 2 * 60 * 1000) return "online";
+    if (age <= 10 * 60 * 1000) return "stale";
+    return "offline";
+  },
+
+  visualState(v) {
+    if (v.identity_status !== "registered") return v.state;
+    return { online: "active", stale: "idle", offline: "stale" }[this.effectiveConnectionState(v)] || "stale";
   },
 
   deviceLastSeen(v) {

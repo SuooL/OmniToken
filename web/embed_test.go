@@ -291,7 +291,7 @@ func TestStateDecisionHelpersInNode(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{
 		"api.js", "settingsview.js", "overview.js", "speedview.js",
-		"cacheview.js", "devicesview.js", "modelsview.js",
+		"cacheview.js", "devicesview.js", "modelsview.js", "live.js",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(embeddedAsset(t, name)), 0o600); err != nil {
 			t.Fatalf("write %s companion asset: %v", name, err)
@@ -526,6 +526,15 @@ test('route empty predicates reflect meaningful data', () => {
   const models = load('modelsview.js');
   assert.equal(run(models, 'modelsIsEmpty({by_source:[]})'), true);
   assert.equal(run(models, 'modelsIsEmpty({by_source:[{total_tokens:1}]})'), false);
+});
+
+test('registered liveness ages without a new SSE payload', () => {
+  const live = load('live.js');
+  const seen = 1_000_000;
+  const device = '{identity_status:"registered",connection_state:"online",last_seen_at:' + seen + '}';
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 120_000) + ')'), 'online');
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 120_001) + ')'), 'stale');
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 600_001) + ')'), 'offline');
 });
 `
 	path := filepath.Join(dir, "state-decisions.test.mjs")
