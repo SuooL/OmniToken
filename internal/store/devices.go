@@ -1,6 +1,10 @@
 package store
 
-import "time"
+import (
+	"time"
+
+	"github.com/suool/omnitoken/internal/model"
+)
 
 // Per-device queries backing the standalone devices page (F21 / GAP-3).
 // The overview already answers "how much per device"; this file answers
@@ -85,19 +89,45 @@ func (s *Store) DeviceSummary(from, to time.Time) ([]DeviceSummaryRow, error) {
 			return nil, err
 		}
 		r.Models = models[r.Device]
-		if len(r.Models) > 0 {
-			r.TopModel = r.Models[0].Model
-			r.TopModelTokens = r.Models[0].TotalTokens
-		}
+		r.TopModel, r.TopModelTokens = topFoldedModel(r.Models)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// topFoldedModel picks the device's dominant model, folding routing variants
+// together first.
+//
+// The rows themselves stay unfolded because the caller prices them, and a price
+// is looked up by the id the tool actually reported. The dominant-model label
+// is display, so it folds — otherwise one model arriving through two channels
+// competes with itself, and the number beside the name is only one channel's
+// share. Seen on a real install: the devices page said claude-opus-4-8 1.8B
+// while the models page, which folds, said 2.3B for the same model.
+func topFoldedModel(rows []ModelUsageRow) (string, int64) {
+	byModel := map[string]int64{}
+	for _, m := range rows {
+		byModel[model.CanonicalModel(m.Model)] += m.TotalTokens
+	}
+	var name string
+	var top int64
+	for m, t := range byModel {
+		// Ties broken by name so the label does not flip between polls.
+		if t > top || (t == top && m < name) {
+			name, top = m, t
+		}
+	}
+	return name, top
 }
 
 // deviceModelUsage groups per-model usage under each device, biggest model
 // first. Grouping is by model alone (provider is reported as a sample, not a
 // grouping key) so a model served through two providers stays one row for
 // the "dominant model" question.
+//
+// Model ids come back exactly as reported: the caller prices these rows, and
+// pricing must key on what the tool sent (a folded name is a display name, and
+// need not exist in the pricing table).
 func (s *Store) deviceModelUsage(from, to time.Time) (map[string][]ModelUsageRow, error) {
 	rows, err := s.db.Query(
 		`SELECT device, model, MAX(provider), `+sums+`,

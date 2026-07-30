@@ -114,6 +114,12 @@ func (s *Store) ModelDaily(from, to time.Time, topN int) ([]ModelDailyRow, error
 			&r.InputTokens, &r.OutputTokens, &r.CacheRead, &r.CacheCreation, &r.TotalTokens); err != nil {
 			return nil, err
 		}
+		// Fold before the top-N is decided, for the same reason Breakdown does
+		// (ADR-less, see internal/model/canonical.go): unfolded, one model's
+		// two routing variants compete for separate slots, so the chart shows
+		// `claude-opus-4-8` and `anthropic.claude-opus-4-8` as rival series and
+		// each understates the model it belongs to.
+		r.Model = model.CanonicalModel(r.Model)
 		rangeTotal[r.Model] += r.TotalTokens
 		raw = append(raw, r)
 	}

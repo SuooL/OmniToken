@@ -206,3 +206,44 @@ func seedModelStore(t *testing.T) (*Store, time.Time, time.Time) {
 	}
 	return s, base, day2.Add(time.Hour)
 }
+
+// One model reaching us through two channels must not compete with itself for
+// a top-N slot. Seen on a real install: the daily chart drew claude-opus-4-8
+// and anthropic.claude-opus-4-8 as rival series, each showing part of the
+// model's volume, while the chart above it (which folds) showed the whole.
+func TestModelDailyFoldsVariantsBeforeTopN(t *testing.T) {
+	s, err := Open(t.TempDir() + "/fold.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.Local)
+	ev := func(id, mdl string, out int64) model.Event {
+		return model.Event{EventID: id, TS: base.UnixMilli(), Source: "claude-code",
+			Model: mdl, OutputTokens: out}
+	}
+	// Split across channels the model totals 900 — more than the rival's 500 —
+	// but each half alone is less.
+	if _, err := s.InsertEvents([]model.Event{
+		ev("a", "claude-opus-4-8", 500),
+		ev("b", "anthropic.claude-opus-4-8", 400),
+		ev("c", "gpt-5", 500),
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.ModelDaily(base.Add(-time.Hour), base.Add(time.Hour), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// topN=1: the folded model wins the only slot, gpt-5 falls to the tail.
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want the winner plus a merged tail", rows)
+	}
+	if rows[0].Model != "claude-opus-4-8" || rows[0].TotalTokens != 900 {
+		t.Errorf("top row = %+v, want claude-opus-4-8 with 900", rows[0])
+	}
+	if rows[1].Model != ModelOther || rows[1].TotalTokens != 500 {
+		t.Errorf("tail = %+v, want the 500-token rival", rows[1])
+	}
+}
