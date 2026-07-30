@@ -2,14 +2,10 @@ package store
 
 import "time"
 
-// SpeedModelRow carries per-model generation-speed statistics (F15).
-// Speed of one event = output_tokens * 1000 / duration_ms (tok/s).
-//
-// Semantics depend on the source channel (ADR-0006): for log sources
-// (claude-code/codex) duration_ms is the gap to the previous session event —
-// an approximation of generation time; for source='proxy' it is measured
-// exactly and ttft_ms is populated. The two channels are never mixed: callers
-// pick one via the exact flag and must label results accordingly.
+// SpeedModelRow carries per-model statistics for the measured channel (F15):
+// the local proxy, where duration_ms brackets the request itself and ttft_ms is
+// the real first-token latency. Speed of one event = output_tokens * 1000 /
+// duration_ms (tok/s).
 type SpeedModelRow struct {
 	Model        string  `json:"model"`
 	Samples      int64   `json:"samples"`
@@ -19,33 +15,31 @@ type SpeedModelRow struct {
 	P90TPS       float64 `json:"p90_tps"`
 	MinTPS       float64 `json:"min_tps"`
 	MaxTPS       float64 `json:"max_tps"`
-	// TTFT stats are meaningful only for exact=true (logs have ttft_ms=0).
 	AvgTTFTMS    float64 `json:"avg_ttft_ms"`
 	MedianTTFTMS float64 `json:"median_ttft_ms"`
 }
 
-// SpeedByModel aggregates per-event speeds per model over [from, to).
-// exact=true reads only source='proxy' (measured duration + TTFT);
-// exact=false reads only claude-code (approximate).
+// ProxySpeedByModel aggregates per-event speeds per model over [from, to) for
+// the proxy channel only (source='proxy'), where duration_ms is measured around
+// the request and ttft_ms is real.
 //
-// Codex is deliberately EXCLUDED from the approximate channel: its
-// token_count lines are written right after a turn finishes, so the gap to
-// the previous line is a logging artifact, not generation time (measured
-// median gap 30ms vs 10.5s for claude-code), which yields speeds in the
-// 10^5 tok/s range. Codex speed therefore requires the proxy channel.
+// The log channel used to be computed here too, from duration_ms — the gap to
+// the previous session event. ADR-0009 took it apart on real samples (17% of
+// events had gaps over 30s, holding human thinking and tool runs) and it is
+// gone: log-derived speed now comes from gen_ms on the union basis, in
+// SpeedByModelUnion. Comparing the two on this machine's 30 days before
+// deleting it, as that ADR required: claude-opus-4-8 read 137.4 tok/s as a mean
+// of per-event ratios and 31.0 summed over duration_ms, against 68.3 on the
+// generation interval — the old channel was wrong in both directions at once.
 //
-// Events with duration_ms <= 0 or output_tokens < 8 are excluded: tiny
-// outputs make the per-event speed dominated by noise, and duration 0 means
-// "unknown" (batch-first events, ADR-0006).
+// Events with duration_ms <= 0 or output_tokens < 8 are excluded: tiny outputs
+// make the per-event speed dominated by noise, and duration 0 means "unknown".
 //
 // Quantiles are computed in SQL with window functions: the median averages
 // the two middle ranks (exact for odd and even n), P90 uses the nearest-rank
 // method (value at rank ceil(0.9*n)). TTFT is ranked independently of speed.
-func (s *Store) SpeedByModel(from, to time.Time, exact bool) ([]SpeedModelRow, error) {
-	srcCond := `source = 'claude-code'`
-	if exact {
-		srcCond = `source = 'proxy'`
-	}
+func (s *Store) ProxySpeedByModel(from, to time.Time) ([]SpeedModelRow, error) {
+	const srcCond = `source = 'proxy'`
 	rows, err := s.db.Query(
 		`WITH sp AS (
 		   SELECT model,

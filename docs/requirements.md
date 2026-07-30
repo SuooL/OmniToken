@@ -49,7 +49,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F12 | 报表:日/周/月/会话聚合,任意区间,导出 JSON/CSV | P1 | M2 ✅ |
 | F13 | 明细下钻:事件级筛选查询 | P1 | M2 ✅ |
 | F14 | 本地代理:采集 API 直调,精确 tokens/sec 与 TTFT | P1 | M3 ✅ |
-| F15 | 速度页:各模型 tokens/sec 分布、TTFT(代理=精确,日志=近似,须标注) | **P0** | M3 ✅ |
+| F15 | 速度页:近 60 分钟实时速度曲线 + 各模型并集口径 tokens/sec + TTFT(代理=精确,日志=区间推算,须标注覆盖率) | **P0** | M3 ✅ / M5 重做 ✅ |
 | F16 | Cache 分析:命中率、1h/5m TTL 明细、节省金额 | P2 | M3 ✅ |
 | F18 | Claude Code statusline 接入(本会话 + 跨设备今日 + 权威配额) | P3 | ✅ |
 | F19 | 权威配额观测:Claude OAuth 用量端点(5h/周/分模型)、Codex rate_limits;仅订阅计费轮询(ADR-0007) | P2 | ✅ |

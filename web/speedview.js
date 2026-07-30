@@ -1,19 +1,27 @@
 "use strict";
-// Speed view (F15): per-model tokens/sec distribution and TTFT.
+// Speed view (F15): how fast generation is running now, then how the models
+// compare over the range.
 //
-// The two channels are rendered as separate sections and are never averaged
-// together (requirements.md F15): log sources derive speed from the gap to the
-// previous session event (ADR-0006) — approximate, TTFT unavailable — while the
-// local proxy measures duration and TTFT directly. Every number therefore
-// carries a visible 近似 / 精确 badge.
-// Renders into #view-speed; single-hue bars reuse .bars / .data-table.
+// Every figure on this page divides by the union of generation intervals
+// (ADR-0009) — the time something was actually producing tokens. That is a
+// different question from the burn rate on the Live page, which divides by the
+// whole window and therefore counts idle time. It also replaces what this page
+// used to show: a mean of per-event ratios over duration_ms, which held human
+// thinking and tool runs in the denominator and single 2ms events in the
+// numerator, and was wrong in both directions at once.
+//
+// Three channels, never averaged together: the log-derived curve and model
+// table, the proxy's measured numbers, and nothing at all for Codex.
 
 const SpeedView = {
   _timer: null,
 
   enter() {
     this.load();
-    this._timer = setInterval(() => this.load(), 30000);
+    // Faster than the other retrospective pages: the top half of this one is a
+    // live curve, and a minute-resolution chart refreshed every 30s is stale
+    // for half its own resolution.
+    this._timer = setInterval(() => this.load(), 15000);
   },
 
   leave() {
@@ -44,110 +52,209 @@ const SpeedView = {
     return Math.round(v) + "ms";
   },
 
-  // weightedMedian approximates the overall median from per-model medians,
-  // weighting each by its sample count. Exact per-event quantiles live in the
-  // store; this tile only needs the headline figure.
-  weightedMedian(rows) {
-    const xs = rows.filter((r) => r.samples > 0 && r.median_tps > 0)
-      .sort((a, b) => a.median_tps - b.median_tps);
-    const total = xs.reduce((s, r) => s + r.samples, 0);
-    if (!total) return 0;
-    let acc = 0;
-    for (const r of xs) {
-      acc += r.samples;
-      if (acc * 2 >= total) return r.median_tps;
-    }
-    return xs[xs.length - 1].median_tps;
+  // Active time reads in whatever unit keeps it a small number: a model that
+  // generated for 4 hours and one that generated for 20 seconds share a column.
+  dur(msVal) {
+    const s = Math.round(msVal / 1000);
+    if (s <= 0) return "—";
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    return (s / 3600).toFixed(1) + "h";
   },
 
-  // fastest prefers models with enough samples to be meaningful; a single
-  // lucky event should not be crowned the fastest model.
-  fastest(rows) {
-    let pool = rows.filter((r) => r.samples >= 5 && r.median_tps > 0);
-    if (!pool.length) pool = rows.filter((r) => r.median_tps > 0);
-    if (!pool.length) return null;
-    return pool.reduce((a, b) => (b.median_tps > a.median_tps ? b : a));
+  pct(v) {
+    if (!isFinite(v) || v <= 0) return "0%";
+    return (v * 100).toFixed(v >= 0.1 ? 0 : 1) + "%";
   },
 
   // --- rendering ---
 
   render(d) {
     const root = document.getElementById("view-speed");
-    const approx = d.approx || [];
+    const models = d.models || [];
     const exact = d.exact || [];
+    const series = d.series || {};
+    const live = d.live || {};
     const days = d.days || 30;
-    root.innerHTML = `
-      <section class="stat-row">${this.tiles(approx, exact)}</section>
-      <section class="card">
-        <div class="card-head">
-          <h2>日志估算(近似) · Claude · 近 ${days} 天</h2>
-          <span class="chip badge approx">近似 · 由日志间隔推算</span>
-        </div>
-        <p class="subtle">速度 = 输出 tokens ÷ 与会话内上一事件的间隔(ADR-0006)。该间隔含思考与工具等待,系统性低估真实生成速度,只适合模型之间横向比较,不能与下方代理数据混合平均。已排除 输出 &lt; 8 tokens 或时长未知的事件。<b>Codex 不在此列</b>:它的 token_count 日志在一轮结束后才写入(间隔中位仅 30ms),不反映生成耗时;要看 Codex 速度请启用下方本地代理。</p>
-        <div class="data-table">${this.approxTable(approx)}</div>
-        <h2 style="margin-top:14px">中位速度 · tok/s(近似)</h2>
-        <div class="bars">${this.bars(approx)}</div>
-      </section>
-      <section class="card">
-        <div class="card-head">
-          <h2>本地代理(精确) · 近 ${days} 天</h2>
-          <span class="chip badge exact">精确 · 代理实测</span>
-        </div>
-        ${this.exactBody(exact, d.has_exact)}
-      </section>`;
+
+    // Rebuilt only when the shape changes; the chart lives across polls so it
+    // keeps its animation state instead of restarting every 15 seconds.
+    if (!root.dataset.built) {
+      root.innerHTML = `
+        <section class="stat-row" id="speed-tiles"></section>
+        <section class="card">
+          <div class="card-head">
+            <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟</h2>
+            <div class="head-tools"><span class="subtle" id="speed-curve-note"></span></div>
+          </div>
+          <div id="speed-curve" style="height:260px"></div>
+          <p class="subtle" id="speed-curve-legend"></p>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>按模型 · 近 <span id="speed-days">30</span> 天</h2>
+            <span class="chip badge approx">并集口径 · 日志推算</span>
+          </div>
+          <p class="subtle" id="speed-model-note"></p>
+          <div class="bars" id="speed-bars"></div>
+          <div class="data-table" id="speed-model-table"></div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>本地代理(精确) · 近 <span id="speed-days-exact">30</span> 天</h2>
+            <span class="chip badge exact">精确 · 代理实测</span>
+          </div>
+          <div id="speed-exact"></div>
+        </section>`;
+      root.dataset.built = "1";
+    }
+    document.getElementById("speed-days").textContent = days;
+    document.getElementById("speed-days-exact").textContent = days;
+    document.getElementById("speed-window").textContent = series.window_minutes || 60;
+
+    this.renderTiles(live, series);
+    this.renderCurve(series);
+    this.renderModels(models);
+    document.getElementById("speed-exact").innerHTML = this.exactBody(exact, d.has_exact);
   },
 
-  tiles(approx, exact) {
-    const overall = this.weightedMedian(approx);
-    const top = this.fastest(approx);
-    const proxySamples = exact.reduce((s, r) => s + r.samples, 0);
-    const approxSamples = approx.reduce((s, r) => s + r.samples, 0);
-    return `
+  renderTiles(live, series) {
+    const buckets = series.buckets || [];
+    const active = buckets.filter((b) => b.active_ms > 0);
+    const peak = active.reduce((m, b) => Math.max(m, b.tps), 0);
+    const activeMS = buckets.reduce((s, b) => s + b.active_ms, 0);
+    const spanMS = Math.max(1, (buckets.length || 1) * (series.bucket_ms || 60000));
+
+    document.getElementById("speed-tiles").innerHTML = `
       <div class="stat-tile">
-        <div class="label">全局中位速度(近似)</div>
-        <div class="value">${this.tps(overall)}<span class="unit"> tok/s</span></div>
-        <div class="sub">日志来源 · ${full(approxSamples)} 个样本(近似,含等待)</div>
+        <div class="label">当前速度 · 近 10 分钟</div>
+        <div class="value">${this.tps(live.tps || 0)}<span class="unit"> tok/s</span></div>
+        <div class="sub">${(live.sessions || []).length ? `${(live.sessions || []).length} 个会话在生成` : "当前没有生成"}</div>
       </div>
       <div class="stat-tile">
-        <div class="label">最快模型(近似)</div>
-        <div class="value" style="font-size:18px">${top ? esc(top.model || "(未知)") : "—"}</div>
-        <div class="sub">${top ? `中位 ${this.tps(top.median_tps)} tok/s · ${full(top.samples)} 样本` : "暂无数据"}</div>
+        <div class="label">近 ${series.window_minutes || 60} 分钟峰值</div>
+        <div class="value">${this.tps(peak)}<span class="unit"> tok/s</span></div>
+        <div class="sub">${active.length ? `${active.length} 分钟里有生成` : "整段窗口都空闲"}</div>
       </div>
       <div class="stat-tile">
-        <div class="label">代理样本数(精确)</div>
-        <div class="value">${proxySamples ? full(proxySamples) : "未启用"}</div>
-        <div class="sub">${proxySamples ? "实测生成耗时与 TTFT" : "无本地代理数据"}</div>
+        <div class="label">生成占比</div>
+        <div class="value">${this.pct(activeMS / spanMS)}</div>
+        <div class="sub">窗口内真正在产出 token 的时间</div>
       </div>`;
   },
 
-  approxTable(rows) {
-    if (!rows.length) return `<p class="subtle">暂无数据,等待采集…</p>`;
-    return `<table><thead><tr>
-        <th>模型</th><th>中位 tok/s</th><th>P90 tok/s</th><th>均值 tok/s</th>
-        <th>样本数</th><th>输出 tokens</th>
-      </tr></thead><tbody>` +
-      rows.map((r) => `<tr>
-          <td>${esc(r.model || "(未知)")}</td>
-          <td>${this.tps(r.median_tps)}</td>
-          <td>${this.tps(r.p90_tps)}</td>
-          <td>${this.tps(r.avg_tps)}</td>
-          <td>${full(r.samples)}</td>
-          <td>${compact(r.output_tokens)}</td>
-        </tr>`).join("") + `</tbody></table>`;
+  // The curve. Idle minutes are null, not zero: a gap says "nothing was
+  // generating", while a zero would claim something ran and emitted nothing.
+  renderCurve(series) {
+    const el = document.getElementById("speed-curve");
+    const buckets = series.buckets || [];
+    const note = document.getElementById("speed-curve-note");
+    if (!buckets.some((b) => b.active_ms > 0)) {
+      el.innerHTML = `<p class="bars"><span class="empty">近 ${series.window_minutes || 60} 分钟没有生成。开始使用 Claude,曲线会实时出现。</span></p>`;
+      note.textContent = "";
+      document.getElementById("speed-curve-legend").textContent = "";
+      return;
+    }
+    note.textContent = `每 ${Math.round((series.bucket_ms || 60000) / 1000)} 秒一个点`;
+    document.getElementById("speed-curve-legend").textContent =
+      "速度 = 该分钟产出的 output tokens ÷ 该分钟内真正在生成的时间。断开处表示没有生成,不是速度为 0。";
+
+    const chart = echartsFor(el);
+    const hue = cssVar("--series-1");
+    chart.setOption({
+      grid: { left: 8, right: 8, top: 16, bottom: 4, containLabel: true },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "line", lineStyle: { color: cssVar("--border-strong") } },
+        ...tooltipStyle(),
+        formatter: (ps) => {
+          const p = ps[0];
+          const b = buckets[p.dataIndex];
+          if (!b || !b.active_ms) return `${p.axisValue}<br/>没有生成`;
+          return `${p.axisValue}<br/><b>${this.tps(b.tps)}</b> tok/s<br/>` +
+            `输出 ${compact(b.output_tokens)} · 生成 ${Math.round(b.active_ms / 1000)}s`;
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: buckets.map((b) => new Date(b.start_ms).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })),
+        axisLine: { lineStyle: { color: cssVar("--baseline") } },
+        axisTick: { show: false },
+        // One label every ten minutes: sixty of them would collide.
+        axisLabel: {
+          color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont(),
+          interval: (i) => i % 10 === 0,
+        },
+      },
+      yAxis: {
+        type: "value",
+        name: "tok/s",
+        nameTextStyle: { color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont() },
+        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        axisLabel: { color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont() },
+      },
+      series: [{
+        name: "生成速度",
+        type: "line",
+        // Real measurements at one-minute resolution: smoothing would invent
+        // intermediate values the data does not have.
+        smooth: false,
+        connectNulls: false,
+        lineStyle: { width: 2, color: hue },
+        itemStyle: { color: hue },
+        symbol: "circle",
+        symbolSize: 4,
+        showSymbol: false,
+        emphasis: { scale: 2.2 },
+        areaStyle: { color: mixWithSurface(hue, 0.14) },
+        data: buckets.map((b) => (b.active_ms > 0 ? Number(b.tps.toFixed(1)) : null)),
+      }],
+      animationDuration: 320,
+      animationEasing: "cubicOut",
+    }, true);
   },
 
-  bars(rows) {
-    const xs = rows.filter((r) => r.median_tps > 0)
-      .slice().sort((a, b) => b.median_tps - a.median_tps);
-    if (!xs.length) return `<span class="empty">暂无数据,等待采集…</span>`;
-    const max = xs[0].median_tps;
-    return xs.map((r) => `<div class="row">
+  renderModels(rows) {
+    const note = document.getElementById("speed-model-note");
+    const withData = rows.filter((r) => r.tps > 0);
+    note.innerHTML =
+      "速度 = Σ输出 tokens ÷ 生成区间并集,按「一条会话流」取并集后再跨流相加(ADR-0009)。" +
+      "这里<b>不给逐条中位数</b>:日志推出来的区间里含着等首 token 的时间,长回答无所谓," +
+      "几个 token 的工具决策则几乎全是等待,逐条比值会得出没有任何一次响应跑出过的数。" +
+      "要看单条分布与 TTFT,用下方的本地代理通道 —— 只有它把延迟和生成分开测。" +
+      "<b>Codex 不在此列</b>:它的 rollout 文件会成批回放历史,70% 的记录时间戳是刷盘时刻,没有可用的生成区间。" +
+      "覆盖率 = 有生成区间的事件占比;30 天前的日志已被 Claude Code 清理,那部分历史永远补不回来。";
+
+    const bars = document.getElementById("speed-bars");
+    if (!withData.length) {
+      bars.innerHTML = `<span class="empty">暂无带生成区间的事件。新采集的事件会自动带上;历史需要跑一次 <code>omnitoken serve -rescan</code>。</span>`;
+      document.getElementById("speed-model-table").innerHTML = "";
+      return;
+    }
+    const sorted = [...withData].sort((a, b) => b.tps - a.tps);
+    const max = sorted[0].tps;
+    bars.innerHTML = sorted.map((r) => `<div class="row">
         <div class="row-head">
           <span class="key">${esc(r.model || "(未知)")}</span>
-          <span class="val">${this.tps(r.median_tps)} tok/s <span class="extra">· P90 ${this.tps(r.p90_tps)} · ${full(r.samples)} 样本</span></span>
+          <span class="val">${this.tps(r.tps)} tok/s <span class="extra">· 生成 ${this.dur(r.active_ms)} · ${full(r.samples)} 条</span></span>
         </div>
-        <div class="track"><div class="fill" style="width:${(100 * r.median_tps / max).toFixed(1)}%"></div></div>
+        <div class="track"><div class="fill" style="width:${(100 * r.tps / max).toFixed(1)}%"></div></div>
       </div>`).join("");
+
+    document.getElementById("speed-model-table").innerHTML =
+      `<table><thead><tr>
+        <th>模型</th><th>tok/s</th><th>生成时长</th><th>输出 tokens</th>
+        <th>响应数</th><th>会话流</th><th>覆盖率</th>
+      </tr></thead><tbody>` +
+      sorted.map((r) => `<tr>
+        <td>${esc(r.model || "(未知)")}</td>
+        <td>${this.tps(r.tps)}</td>
+        <td>${this.dur(r.active_ms)}</td>
+        <td>${compact(r.output_tokens)}</td>
+        <td>${full(r.samples)}</td>
+        <td>${full(r.streams)}</td>
+        <td${r.coverage < 0.5 ? ' class="extra"' : ""}>${this.pct(r.coverage)}</td>
+      </tr>`).join("") + `</tbody></table>`;
   },
 
   exactBody(rows, hasExact) {
@@ -155,7 +262,7 @@ const SpeedView = {
       return `<p class="subtle">暂无本地代理数据。配置 agent 的 <code>proxy_listen</code>(如 <code>127.0.0.1:8899</code>)并把工具的 base_url 指向代理后,即可获得精确的生成耗时与 TTFT(首 token 延迟);详见 docs/configuration.md。</p>`;
     }
     return `
-      <p class="subtle">生成耗时与 TTFT 由代理实测,速度可与真实体感对齐;TTFT 为首 token 延迟。同样已排除 输出 &lt; 8 tokens 的事件。</p>
+      <p class="subtle">代理在请求两端打点,所以这里的耗时就是生成耗时,TTFT 是真实的首 token 延迟 —— 不需要上面那套区间推算。同样已排除 输出 &lt; 8 tokens 的事件。</p>
       <div class="data-table"><table><thead><tr>
         <th>模型</th><th>中位 tok/s</th><th>P90 tok/s</th><th>均值 tok/s</th>
         <th>中位 TTFT</th><th>均值 TTFT</th><th>样本数</th><th>输出 tokens</th>
