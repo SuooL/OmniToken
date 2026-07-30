@@ -6,6 +6,7 @@ import (
 
 	"github.com/suool/omnitoken/internal/collect"
 	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/store"
 )
 
 // runCollectors periodically scans the server machine's own logs (push-free
@@ -18,16 +19,22 @@ func (s *Server) runCollectors() {
 	// Broadcast hooks the storage layer: the local-collector path must notify
 	// SSE subscribers exactly like HTTP ingest does (references.md).
 	probe := collect.NewCachedProber(10 * time.Minute)
-	sink := func(events []model.Event) error {
-		inserted, err := s.store.InsertEvents(events, time.Now().UnixMilli())
+	insert := func(events []model.Event, origin store.DeviceOrigin) error {
+		inserted, err := s.store.InsertEventsFrom(events, time.Now().UnixMilli(), origin)
 		if err == nil && inserted > 0 {
 			s.bcast.Notify()
 		}
 		return err
 	}
+	// Two channels, two levels of confidence about whose machine did the work
+	// (ADR-0015). This machine reports itself; an SSH mirror only holds a copy
+	// of the remote's logs, and that copy may be shared with other machines.
 	localSink := func(events []model.Event) error {
 		collect.RefineProvider(events, probe) // this machine's own logs only (F9)
-		return sink(events)
+		return insert(events, store.OriginSelf)
+	}
+	mirrorSink := func(events []model.Event) error {
+		return insert(events, store.OriginObserved)
 	}
 	quotaSink := func(qs []model.QuotaSnapshot) error {
 		inserted, err := s.store.InsertQuotas(qs)
@@ -68,7 +75,8 @@ func (s *Server) runCollectors() {
 			}
 		}
 		if s.cfg.LocalEnabled() {
-			n, err := collect.ScanSources(localSpecs, s.cfg.DeviceName, s.state, collect.LocalRepoResolver, localSink, quotaSink)
+			// No start window on our own logs: we know they are ours.
+			n, err := collect.ScanSources(localSpecs, s.cfg.DeviceName, s.state, collect.LocalRepoResolver, localSink, quotaSink, time.Time{})
 			if err != nil {
 				log.Printf("collect[local]: %v", err)
 			} else if n > 0 {
@@ -77,12 +85,17 @@ func (s *Server) runCollectors() {
 		}
 		if tick%sshEvery == 0 {
 			for _, h := range s.cfg.Collect.SSHHosts {
+				since, err := h.SinceTime()
+				if err != nil {
+					log.Printf("collect[ssh %s]: %v — skipping this host", h.DeviceName(), err)
+					continue
+				}
 				mirror, err := collect.SyncSSHHost(h, s.cfg.MirrorRoot)
 				if err != nil {
 					log.Printf("collect[ssh %s]: %v", h.DeviceName(), err)
 					continue
 				}
-				n, err := collect.ScanSources(collect.MirrorSpecs(mirror), h.DeviceName(), s.state, collect.SSHRepoResolver(h.Host), sink, quotaSink)
+				n, err := collect.ScanSources(collect.MirrorSpecs(mirror), h.DeviceName(), s.state, collect.SSHRepoResolver(h.Host), mirrorSink, quotaSink, since)
 				if err != nil {
 					log.Printf("collect[ssh %s]: scan: %v", h.DeviceName(), err)
 				} else if n > 0 {

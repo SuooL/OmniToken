@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
@@ -16,6 +17,14 @@ import (
 type SSHHost struct {
 	Host string `json:"host"`           // ssh destination (alias from ~/.ssh/config works)
 	Name string `json:"name,omitempty"` // device name; defaults to Host
+	// Since ("YYYY-MM-DD", local time) is the start of collection for this
+	// host: events older than that midnight are not ingested from it. Empty
+	// means no window, which is the back-compatible default.
+	//
+	// Adding an old machine should not back-import years of history as that
+	// machine's work — the logs it holds may be a synced copy of another
+	// machine's, and attribution for those is a guess (ADR-0015).
+	Since string `json:"since,omitempty"`
 }
 
 func (h SSHHost) DeviceName() string {
@@ -23,6 +32,21 @@ func (h SSHHost) DeviceName() string {
 		return h.Name
 	}
 	return h.Host
+}
+
+// SinceTime resolves Since to the first instant to ingest from this host; the
+// zero time means no filtering. A malformed date is an error rather than a
+// silently ignored field: quietly dropping it would back-import exactly the
+// history the user asked to leave out.
+func (h SSHHost) SinceTime() (time.Time, error) {
+	if h.Since == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.ParseInLocation("2006-01-02", h.Since, time.Local)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("ssh host %s: since %q is not a YYYY-MM-DD date", h.Host, h.Since)
+	}
+	return t, nil
 }
 
 // remotePullSets lists remote paths (relative to the remote home dir) per log

@@ -65,7 +65,11 @@ func (a *Agent) RunOnce() (int, error) {
 		collect.RefineProvider(events, a.probe) // local logs only (F9)
 		return a.push(events)
 	}
-	return collect.ScanSources(specs, a.cfg.DeviceName, a.state, collect.LocalRepoResolver, sink, a.pushQuotas)
+	// No start window: an agent only ever reads the logs of the machine it runs
+	// on, so everything it finds is this device's own work. That is also what
+	// makes a push a self-report on the server side (ADR-0015) — running an
+	// agent is the only way to attribute a machine's usage with confidence.
+	return collect.ScanSources(specs, a.cfg.DeviceName, a.state, collect.LocalRepoResolver, sink, a.pushQuotas, time.Time{})
 }
 
 // reportProcs sends this machine's running agent CLIs (ADR-0012).
