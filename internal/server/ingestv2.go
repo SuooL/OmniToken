@@ -11,8 +11,6 @@ import (
 	"github.com/suool/omnitoken/internal/store"
 )
 
-const ingestV2BodyMax int64 = 16 << 20
-
 func (s *Server) handleIngestV2(w http.ResponseWriter, r *http.Request) {
 	envelope, err := decodeIngestV2(w, r)
 	if err != nil {
@@ -66,7 +64,7 @@ func (s *Server) handleIngestV2(w http.ResponseWriter, r *http.Request) {
 
 func decodeIngestV2(w http.ResponseWriter, r *http.Request) (model.IngestEnvelopeV2, error) {
 	var envelope model.IngestEnvelopeV2
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, ingestV2BodyMax))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, model.MaxIngestEnvelopeBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil {
 		return model.IngestEnvelopeV2{}, err

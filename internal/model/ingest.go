@@ -9,6 +9,11 @@ const (
 	// limit. It matches the collector's existing sink batch size.
 	MaxIngestBatchEvents = 2000
 
+	// MaxIngestEnvelopeBytes is the encoded request-body limit shared by v2
+	// producers and the hub. Producers must not enqueue an envelope that the
+	// hub can never accept.
+	MaxIngestEnvelopeBytes = 16 << 20
+
 	// Last millisecond representable by the protocol's RFC 3339 date domain
 	// (9999-12-31T23:59:59.999Z).
 	maxCapturedAtMilli int64 = 253402300799999

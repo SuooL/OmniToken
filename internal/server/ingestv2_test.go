@@ -388,7 +388,7 @@ func TestHandleIngestV2RejectsMalformedAndOversizedBodies(t *testing.T) {
 	}{
 		{name: "malformed JSON", body: `{"protocol_version":`, wantStatus: http.StatusBadRequest, wantCode: "malformed_request"},
 		{name: "trailing JSON", body: `{}` + `{}`, wantStatus: http.StatusBadRequest, wantCode: "malformed_request"},
-		{name: "oversized", body: strings.Repeat(" ", int(ingestV2BodyMax)+1), wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_too_large"},
+		{name: "oversized", body: strings.Repeat(" ", model.MaxIngestEnvelopeBytes+1), wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_too_large"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/v2/ingest", strings.NewReader(tc.body))
@@ -408,6 +408,33 @@ func TestHandleIngestV2RejectsMalformedAndOversizedBodies(t *testing.T) {
 				t.Fatalf("error = %q, want %q", response.Error, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestHandleIngestV2AcceptsBodyAtProtocolByteLimit(t *testing.T) {
+	s, _ := newIngestV2TestServer(t)
+	envelope := validV2Envelope(testV2BatchA)
+	envelope.Events[0].AppVersion = "a"
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixedBytes := len(body) - len(envelope.Events[0].AppVersion)
+	envelope.Events[0].AppVersion = strings.Repeat("a", model.MaxIngestEnvelopeBytes-fixedBytes)
+	body, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != model.MaxIngestEnvelopeBytes {
+		t.Fatalf("request size = %d, want protocol limit %d", len(body), model.MaxIngestEnvelopeBytes)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/ingest", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer device-a-token")
+	recorder := httptest.NewRecorder()
+	s.handleIngestV2(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 at exact protocol limit; body=%q", recorder.Code, recorder.Body.String())
 	}
 }
 

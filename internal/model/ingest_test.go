@@ -14,7 +14,14 @@ const (
 	testBootID         = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	testMaxBatchEvents = 2000
 	testMaxCapturedAt  = int64(253402300799999)
+	testMaxEnvelope    = 16 << 20
 )
+
+func TestIngestEnvelopeByteLimitProtocolContract(t *testing.T) {
+	if MaxIngestEnvelopeBytes != testMaxEnvelope {
+		t.Fatalf("MaxIngestEnvelopeBytes = %d, want %d", MaxIngestEnvelopeBytes, testMaxEnvelope)
+	}
+}
 
 func validEnvelopeFields() IngestEnvelopeV2 {
 	return IngestEnvelopeV2{
