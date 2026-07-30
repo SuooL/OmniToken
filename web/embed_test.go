@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -216,6 +218,46 @@ func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
 		if !strings.Contains(source, `animation: !matchMedia("(prefers-reduced-motion: reduce)").matches`) {
 			t.Errorf("%s must disable canvas animation for reduced motion", name)
 		}
+	}
+}
+
+func TestDesktopPopoverGeometryAndReadableMetadata(t *testing.T) {
+	readWorkspaceFile := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return string(data)
+	}
+
+	config := readWorkspaceFile("../desktop/src-tauri/tauri.conf.json")
+	for _, contract := range []string{`"width": 380`, `"height": 280`} {
+		if !strings.Contains(config, contract) {
+			t.Errorf("popover startup geometry missing %q", contract)
+		}
+	}
+
+	app := readWorkspaceFile("../desktop/ui/app.js")
+	for _, contract := range []string{"const PANEL_W = 380", "const H_MAX = 520"} {
+		if !strings.Contains(app, contract) {
+			t.Errorf("popover runtime geometry missing %q", contract)
+		}
+	}
+
+	style := readWorkspaceFile("../desktop/ui/style.css")
+	fontSize := regexp.MustCompile(`(?m)font(?:-size)?:[^;]*?([0-9]+(?:\.[0-9]+)?)px`)
+	for _, match := range fontSize.FindAllStringSubmatch(style, -1) {
+		size, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if size < 13 {
+			t.Errorf("popover metadata font below 13px: %q", match[0])
+		}
+	}
+	if !strings.Contains(style, "@media (prefers-reduced-motion: reduce)") {
+		t.Error("popover must honor reduced motion")
 	}
 }
 
