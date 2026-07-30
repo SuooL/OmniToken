@@ -156,6 +156,7 @@ func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 	source := embeddedAsset(t, "settingsview.js")
 	for _, contract := range []string{
 		"_revision:",
+		"_saving:",
 		"const sentRevision = this._revision.pricing",
 		"const sentRevision = this._revision.devices",
 		"canCommitRevision(this._revision.pricing, sentRevision)",
@@ -250,6 +251,47 @@ test('pricing payload validates raw numeric drafts only at save time', () => {
   assert.equal(valid.value.m.input_per_mtok, 1.5);
   assert.equal(json(context, 'buildPricingPayload([{model:"m",in:"",out:"2",cr:"0",cw:"3"}])').ok, false);
   assert.equal(json(context, 'buildPricingPayload([{model:"m",in:"-",out:"2",cr:"0",cw:"3"}])').ok, false);
+});
+
+test('settings serializes pricing and device saves per section', async () => {
+  const context = load('api.js', {localStorage: {getItem() { return ''; }}});
+  vm.runInContext(readFileSync(join(root, 'settingsview.js'), 'utf8'), context, {filename: 'settingsview.js'});
+  run(context, 'SettingsView._notes = []; SettingsView._sent = []; SettingsView._resolves = []; SettingsView.note = function(key, ok, message) { this._notes.push({key, ok, message}); return false; }; SettingsView.put = function(body, key) { this._sent.push({key, body: JSON.parse(JSON.stringify(body))}); return new Promise((resolve) => this._resolves.push(resolve)); };');
+
+  run(context, 'SettingsView._draft.pricing = [{model:"m",in:"1",out:"2",cr:"0",cw:"0"}]; SettingsView._revision.pricing = 1;');
+  const priceA = run(context, 'SettingsView.savePricing()');
+  const priceDuplicate = run(context, 'SettingsView.savePricing()');
+  assert.equal(run(context, 'SettingsView._sent.length'), 1);
+  assert.equal(run(context, 'SettingsView._notes.some((n) => n.key === "price" && n.message.includes("保存进行中"))'), true);
+
+  run(context, 'SettingsView._draft.pricing[0].in = "9"; SettingsView._revision.pricing += 1; SettingsView._resolves[0](true);');
+  await priceA;
+  await priceDuplicate;
+  assert.equal(run(context, 'SettingsView._draft.pricing[0].in'), '9');
+
+  const priceB = run(context, 'SettingsView.savePricing()');
+  assert.equal(run(context, 'SettingsView._sent.length'), 2);
+  assert.equal(run(context, 'SettingsView._sent[1].body.pricing_overrides.m.input_per_mtok'), 9);
+  run(context, 'SettingsView._resolves[1](true)');
+  await priceB;
+  assert.equal(run(context, 'SettingsView._draft.pricing'), null);
+
+  run(context, 'SettingsView._sent = []; SettingsView._resolves = []; SettingsView._notes = []; SettingsView._draft.devices = {host:"old"}; SettingsView._revision.devices = 1;');
+  const devicesA = run(context, 'SettingsView.saveDevices()');
+  const devicesDuplicate = run(context, 'SettingsView.saveDevices()');
+  assert.equal(run(context, 'SettingsView._sent.length'), 1);
+  assert.equal(run(context, 'SettingsView._notes.some((n) => n.key === "devices" && n.message.includes("保存进行中"))'), true);
+  run(context, 'SettingsView._draft.devices.host = "new"; SettingsView._revision.devices += 1; SettingsView._resolves[0](true);');
+  await devicesA;
+  await devicesDuplicate;
+  assert.equal(run(context, 'SettingsView._draft.devices.host'), 'new');
+
+  const devicesB = run(context, 'SettingsView.saveDevices()');
+  assert.equal(run(context, 'SettingsView._sent.length'), 2);
+  assert.equal(run(context, 'SettingsView._sent[1].body.device_labels.host'), 'new');
+  run(context, 'SettingsView._resolves[1](true)');
+  await devicesB;
+  assert.equal(run(context, 'SettingsView._draft.devices'), null);
 });
 
 test('route empty predicates reflect meaningful data', () => {

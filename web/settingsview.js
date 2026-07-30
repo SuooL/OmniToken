@@ -11,8 +11,6 @@
 // Since ADR-0016 the same token also authenticates *reads* whenever the server
 // listens on anything but loopback — so this box is the one place a token is
 // entered, and Api owns the storage.
-const SETTINGS_TOKEN_KEY = Api.TOKEN_KEY;
-
 function buildPricingPayload(rows) {
   const value = {};
   for (const row of rows) {
@@ -50,6 +48,7 @@ const SettingsView = {
   _loaded: false,
   _draft: { pricing: null, devices: null, token: null },
   _revision: { pricing: 0, devices: 0, token: 0 },
+  _saving: { pricing: false, devices: false },
 
   enter() {
     this.load();
@@ -263,43 +262,59 @@ const SettingsView = {
   },
 
   async savePricing() {
-    const snapshot = (this._draft.pricing || this._rows).map((row) => ({ ...row }));
-    const sentRevision = this._revision.pricing;
-    const built = buildPricingPayload(snapshot);
-    if (!built.ok) return this.note("price", false, built.error);
-    const ok = await this.put({ pricing_overrides: built.value }, "price");
-    if (ok) {
-      if (canCommitRevision(this._revision.pricing, sentRevision)) {
-        this._rows = snapshot;
-        this._draft.pricing = null;
-        this.note("price", true, "已保存并热重载定价表,成本已按新价重算");
-      } else {
-        this.note("price", true, "发送版本已保存;当前编辑仍未保存");
+    if (this._saving.pricing) {
+      return this.note("price", false, "保存进行中,请等待当前请求完成");
+    }
+    this._saving.pricing = true;
+    try {
+      const snapshot = (this._draft.pricing || this._rows).map((row) => ({ ...row }));
+      const sentRevision = this._revision.pricing;
+      const built = buildPricingPayload(snapshot);
+      if (!built.ok) return this.note("price", false, built.error);
+      const ok = await this.put({ pricing_overrides: built.value }, "price");
+      if (ok) {
+        if (canCommitRevision(this._revision.pricing, sentRevision)) {
+          this._rows = snapshot;
+          this._draft.pricing = null;
+          this.note("price", true, "已保存并热重载定价表,成本已按新价重算");
+        } else {
+          this.note("price", true, "发送版本已保存;当前编辑仍未保存");
+        }
       }
+    } finally {
+      this._saving.pricing = false;
     }
   },
 
   async saveDevices() {
-    const snapshot = { ...(this._draft.devices || this._labels) };
-    const sentRevision = this._revision.devices;
-    const labels = {};
-    let bad = null;
-    Object.entries(snapshot).forEach(([host, value]) => {
-      const v = String(value).trim();
-      if (!v) return; // empty = no rename
-      if ([...v].length > 64) bad = host;
-      labels[host] = v;
-    });
-    if (bad) return this.note("devices", false, `设备 ${bad} 的显示名超过 64 字符`);
-    const ok = await this.put({ device_labels: labels }, "devices");
-    if (ok) {
-      if (canCommitRevision(this._revision.devices, sentRevision)) {
-        this._labels = labels;
-        this._draft.devices = null;
-        this.note("devices", true, `已保存 ${Object.keys(labels).length} 个显示名`);
-      } else {
-        this.note("devices", true, "发送版本已保存;当前编辑仍未保存");
+    if (this._saving.devices) {
+      return this.note("devices", false, "保存进行中,请等待当前请求完成");
+    }
+    this._saving.devices = true;
+    try {
+      const snapshot = { ...(this._draft.devices || this._labels) };
+      const sentRevision = this._revision.devices;
+      const labels = {};
+      let bad = null;
+      Object.entries(snapshot).forEach(([host, value]) => {
+        const v = String(value).trim();
+        if (!v) return; // empty = no rename
+        if ([...v].length > 64) bad = host;
+        labels[host] = v;
+      });
+      if (bad) return this.note("devices", false, `设备 ${bad} 的显示名超过 64 字符`);
+      const ok = await this.put({ device_labels: labels }, "devices");
+      if (ok) {
+        if (canCommitRevision(this._revision.devices, sentRevision)) {
+          this._labels = labels;
+          this._draft.devices = null;
+          this.note("devices", true, `已保存 ${Object.keys(labels).length} 个显示名`);
+        } else {
+          this.note("devices", true, "发送版本已保存;当前编辑仍未保存");
+        }
       }
+    } finally {
+      this._saving.devices = false;
     }
   },
 
