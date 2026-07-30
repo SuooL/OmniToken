@@ -1,9 +1,14 @@
 "use strict";
 // Menubar popover (ADR-0008, ADR-0014).
 //
-// Shows what is worth a glance — how close the nearest quota wall is, how fast
-// the models are generating right now, what today adds up to — and leaves
+// A menubar glance has one question in it: am I going to run out before the
+// window resets. So the popover is built around that forecast, and leaves
 // analysis to the nine-page panel in a browser.
+//
+// The forecast comes from the `windows` array of /api/v1/live, which the server
+// already computes (F11 burn projection, internal/server/windows.go) and which
+// v1 of this popover ignored entirely — it showed a fullness ring instead, which
+// is a second reading of what the 18pt tray glyph already says.
 //
 // Number and time formatting comes from format-core.js, shared verbatim with
 // that panel: the popover must never describe the same ten minutes differently
@@ -105,11 +110,193 @@ function setLink(mode) {
   el.textContent = (LINK_TEXT[mode] || mode) + stamp;
 }
 
-// ── hero: the tightest live quota, on the menubar's own dial ───────────────
+// ── the signature: collision forecast ─────────────────────────────────────
 
-// 270° of a circle at r=41.75 — the visible sweep of the tray glyph.
-const RING_SWEEP = 196.71;
-const RING_CIRCUM = 262.28;
+// `hidden` is an HTMLElement property; on an SVG element assigning it silently
+// creates a plain JS property and leaves the attribute in place, so the
+// stylesheet's [hidden] rule keeps the node invisible. The ceiling line was
+// missing for exactly that reason. Same trap as writing stroke-dasharray as an
+// attribute when the stylesheet also sets it: for SVG, go through attributes.
+function showSvg(el, on) {
+  if (on) el.removeAttribute("hidden");
+  else el.setAttribute("hidden", "");
+}
+
+// Track geometry, in the SVG's own units (viewBox 314×46).
+const TR = { x0: 2, x1: 312, base: 40.5, top: 4, max: 110 };
+// y for a quota percentage. The scale runs to 110 rather than 100 so a forecast
+// that breaches the ceiling has somewhere to go — clamping it at the wall would
+// hide exactly the case worth showing.
+const trY = (pct) => TR.base - (Math.min(pct, TR.max) / TR.max) * (TR.base - TR.top);
+const CEILING_Y = trY(100);
+
+// Which window the popover leads with: the one closest to trouble.
+//
+// Ranked by the forecast, not by the current level. Sitting at 40% with four
+// hours of this rate left is the situation worth leading with, and a
+// level-ordered list puts it below a window at 60% that has already stopped
+// growing.
+function leadWindow(windows) {
+  const authoritative = (windows || []).filter((w) => w.authoritative && w.resets_at);
+  if (!authoritative.length) return null;
+  return authoritative.reduce((a, b) =>
+    (b.projected_percent || b.used_percent || 0) > (a.projected_percent || a.used_percent || 0)
+      ? b : a);
+}
+
+// Strip the "· 5 小时窗口" the server appends: the axis underneath already says
+// where the window starts and ends, so repeating it in the label is the same
+// fact twice.
+function windowLabel(w) {
+  return String(w.label || "").replace(/\s*·\s*5 小时窗口\s*$/, "");
+}
+
+function clockAt(ms) {
+  return new Date(ms).toLocaleTimeString("zh-CN", {
+    hour12: false, hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function renderForecast(w, quotas) {
+  const root = $("forecast");
+  if (!w) {
+    // No authoritative window means no cliff to forecast. Say that, rather than
+    // drawing a forecast off a rolling look-back — an inferred boundary dressed
+    // as a real one is the one thing this panel must not do.
+    root.classList.remove("over");
+    $("fc-window").textContent = quotas && quotas.length ? "无 5 小时窗口数据" : "暂无配额数据";
+    $("fc-now").textContent = "—";
+    $("fc-arrow").hidden = true;
+    $("fc-proj").textContent = "";
+    $("fc-reset").textContent = "";
+    clearTrack();
+    return;
+  }
+
+  const used = Math.max(0, w.used_percent || 0);
+  const proj = Math.max(used, w.projected_percent || 0);
+  const over = proj >= 100;
+
+  root.classList.toggle("over", over);
+  $("fc-window").textContent = windowLabel(w);
+  $("fc-now").textContent = `${used.toFixed(0)}%`;
+  $("fc-arrow").hidden = false;
+  // Named, because a bare second percentage beside the first reads as a range.
+  $("fc-proj").textContent = `窗口结束约 ${Math.min(999, proj).toFixed(0)}%`;
+  $("fc-reset").textContent = untilReset(w.remaining_minutes);
+
+  drawTrack(w, used, proj, over);
+}
+
+function clearTrack() {
+  for (const id of ["track-past", "track-future", "track-breach"]) {
+    $(id).setAttribute("d", "");
+  }
+  showSvg($("track-ceiling"), false);
+  $("track-nowline").setAttribute("y1", "0");
+  $("track-nowline").setAttribute("y2", "0");
+  $("track-nowdot").setAttribute("cx", "-9");
+  $("track").querySelector("desc").textContent = "";
+  for (const id of ["ax-start", "ax-ceiling", "ax-end"]) $(id).textContent = "";
+}
+
+// Three line styles, each carrying a claim about how well the value is known:
+//
+//   dotted  the route from window start to now. Both endpoints are known — a
+//           window opens at zero, and the level now is authoritative — but the
+//           payload never carries the path between them. A smooth ramp is the
+//           obvious chart here and it would assert a uniform burn we did not
+//           observe.
+//   dot     the single authoritative reading.
+//   dashed  the projection, at the rate observed so far.
+//
+// That is 权威优先,推断标注 drawn rather than written.
+function drawTrack(w, used, proj, over) {
+  const span = Math.max(1, w.resets_at - w.start_ms);
+  const x = (ms) => TR.x0 + ((Math.min(Math.max(ms, w.start_ms), w.resets_at) - w.start_ms) / span) * (TR.x1 - TR.x0);
+  const xNow = x(w.end_ms);
+  const yUsed = trY(used);
+  const yProj = trY(proj);
+
+  $("track-past").setAttribute("d", `M ${TR.x0} ${TR.base} L ${xNow} ${yUsed}`);
+  $("track-nowline").setAttribute("x1", xNow);
+  $("track-nowline").setAttribute("x2", xNow);
+  $("track-nowline").setAttribute("y1", yUsed);
+  $("track-nowline").setAttribute("y2", TR.base);
+  $("track-nowdot").setAttribute("cx", xNow);
+  $("track-nowdot").setAttribute("cy", yUsed);
+
+  showSvg($("track-ceiling"), true);
+
+  $("ax-start").textContent = clockAt(w.start_ms);
+
+  // Split the forecast at the ceiling so the breach reads as a distinct event
+  // with a time attached, not as a line that happens to end up high.
+  const breaching = over && proj > used;
+  if (breaching) {
+    const t = (100 - used) / (proj - used); // fraction of the remaining window
+    const xHit = xNow + (x(w.resets_at) - xNow) * t;
+    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xHit} ${CEILING_Y}`);
+    $("track-breach").setAttribute("d", `M ${xHit} ${CEILING_Y} L ${x(w.resets_at)} ${yProj}`);
+
+    const hitMs = w.end_ms + (w.resets_at - w.end_ms) * t;
+    $("ax-ceiling").textContent = `${clockAt(hitMs)} 触顶`;
+    // Sit the caption under the crossing. Clamped so it cannot overhang either
+    // end of the panel when the breach lands at the edge of the window.
+    const pos = ((xHit - TR.x0) / (TR.x1 - TR.x0)) * 100;
+    $("ax-ceiling").style.left = `${Math.min(84, Math.max(16, pos)).toFixed(1)}%`;
+    // Drop the reset clock from the axis while a breach is showing: the two
+    // captions collide when the crossing lands late in the window, the crossing
+    // is the more urgent of the two, and the line above already says how long
+    // there is until reset.
+    $("ax-end").textContent = "";
+  } else {
+    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${x(w.resets_at)} ${yProj}`);
+    $("track-breach").setAttribute("d", "");
+    // Nothing to say in the middle of the axis: the ceiling labels itself on the
+    // line, so repeating "100%" here was the same fact twice. The slot exists for
+    // the one thing only a breach has — when it happens.
+    $("ax-ceiling").textContent = "";
+    $("ax-end").textContent = `${clockAt(w.resets_at)} 重置`;
+  }
+
+  // The chart is decorative to a screen reader; the sentence is the content.
+  $("track").querySelector("desc").textContent =
+    `${windowLabel(w)}:当前 ${used.toFixed(0)}%,按当前速率窗口结束约 ` +
+    `${proj.toFixed(0)}%${over ? ",将超出配额" : ""}。`;
+}
+
+// Everything that is not the lead window: one line each, so the forecast stays
+// the only loud thing on the panel.
+function renderOthers(quotas, lead) {
+  const root = $("others");
+  const rest = quotas.filter((q) => !isLeadQuota(q, lead));
+  root.innerHTML = rest.slice(0, 3).map((q) => {
+    const pct = Math.max(0, q.used_percent || 0);
+    return `
+      <div class="oq">
+        <span class="eyebrow">${esc(quotaName(q))}</span>
+        <span class="bar" role="meter" aria-label="${esc(quotaName(q))}"
+              aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+          <i style="width:${Math.min(100, pct)}%"></i>
+        </span>
+        <span class="fig">${pct.toFixed(0)}%</span>
+      </div>`;
+  }).join("");
+}
+
+// The lead window is identified by source + a 5-hour boundary, which is what
+// buildWindowCards keyed it on; matching on the label would break the moment
+// the server rewords it.
+function isLeadQuota(q, lead) {
+  return !!lead && q.source === lead.key && q.window_minutes === 300;
+}
+
+// Display name for one quota row.
+function quotaName(q) {
+  const scope = String(q.scope || "").startsWith("seven_day:") ? q.scope.slice(10) : "";
+  return sourceLabel(q.source) + " · " + (q.window_label || "") + (scope ? " · " + scope : "");
+}
 
 // Expired entries describe a window that has already rolled over, so their
 // number is stale; showing one would pin the popover to a spent window.
@@ -125,65 +312,7 @@ function sortQuotas(list) {
     a.window_minutes - b.window_minutes);
 }
 
-function quotaName(q) {
-  const scope = String(q.scope || "").startsWith("seven_day:") ? q.scope.slice(10) : "";
-  return sourceLabel(q.source) + " · " + (q.window_label || "") + (scope ? " · " + scope : "");
-}
-
-// The dash length goes on style, not as an attribute: the stylesheet sets an
-// initial stroke-dasharray so the dial starts empty, and CSS always beats an SVG
-// presentation attribute — written with setAttribute the arc silently never
-// drew at all.
-function setRing(fill, pct, cls) {
-  fill.style.strokeDasharray = `${pct === null ? 0 : pct} ${RING_CIRCUM}`;
-  fill.setAttribute("class", cls);
-}
-
-// `why` separates the two ways there can be no dial reading. They are not the
-// same statement and must not render as one: "no quota data" is something we
-// know about the server, "cannot reach the server" is an admission that we know
-// nothing — the UI-side of 权威优先,推断标注.
-function renderHero(q, why) {
-  const fill = $("ring-fill");
-  $("ring").classList.toggle("no-signal", !q);
-  if (!q) {
-    $("hero-value").textContent = "—";
-    $("hero-name").textContent = why || "暂无配额数据";
-    $("hero-sub").textContent = "";
-    setRing(fill, null, "fill");
-    return;
-  }
-  // Authoritative quota can legitimately report past 100 (ADR-0007), so the
-  // dial clamps while the printed figure does not lie about it.
-  const pct = Math.max(0, q.used_percent || 0);
-  $("hero-value").innerHTML = `${pct.toFixed(0)}<span class="unit">%</span>`;
-  $("hero-name").textContent = quotaName(q);
-  $("hero-sub").textContent = untilReset(q.remaining_minutes);
-  setRing(fill, (Math.min(100, pct) / 100 * RING_SWEEP).toFixed(2),
-    "fill " + severity(pct));
-}
-
-// Everything the hero is not. Repeating the tightest window in the list below
-// would spend a third of the popover saying the same thing twice.
-function renderQuotas(rest) {
-  const root = $("quotas");
-  root.innerHTML = rest.slice(0, 3).map((q) => {
-    const pct = Math.max(0, q.used_percent || 0);
-    return `
-      <div class="quota">
-        <div class="head">
-          <span class="name">${esc(quotaName(q))}</span>
-          <span class="pct">${pct.toFixed(0)}%</span>
-        </div>
-        <div class="meter" role="meter" aria-label="${esc(quotaName(q))}"
-             aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
-          <i class="${severity(pct)}" style="width:${Math.min(100, pct)}%"></i>
-        </div>
-      </div>`;
-  }).join("");
-}
-
-// ── the three live figures ────────────────────────────────────────────────
+// ── readouts ──────────────────────────────────────────────────────────────
 
 // Generation speed (ADR-0009): divided by the union of generation intervals, so
 // it says how fast the model emits — not how much of the window was busy. That
@@ -191,17 +320,14 @@ function renderQuotas(rest) {
 function renderSpeed(sp) {
   const tps = sp.tps || 0;
   const busy = tps > 0;
-  $("tile-speed").classList.toggle("idle", !busy);
+  $("ro-speed").classList.toggle("idle", !busy);
   $("speed-value").innerHTML = busy
-    ? `${tps.toFixed(1)}<span class="unit"> t/s</span>`
-    : "—";
-  const n = (sp.sessions || []).length;
-  $("speed-sub").textContent = busy ? `${n} 个会话在生成` : "近 10 分钟没有生成";
+    ? `${tps.toFixed(0)}<span class="unit"> t/s</span>`
+    : "闲";
   renderStrip(sp);
 }
 
-// Union of generation intervals across the window, as blocks on a track — the
-// Live page's lane element at popover scale.
+// Union of generation intervals across the window, as blocks on a track.
 function renderStrip(sp) {
   const el = $("strip");
   const t0 = sp.window_start_ms, t1 = sp.window_end_ms;
@@ -215,31 +341,22 @@ function renderStrip(sp) {
   $("strip-track").innerHTML = spans.map(([a, b]) => {
     const left = ((Math.max(a, t0) - t0) / span) * 100;
     const width = ((Math.min(b, t1) - Math.max(a, t0)) / span) * 100;
-    return `<i class="blk" style="left:${left}%;width:${Math.max(width, 0.6)}%"></i>`;
+    return `<i style="left:${left}%;width:${Math.max(width, 0.6)}%"></i>`;
   }).join("");
   $("strip-note").textContent =
-    `${Math.round(((sp.active_ms || 0) / span) * 100)}% 在生成`;
+    `近 ${Math.round(span / 60000)} 分钟 ${Math.round(((sp.active_ms || 0) / span) * 100)}% 在生成`;
 }
 
 // Burn divides by the whole window and so includes idle time — "how much am I
-// consuming". Naming what is counted matters: the figure excludes cache reads,
-// and without saying so it invites comparison with the speed beside it.
+// consuming", as against how fast it emits.
 function renderBurn(b) {
   $("burn-value").innerHTML =
     `${compact(b.per_minute || 0)}<span class="unit">/min</span>`;
-  $("burn-sub").textContent = b.window_minutes
-    ? `${b.window_minutes}m 内新增 ${compact(b.tokens || 0)}`
-    : "";
 }
 
 function renderToday(ov) {
   const t = (ov && ov.today) || {};
   $("today-value").textContent = compact(t.total_tokens || 0);
-  // Costs live at the top level, not inside `today`. Prefer the equivalent
-  // figure: on a subscription the real spend is 0, which would read as "free".
-  const c = (ov && ov.costs && ov.costs.today) || {};
-  const cost = c.equivalent_usd || c.real_usd || 0;
-  $("today-sub").textContent = cost > 0 ? usd(cost) : (t.events ? t.events + " 请求" : "");
 }
 
 // Ground truth from the machines' own process tables (ADR-0012). "No reporter"
@@ -248,13 +365,13 @@ function renderToday(ov) {
 function renderProcs(procs, devices) {
   const reporters = procs.reporters || [];
   const el = $("procs");
+  const n = (devices || []).length;
   if (!reporters.length) {
-    const n = (devices || []).length;
     el.textContent = n ? `${n} 台设备 · 无进程数据` : "";
     return;
   }
   const open = (procs.sessions || []).length;
-  el.textContent = `${reporters.length} 台机器可见 · ` +
+  el.textContent = `${n} 台设备 · ${reporters.length} 台可见 · ` +
     (open ? `${open} 个会话开着` : "没有会话开着");
 }
 
@@ -262,10 +379,16 @@ function renderProcs(procs, devices) {
 
 function fail(msg) {
   setLink("offline");
+  $("forecast").classList.remove("over");
+  $("fc-window").textContent = "连不上服务端";
+  $("fc-now").textContent = "—";
+  $("fc-arrow").hidden = true;
+  $("fc-proj").textContent = "";
+  $("fc-reset").textContent = "";
+  clearTrack();
   // The hint matters most on a fresh install pointed at the default address:
   // an unreachable server and a wrong address look identical from here.
-  renderHero(null, "连不上服务端");
-  $("quotas").innerHTML =
+  $("others").innerHTML =
     `<div class="error">${esc(msg)}</div>` +
     `<div class="empty">点右下角「设置」检查服务端地址。</div>`;
   $("strip").hidden = true;
@@ -273,16 +396,14 @@ function fail(msg) {
   for (const id of ["speed-value", "burn-value", "today-value"]) {
     $(id).textContent = "—";
   }
-  for (const id of ["speed-sub", "burn-sub", "today-sub"]) {
-    $(id).textContent = "";
-  }
   fitWindow();
 }
 
 function render(live) {
   const quotas = sortQuotas(liveQuotas(live.quotas));
-  renderHero(quotas[0]);
-  renderQuotas(quotas.slice(1));
+  const lead = leadWindow(live.windows);
+  renderForecast(lead, quotas);
+  renderOthers(quotas, lead);
   renderSpeed(live.speed || {});
   renderBurn(live.burn || {});
   renderProcs(live.processes || {}, live.devices);
