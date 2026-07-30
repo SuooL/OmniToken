@@ -59,7 +59,7 @@ desktop:
 	cd desktop/src-tauri && cargo build
 
 desktop-check: desktop-sync-check
-	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
+	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
 
 # Copy the shared design tokens and formatters into the popover.
 # Run after editing the web/ originals; never edit the copies.

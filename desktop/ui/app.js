@@ -13,16 +13,25 @@
 // window.__TAURI__ by default. Without the guard a missing bridge throws on
 // this line and the panel renders as an empty shell with no clue why.
 const invoke = window.__TAURI__ && window.__TAURI__.core.invoke;
+const listen = window.__TAURI__ && window.__TAURI__.event.listen;
 
-// Set from the stored settings before the first poll. Rust owns the value and
-// the normalisation; this is only the copy the panel reads between saves.
+// Set from the stored settings before the first snapshot. Rust owns the value
+// and the normalisation; this is only the copy the panel reads between saves.
 let SERVER = "";
 
-const POLL_MS = 15000;
-// Today's total does not need the live cadence, and it costs a second request.
-const OVERVIEW_EVERY = 4;
-let tick = 0;
+// Live data is pushed, not pulled: Rust holds one /api/v1/stream connection and
+// forwards each snapshot here, to the tray glyph and to the quota alerts at the
+// same time (ADR-0014). Nothing in this file polls for it.
+//
+// Today's total is the exception. It comes from /api/v1/overview, which is not
+// on the stream, and a figure that only changes as the day accumulates does not
+// need the live cadence.
+const OVERVIEW_MS = 60000;
+// Relative times ("3m 前") go stale on their own, with no event to prompt a
+// redraw — same reason the Live page keeps a timer alongside its stream.
+const REDRAW_MS = 10000;
 let overview = null;
+let latest = null;
 
 // All HTTP goes through Rust: the webview is on tauri://localhost and the
 // server sends no CORS headers on purpose (ADR-0008).
@@ -83,16 +92,17 @@ function fitWindow() {
 // ── connection state ──────────────────────────────────────────────────────
 
 // The popover must say which channel its figures arrived on. A number alone
-// cannot distinguish fresh from frozen, and "frozen but plausible" is the
-// failure mode worth designing against (ADR-0014).
-const LINK_TEXT = { polling: "轮询", offline: "连接失败" };
+// cannot distinguish fresh from frozen, and a silently dead stream showing a
+// plausible figure forever is the failure mode worth designing against — which
+// is why "降级为轮询" is stated rather than hidden (ADR-0014).
+const LINK_TEXT = { live: "实时", polling: "降级轮询", offline: "连接失败" };
 function setLink(mode) {
   const el = $("link");
   el.dataset.mode = mode;
   const stamp = mode === "offline"
     ? ""
     : " · " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  el.textContent = LINK_TEXT[mode] + stamp;
+  el.textContent = (LINK_TEXT[mode] || mode) + stamp;
 }
 
 // ── hero: the tightest live quota, on the menubar's own dial ───────────────
@@ -248,7 +258,7 @@ function renderProcs(procs, devices) {
     (open ? `${open} 个会话开着` : "没有会话开着");
 }
 
-// ── polling ───────────────────────────────────────────────────────────────
+// ── receiving ─────────────────────────────────────────────────────────────
 
 function fail(msg) {
   setLink("offline");
@@ -280,22 +290,34 @@ function render(live) {
   fitWindow();
 }
 
-async function refresh() {
-  try {
-    // /api/v1/live carries quotas, burn and speed in one consistent snapshot —
-    // the REST twin of what the Live page streams, built by the same
-    // livePayload, so the two cannot disagree about the same ten minutes.
-    const live = await apiGet("/api/v1/live");
-    // One failing endpoint should not blank the other half of the popover.
-    if (tick % OVERVIEW_EVERY === 0) {
-      overview = await apiGet("/api/v1/overview?days=1").catch(() => overview);
-    }
-    tick++;
-    render(live);
-    setLink("polling");
-  } catch (e) {
-    fail(String(e));
+// Rust publishes { mode, data? }. `data` is absent when it has nothing new to
+// show — a channel change on its own — and that must update the label without
+// blanking figures that are merely a minute old.
+function onUpdate(update) {
+  if (update.data) {
+    latest = update.data;
+    render(latest);
+  } else if (update.mode === "offline") {
+    fail("连不上服务端");
+    return;
   }
+  setLink(update.mode);
+}
+
+// One failing endpoint should not blank the other half of the popover, so this
+// keeps whatever it last had on failure.
+async function pullOverview() {
+  try {
+    overview = await apiGet("/api/v1/overview?days=1");
+    if (latest) render(latest);
+  } catch (e) {
+    // The stream, not this, is what reports connectivity.
+  }
+}
+
+// Re-render from the last snapshot so relative times move on without an event.
+function redraw() {
+  if (latest) render(latest);
 }
 
 // ── settings ──────────────────────────────────────────────────────────────
@@ -330,13 +352,16 @@ function openSettings() {
   els.input.select();
 }
 
-// Always re-poll on the way out. A save can succeed even when the probe fails,
-// so leaving by way of 取消 can still mean the address changed — and the
-// readout would otherwise show another server's numbers until the next poll.
+// Always reconnect on the way out. A save can succeed even when the probe fails,
+// so leaving by way of 取消 can still mean the address changed — and the readout
+// would otherwise keep showing another server's numbers until that server
+// happens to broadcast something.
 function closeSettings() {
   els.settings.hidden = true;
   els.main.hidden = false;
-  refresh();
+  invoke("refresh_now").catch(() => {});
+  pullOverview();
+  fitWindow();
 }
 
 async function saveSettings() {
@@ -357,6 +382,7 @@ async function saveSettings() {
       say("已保存,但连接失败:" + String(e), "bad");
       return;
     }
+    // settings_set already restarted the bridge against the new address.
     closeSettings();
   } catch (e) {
     // settings_set rejected the input, or could not write the file.
@@ -374,17 +400,41 @@ els.input.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeSettings();
 });
 
+// The full panel is one click from the popover as well as from the tray menu:
+// looking at a figure and wanting the history behind it is the common path, and
+// making it right-click-only would hide it.
+$("open-full").addEventListener("click", () => {
+  invoke("open_full_panel").catch(() => {});
+});
+
+// Esc dismisses the popover, like any menubar panel. The settings view takes Esc
+// for its own cancel, so this only applies to the readout.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && els.settings.hidden) {
+    const w = window.__TAURI__ && window.__TAURI__.window;
+    if (w) w.getCurrentWindow().hide().catch(() => {});
+  }
+});
+
 // ── boot ──────────────────────────────────────────────────────────────────
 
 async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
   showServer();
-  await refresh();
-  setInterval(refresh, POLL_MS);
+
+  // Subscribe before anything else: the bridge is already running by the time
+  // the webview loads, and its next snapshot is the first thing to render.
+  await listen("live", (e) => onUpdate(e.payload));
+  // Opening settings from the tray menu is the same view as the footer button.
+  await listen("open-settings", () => openSettings());
+
+  await pullOverview();
+  setInterval(pullOverview, OVERVIEW_MS);
+  setInterval(redraw, REDRAW_MS);
 }
 
-if (!invoke) {
+if (!invoke || !listen) {
   fail("Tauri IPC 不可用:请检查 tauri.conf.json 的 withGlobalTauri");
 } else {
   boot().catch((e) => fail(String(e)));
