@@ -1,9 +1,11 @@
 package collect
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,8 +22,9 @@ const sinkBatch = 2000
 // A file's offset is only committed after its events are accepted.
 type Sink func([]model.Event) error
 
-// QuotaSink delivers quota snapshots (ADR-0007). Optional: a nil sink means
-// snapshots are dropped, which is safe — they are state, not flow.
+// QuotaSink delivers quota snapshots (ADR-0007). A non-nil sink is part of the
+// source-cursor durability boundary: its error leaves the offset uncommitted.
+// A nil sink explicitly opts out of collecting snapshots.
 type QuotaSink func([]model.QuotaSnapshot) error
 
 // ParseFunc is the incremental-parser contract shared by all tool parsers:
@@ -115,23 +118,52 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 	if info.Size() < offset {
 		// File truncated/replaced (e.g. rsync rewrote it): re-read; dedup absorbs repeats.
 		offset = 0
+		if err := st.DiscardScan(path); err != nil {
+			return 0, fmt.Errorf("discard scan state for truncated %s: %w", path, err)
+		}
 	}
-	if info.Size() == offset {
+
+	inFlight, resuming := st.InFlightFor(path)
+	if resuming && info.Size() < inFlight.End {
+		// The fixed input boundary no longer exists. Forget only the in-flight
+		// delivery ledger and safely re-read; durable ingestion deduplicates it.
+		if err := st.DiscardScan(path); err != nil {
+			return 0, fmt.Errorf("discard scan state for replaced %s: %w", path, err)
+		}
+		resuming = false
+	}
+	if !resuming && info.Size() == offset {
 		return 0, nil
 	}
-	if spec.FullReparse {
-		offset = 0
+
+	start, end := offset, info.Size()
+	if resuming {
+		start, end = inFlight.Start, inFlight.End
+	} else if spec.FullReparse {
+		start = 0
 	}
 	fh, err := os.Open(path)
 	if err != nil {
 		return 0, nil
 	}
 	defer fh.Close()
-	if _, err := fh.Seek(offset, 0); err != nil {
+	if _, err := fh.Seek(start, 0); err != nil {
 		return 0, nil
 	}
 
-	res := spec.Parse(fh, device, st.TurnStartFor(path))
+	res := spec.Parse(io.LimitReader(fh, end-start), device, st.TurnStartFor(path))
+	if !resuming {
+		end = start + res.Consumed
+		if err := st.BeginScan(path, start, end, res.TurnStartMS); err != nil {
+			return 0, fmt.Errorf("begin scan state for %s: %w", path, err)
+		}
+		inFlight, _ = st.InFlightFor(path)
+	} else if start+res.Consumed != end {
+		return 0, fmt.Errorf(
+			"resume scan state for %s: parser consumed %d bytes, want %d",
+			path, res.Consumed, end-start,
+		)
+	}
 	events := dropBefore(res.Events, notBefore)
 	for i := range events {
 		if events[i].CWD != "" && resolveRepo != nil {
@@ -140,21 +172,48 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 	}
 	for start := 0; start < len(events); start += sinkBatch {
 		end := min(start+sinkBatch, len(events))
+		key, err := logicalDeliveryKey("events", start/sinkBatch, events[start:end])
+		if err != nil {
+			return 0, fmt.Errorf("identify event batch for %s: %w", path, err)
+		}
+		if st.DeliveryDone(path, key) {
+			continue
+		}
 		if err := sink(events[start:end]); err != nil {
 			return 0, err // do not commit offset; retry next scan
 		}
-	}
-	// Quota snapshots are state, not flow: a delivery failure must not hold
-	// back the offset (the next observation supersedes a lost one anyway).
-	if quotaSink != nil && len(res.Quotas) > 0 {
-		if err := quotaSink(res.Quotas); err != nil {
-			log.Printf("collect: quota sink for %s: %v", path, err)
+		if err := st.MarkDeliveryDone(path, key); err != nil {
+			return 0, fmt.Errorf("persist event delivery for %s: %w", path, err)
 		}
 	}
+	if quotaSink != nil && len(res.Quotas) > 0 {
+		key, err := logicalDeliveryKey("quotas", 0, res.Quotas)
+		if err != nil {
+			return 0, fmt.Errorf("identify quota batch for %s: %w", path, err)
+		}
+		if !st.DeliveryDone(path, key) {
+			if err := quotaSink(res.Quotas); err != nil {
+				return 0, fmt.Errorf("quota sink for %s: %w", path, err)
+			}
+			if err := st.MarkDeliveryDone(path, key); err != nil {
+				return 0, fmt.Errorf("persist quota delivery for %s: %w", path, err)
+			}
+		}
+	}
+
 	// The offset covers the dropped lines as well: they were read and
 	// deliberately left out of the window, not deferred to a later pass.
-	if err := st.Commit(path, offset+res.Consumed, res.TurnStartMS); err != nil {
-		log.Printf("collect: commit state for %s: %v", path, err)
+	if err := st.Commit(path, end, inFlight.TurnStartMS); err != nil {
+		return 0, fmt.Errorf("commit state for %s: %w", path, err)
 	}
 	return len(events), nil
+}
+
+func logicalDeliveryKey(kind string, ordinal int, payload any) (string, error) {
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return fmt.Sprintf("%s:%d:%x", kind, ordinal, sum), nil
 }
