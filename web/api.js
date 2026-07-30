@@ -21,6 +21,63 @@ class APIError extends Error {
   }
 }
 
+function classifyAPIError(error) {
+  if (error instanceof APIError && error.status === 401) {
+    return {
+      kind: "unauthorized",
+      title: "需要访问令牌",
+      detail: "请到设置页填写读取 token 后重试。",
+    };
+  }
+  if (error instanceof TypeError) {
+    return {
+      kind: "error",
+      title: "服务不可达",
+      detail: "请检查服务地址与网络连接后重试。",
+    };
+  }
+  return {
+    kind: "error",
+    title: "加载失败",
+    detail: error && error.message ? error.message : "发生未知错误,请稍后重试。",
+  };
+}
+
+function renderState(container, { kind, title, detail = "", action = null }) {
+  let region = container.querySelector(".view-state");
+  if (kind === "ready") {
+    if (region) region.remove();
+    container.removeAttribute("aria-busy");
+    return;
+  }
+  if (!region) {
+    region = document.createElement("section");
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    container.prepend(region);
+  }
+  region.className = `view-state view-state-${kind}`;
+  region.replaceChildren();
+
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  region.appendChild(heading);
+  if (detail) {
+    const copy = document.createElement("span");
+    copy.textContent = detail;
+    region.appendChild(copy);
+  }
+  if (action && action.label && action.run) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost-btn";
+    button.textContent = action.label;
+    button.addEventListener("click", action.run);
+    region.appendChild(button);
+  }
+  container.toggleAttribute("aria-busy", kind === "loading");
+}
+
 async function apiFetch(path, init = {}) {
   const request = Object.assign({}, init, {
     headers: Api.headers(init.headers),

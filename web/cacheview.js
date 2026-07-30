@@ -10,6 +10,7 @@ function pct(r) {
 
 const CacheView = {
   _timer: null,
+  lastData: null,
 
   enter() {
     this.load();
@@ -21,12 +22,26 @@ const CacheView = {
   },
 
   async load() {
+    const root = document.getElementById("view-cache");
+    if (!this.lastData) {
+      renderState(root, { kind: "loading", title: "正在加载缓存数据" });
+    }
     try {
-      this.render(await Api.get("/api/v1/cache?days=30"));
+      this.lastData = await Api.get("/api/v1/cache?days=30");
+      this.render(this.lastData);
+      renderState(root, { kind: "ready", title: "" });
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
-      document.getElementById("refresh-note").textContent = "服务不可达,重试中…";
+      const issue = classifyAPIError(e);
+      renderState(root, {
+        kind: this.lastData ? "stale" : issue.kind,
+        title: this.lastData ? "缓存数据可能已过期" : issue.title,
+        detail: issue.detail,
+        action: { label: "重试", run: () => this.load() },
+      });
+      document.getElementById("refresh-note").textContent = this.lastData
+        ? "刷新失败,正在显示上次数据" : issue.title;
     }
   },
 

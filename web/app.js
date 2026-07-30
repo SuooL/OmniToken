@@ -107,8 +107,10 @@ Api.loadToken();
 
 // A server that wants a token we do not have would otherwise show nine pages of
 // identical 401s with no hint about where to fix it. /api/v1/health is
-// unauthenticated precisely so this check is possible.
-(async function checkAuth() {
+// unauthenticated precisely so this check is possible. Token saves call this
+// again so an obsolete warning never survives after credentials change.
+async function refreshAuthState() {
+  document.querySelector(".auth-banner")?.remove();
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
     if (h.auth_required && !Api.token) {
@@ -119,6 +121,8 @@ Api.loadToken();
   } catch (e) {
     // Server down or not ours; the views report that themselves.
   }
-})();
+}
+
+refreshAuthState();
 
 route();

@@ -63,3 +63,61 @@ func TestAPIHeadersAcceptEveryHeadersInitForm(t *testing.T) {
 		t.Fatal("Api.headers must merge bearer authentication with normalized caller headers")
 	}
 }
+
+func TestSharedViewStateIsLiveClassifiedAndRetryable(t *testing.T) {
+	source := embeddedAsset(t, "api.js")
+	for _, contract := range []string{
+		"function renderState(",
+		`setAttribute("aria-live", "polite")`,
+		"function classifyAPIError(",
+		"error instanceof APIError && error.status === 401",
+		`kind: "unauthorized"`,
+		`button.addEventListener("click", action.run)`,
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("shared state API must include %q", contract)
+		}
+	}
+}
+
+func TestAsyncViewsKeepOldDataAndRenderStaleFailures(t *testing.T) {
+	for _, name := range []string{
+		"overview.js",
+		"speedview.js",
+		"cacheview.js",
+		"devicesview.js",
+		"modelsview.js",
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := embeddedAsset(t, name)
+			for _, contract := range []string{"lastData", "renderState(", "classifyAPIError(", `"stale"`} {
+				if !strings.Contains(source, contract) {
+					t.Errorf("%s must preserve trustworthy data and expose classified stale state; missing %q", name, contract)
+				}
+			}
+		})
+	}
+}
+
+func TestSettingsDraftUpdatesOnInputAndClearsAfterSave(t *testing.T) {
+	source := embeddedAsset(t, "settingsview.js")
+	for _, contract := range []string{
+		"_draft:",
+		"root.oninput = (ev) =>",
+		"this.updateDraft(ev.target)",
+		"this._draft.pricing = null",
+		"this._draft.devices = null",
+		"this._draft.token = null",
+		"await refreshAuthState()",
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("settings draft contract missing %q", contract)
+		}
+	}
+
+	app := embeddedAsset(t, "app.js")
+	if !strings.Contains(app, "async function refreshAuthState()") ||
+		!strings.Contains(app, `document.querySelector(".auth-banner")?.remove()`) {
+		t.Error("token save must refresh auth health and remove a stale auth banner immediately")
+	}
+}
