@@ -21,14 +21,16 @@ import (
 )
 
 type Config struct {
-	ServerURL      string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
-	Token          string
-	DeviceName     string
-	ClaudeDirs     []string
-	CodexDirs      []string
-	StatePath      string
-	Interval       time.Duration
-	RelayListen    string            // e.g. ":8788"; empty = relay disabled
+	ServerURL   string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
+	Token       string
+	DeviceName  string
+	ClaudeDirs  []string
+	CodexDirs   []string
+	StatePath   string
+	Interval    time.Duration
+	RelayListen string // e.g. ":8788"; empty = relay disabled
+	// Since is the first instant to report; the zero time means no window.
+	Since          time.Time
 	ProxyListen    string            // e.g. "127.0.0.1:8899"; empty = proxy disabled
 	ProxyUpstreams map[string]string // prefix -> upstream base
 }
@@ -65,11 +67,13 @@ func (a *Agent) RunOnce() (int, error) {
 		collect.RefineProvider(events, a.probe) // local logs only (F9)
 		return a.push(events)
 	}
-	// No start window: an agent only ever reads the logs of the machine it runs
-	// on, so everything it finds is this device's own work. That is also what
-	// makes a push a self-report on the server side (ADR-0015) — running an
-	// agent is the only way to attribute a machine's usage with confidence.
-	return collect.ScanSources(specs, a.cfg.DeviceName, a.state, collect.LocalRepoResolver, sink, a.pushQuotas, time.Time{})
+	// A push is a self-report, and on the server side that outranks an
+	// observer's guess (ADR-0015) — which is exactly why the window matters
+	// here. "An agent only reads its own machine's logs, so everything it finds
+	// is this machine's work" is the obvious assumption and it is false whenever
+	// a home directory is synced: the agent would then claim another machine's
+	// history with full self-report authority. Config `since` bounds that.
+	return collect.ScanSources(specs, a.cfg.DeviceName, a.state, collect.LocalRepoResolver, sink, a.pushQuotas, a.cfg.Since)
 }
 
 // reportProcs sends this machine's running agent CLIs (ADR-0012).
