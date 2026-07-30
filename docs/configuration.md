@@ -32,7 +32,9 @@
 | `db` | `~/.omnitoken/omnitoken.db` | SQLite 路径 |
 | `state` | `~/.omnitoken/server-state.json` | 采集 offset/repo 缓存 |
 | `mirror` | `~/.omnitoken/mirror` | SSH 拉取镜像根目录 |
-| `token` | 空 | 共享 bearer token,读写共用。写接口:配了就要,空 = 不鉴权(启动警告)。读接口:`listen` 非 loopback 时必须有,见下 |
+| `token` | 空 | legacy v1 ingest bearer;旧配置中也作为 read/admin fallback |
+| `read_token` | 未显式填写时回落 `token` | 非 loopback 查询、面板与 SSE 的只读 credential |
+| `admin_token` | 未显式填写时回落 `token` | enrollment 与 settings mutation credential;新部署应与 read/v1 分离 |
 | `device_name` | hostname | 本机作为被统计设备的名字 |
 | `pricing_overrides` | — | `{模型: {input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok}}`(单位 USD/百万 token) |
 | `worktime_idle_minutes` | 5 | 工时空闲停表阈值(ADR-0006) |
@@ -49,11 +51,11 @@
 
 要不要令牌不是一个开关,而是从监听地址算出来的:
 
-| `listen` | `token` | 读接口 | 启动 |
+| `listen` | scoped credentials | 读接口 | 启动 |
 |---|---|---|---|
-| loopback(`127.0.0.1` / `localhost` / `[::1]`) | 空或有 | 免鉴权 | 正常 |
-| 非 loopback(`0.0.0.0`、`:8787`、`192.168.x.x`、组网 IP…) | 有 | 要 `Authorization: Bearer <token>` | 正常 |
-| 非 loopback | 空 | —— | **拒绝启动,退出码 1** |
+| loopback(`127.0.0.1` / `localhost` / `[::1]`) | read 可空;enrollment 仍要求非空 admin | 免鉴权 | 正常 |
+| 非 loopback(`0.0.0.0`、`:8787`、组网 IP…) | `token`、`read_token`、`admin_token` 均非空 | 要 read bearer | 正常 |
+| 非 loopback | 任一缺失 | —— | **拒绝启动,退出码 1** |
 
 > `":8787"` 的主机名是空的,那表示**所有网络接口**,不是本机。所以它属于第二、三行。
 
@@ -66,22 +68,25 @@
 `":8787"`,所以命中的是「装完没动过配置」这类部署。二选一:
 
 ```jsonc
-// 1) 保持对外可达,配一个令牌(面板、桌面端、agent、statusline 填同一个)
-{ "listen": ":8787", "token": "生成一个随机串,如 openssl rand -hex 24" }
+// 1) 保持对外可达,分离三个用途
+{ "listen": ":8787",
+  "token": "<LEGACY_V1_INGEST>",
+  "read_token": "<READ_ONLY>",
+  "admin_token": "<ADMIN>" }
 
 // 2) 改回只听本机,让别的机器经隧道/中继上报(下一节)
 { "listen": "127.0.0.1:8787" }
 ```
 
-配了 token 之后:
+配了 scoped token 之后:
 
-- **网页面板**:设置 → 访问令牌,填 `config.json` 里的同一个 `token`。就是原来那个
-  「写入令牌」框,读写共用一个,存在本浏览器的 localStorage。没填时面板顶部会挂一条
+- **网页面板**:设置 → 访问令牌,分别填 `read_token` 与 `admin_token`,保存在该浏览器
+  的 localStorage。没填时面板顶部会挂一条
   横幅提示,不会九个页面都报 401 而不说原因。
-- **桌面端**:设置里在服务端地址下面填同一个 token。它明文存在应用配置目录里
+- **桌面端**:设置里在服务端地址下面填 `read_token`。它明文存在应用配置目录里
   (与地址并列),理由见 ADR-0016 第 8 条。
-- **agent / statusline**:各自配置里的 `token` 字段,同一个串。
-- **curl**:`curl -H "Authorization: Bearer $TOK" http://host:8787/api/v1/overview`。
+- **v2 agent**:enrollment 后使用自己的 `device_token`;不共享 read/admin。
+- **statusline / curl**:读取接口使用 `read_token`。
 
 `GET /api/v1/health` 与面板外壳 `GET /` 始终免鉴权:前者不含任何用量数据,是用来
 区分「地址错了」与「令牌错了」的探针(返回 `auth_required`);后者是因为浏览器首次
@@ -98,16 +103,19 @@ SSE 只剩这条路。URL 里的令牌会进访问日志和 `Referer`,所以这�
 
 **A. 内网/组网可直达 —— agent 出站直连**(ADR-0003 第 1 条)
 
-服务端对外可达,所以必须有 token:
+服务端对外可达,所以必须有三类 scoped credential:
 
 ```jsonc
 // 服务端 ~/.omnitoken/config.json
-{ "listen": ":8787", "token": "<随机串>" }
+{ "listen": "100.64.0.10:8787",
+  "token": "<LEGACY_V1_INGEST>",
+  "read_token": "<READ_ONLY>",
+  "admin_token": "<ADMIN>" }
 ```
 
 ```jsonc
-// 被统计机器 ~/.omnitoken/agent.json
-{ "server": "http://192.168.1.10:8787", "token": "<同一个随机串>", "name": "macmini" }
+OMNITOKEN_ADMIN_TOKEN='<ADMIN>' omnitoken agent enroll \
+  -server http://100.64.0.10:8787 -name macmini -allow-insecure-http
 ```
 
 `server` 填组网虚拟 IP(Tailscale / EasyTier)完全同理 —— agent 不感知拓扑,
@@ -115,29 +123,38 @@ SSE 只剩这条路。URL 里的令牌会进访问日志和 `Referer`,所以这�
 
 **B. 只能经某台同伴到达 —— 链式中继**(ADR-0003 第 3 条)
 
-机器 d 连不到服务端但能连到 c。c 上的 agent 开一个中继端口,原样转发 ingest:
+机器 d 连不到服务端但能连到 c。c 上的 agent 开一个只转发 ingest/heartbeat 的认证
+中继:
 
 ```jsonc
 // 机器 c 的 agent.json:自己上报,同时替 d 转发
-{ "server": "http://192.168.1.10:8787", "token": "<随机串>", "relay_listen": ":8788" }
+{ "server": "https://hub.example",
+  "relay_listen": "100.64.0.20:8788",
+  "relay_token": "<C_LISTENER_SECRET>" }
 ```
 
 ```jsonc
 // 机器 d 的 agent.json:指向 c
-{ "server": "http://c.local:8788", "token": "<同一个随机串>", "name": "d" }
+{ "server": "http://100.64.0.20:8788",
+  "allow_insecure_http": true,
+  "relay_upstream_token": "<C_LISTENER_SECRET>",
+  "protocol_version": 2,
+  "device_id": "<ENROLLED_UUID>",
+  "device_token": "<DEVICE_SECRET>" }
 ```
 
-中继无状态、不落盘(日志本身就是重传缓冲),转发失败向下游透传错误。token 是原样
-带过去的,所以三处必须一致。
+relay 自身无权替代设备身份:`X-OmniToken-Relay-Token` 逐跳更换,最终
+`Authorization: Bearer <device_token>` 原样到 Hub。不同跳可用
+`relay_token/relay_upstream_token` 配不同 secret。
 
 **C. 想让服务端继续只听本机 —— SSH 隧道**
 
-这是不想管令牌时最省事、也是鉴权最强的一种:加密与鉴权都由 SSH 承担,服务端一个
-字节都不对外。
+这是让 Hub 不对网络监听的最直接方式:传输加密与端口访问由 SSH 承担;v2 设备身份
+仍由 enrollment/device token 提供。
 
 ```jsonc
-// 服务端:不动,保持默认
-{ "listen": "127.0.0.1:8787" }
+// 服务端保持 loopback;为 enrollment 显式配置 admin credential
+{ "listen": "127.0.0.1:8787", "admin_token": "<ADMIN>" }
 ```
 
 在被统计机器上把服务端的端口拉到本地,再让 agent 连本地:
@@ -148,8 +165,8 @@ ssh -N -L 47871:127.0.0.1:8787 user@server       # 常驻交给 launchd(见下)/
 ```
 
 ```jsonc
-// 被统计机器 ~/.omnitoken/agent.json:token 留空即可,读写都由 SSH 保护
-{ "server": "http://127.0.0.1:47871", "name": "macmini" }
+OMNITOKEN_ADMIN_TOKEN='<ADMIN>' omnitoken agent enroll \
+  -server http://127.0.0.1:47871 -name macmini
 ```
 
 反过来,只有服务端能主动连出去时用反向隧道:在**服务端**上跑
@@ -431,15 +448,38 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | 字段 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
 | `server` | `OMNITOKEN_SERVER` | 必填 | 服务端或中继的 base URL |
-| `token` | `OMNITOKEN_TOKEN` | 空 | ingest token |
+| `allow_insecure_http` | — | false | 允许连接非 loopback 的明文 `http://`;只应在已确认的加密 overlay/受控 LAN 上显式开启 |
+| `protocol_version` | — | 1 | `1` 为 legacy push,`2` 为 device-scoped + durable outbox |
+| `token` | `OMNITOKEN_TOKEN` | 空 | v1 ingest token |
+| `device_id` | — | enrollment 生成 | v2 稳定 UUID;改显示名不会改变它 |
+| `device_token` | `OMNITOKEN_DEVICE_TOKEN` | enrollment 生成 | v2 设备独立 credential;文件权限 `0600` |
+| `outbox` | — | 与 state 同目录的 `outbox.db` | v2 本地 durable SQLite outbox |
+| `outbox_max_bytes` | — | 64 MiB | outbox 逻辑 payload 上限;满时回压且不丢旧批次 |
 | `name` | `OMNITOKEN_NAME` | hostname | 设备名 |
 | `relay_listen` | `OMNITOKEN_RELAY` | 空 | 开中继端口(如 `:8788`) |
+| `relay_token` | `OMNITOKEN_RELAY_TOKEN` | 空 | 保护本机 relay listener 的独立 credential;启用 relay 时必填 |
+| `relay_upstream_token` | `OMNITOKEN_RELAY_UPSTREAM_TOKEN` | 回落 `relay_token` | 连接上游 relay 时使用,支持每跳不同 credential |
 | `interval_seconds` | — | 15 | 扫描周期 |
 | `claude_dirs` / `codex_dirs` | — | 自动探测 | 日志目录 |
 | `state` | — | `~/.omnitoken/agent-state.json` | offset 状态 |
 | `since` | — | 空(不限) | 采集起点 `YYYY-MM-DD`,早于该日零点的事件不上报。日期写错**直接启动失败**,不会静默当成「不限」 |
 | `proxy_listen` | `OMNITOKEN_PROXY` | 空(关闭) | 本地 API 代理监听地址,如 `127.0.0.1:8899` |
 | `proxy_upstreams` | — | anthropic/openai 内置 | `{前缀: 上游 base}`,与内置合并 |
+
+v2 设备先在目标机器执行 enrollment。admin secret 只通过环境或 secret store 注入,
+不会出现在命令行参数、成功输出或 Hub 响应中:
+
+```sh
+OMNITOKEN_ADMIN_TOKEN='<ADMIN_SECRET>' \
+  omnitoken agent enroll \
+  -server https://ingest.example.invalid \
+  -name research-workstation
+```
+
+命令仅在 Hub 接受注册后才以 `0600` 原子写入 `agent.json`。重复执行会复用已有
+`device_id/device_token` 并可更新显示名;不要复制这份文件到另一台设备。若使用
+loopback SSH 隧道,`-server http://127.0.0.1:47871` 不需要
+`allow_insecure_http`;非 loopback 的 `http://` 默认拒绝。
 
 ### 什么时候必须设 `since`
 

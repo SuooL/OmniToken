@@ -1,15 +1,20 @@
 # HTTP / SSE 接口契约
 
-服务端所有接口挂在 `omnitoken serve` 的监听地址下。写接口(`POST /api/v1/ingest`、
-`PUT /api/v1/settings`)在配置了 `token` 时受 bearer token 保护,未配置时不鉴权并在
-启动时警告。读接口要不要凭据不由开关决定,而是**由监听地址推导**(ADR-0016),
-用的是与写接口同一个 `token`:
+服务端所有接口挂在 `omnitoken serve` 的监听地址下。凭据按用途隔离:
+
+- `token`:迁移期 v1 ingest;
+- `read_token`:非 loopback 的查询、面板和 SSE;
+- `admin_token`:enrollment 与 settings 写入;
+- 每台 v2 agent 的 `device_token`:只代表该 `device_id`,用于 ingest/heartbeat。
+
+旧配置只写 `token` 时仍会回落为 read/admin credential,方便平滑升级;新部署应使用
+三个不同的高熵值。读接口要不要凭据由监听地址推导(ADR-0016):
 
 | 监听地址 | 读接口 |
 |---|---|
 | 仅 loopback(`127.0.0.1` / `localhost` / `[::1]`,默认) | 免鉴权,零配置 |
-| 可被其它机器访问 + 配了 `token` | 必带 `Authorization: Bearer <token>` |
-| 可被其它机器访问 + 没配 `token` | 服务端启动即拒绝(退出码 1) |
+| 可被其它机器访问 + 配了 `read_token` / legacy fallback | 必带 `Authorization: Bearer <read_token>` |
+| 可被其它机器访问 + 缺少任一 required scoped credential | 服务端启动即拒绝(退出码 1) |
 
 空主机名(`":8787"`)算**每一个网络接口**,不算 loopback。读接口的 401 带
 `WWW-Authenticate: Bearer realm="omnitoken"`。`GET /api/v1/health` 与面板外壳
@@ -41,6 +46,69 @@ Authorization: Bearer <token>        # 服务端配置了 token 时必带
 `sessions` 为空是**有意义的**——它表示「这台机器上没有会话开着」,与「这台机器不上报」
 不同,后者在面板上必须显示为无数据。晚到的旧快照(`observed_at` 更早)被忽略,
 否则会让已经退出的进程复活。
+
+### POST /api/v2/enroll
+
+使用 `Authorization: Bearer <admin_token>` 注册或更新一台稳定设备。Hub 必须显式配置
+非空 `admin_token`;即使只监听 loopback 也不会开放匿名 enrollment。请求严格 JSON,
+上限 64 KiB:
+
+```json
+{
+  "device_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+  "device_token": "<per-device-secret>",
+  "display_name": "research-workstation",
+  "capabilities": ["events", "quotas", "procs", "heartbeat", "durable_outbox"]
+}
+```
+
+首次成功返回 `201`;同一 identity + credential 可更新显示名/能力并返回 `200`;ID 或
+credential 冲突返回 `409`。响应不包含 plaintext token 或 token hash。推荐通过
+`OMNITOKEN_ADMIN_TOKEN=... omnitoken agent enroll ...` 调用,不要把 secret 放进 argv。
+
+### POST /api/v2/ingest
+
+使用该设备自己的 bearer credential。请求是单一严格 JSON envelope,编码后最大
+16 MiB;`device_id` 必须与凭据绑定的 principal 及 payload 内每条设备归属一致:
+
+```json
+{
+  "protocol_version": 2,
+  "device_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+  "boot_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1c001",
+  "batch_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1b001",
+  "sequence": 42,
+  "captured_at": 1785319948062,
+  "kind": "events",
+  "events": []
+}
+```
+
+`kind` 为 `events | quotas | procs`,且一次只能携带对应 payload。成功响应的
+`protocol_version/device_id/batch_id/ack_sequence` 必须与请求完全匹配:
+
+```json
+{
+  "protocol_version": 2,
+  "device_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+  "batch_id": "018f2d5a-7b31-7d98-bf8e-3c2f35a1b001",
+  "ack_sequence": 42,
+  "accepted": 1,
+  "duplicates": 0,
+  "rejected": [],
+  "server_time": 1785319949000
+}
+```
+
+agent 只有验证完整 ACK 后才删除本地 outbox 行。相同 batch replay 返回持久化的同一
+ACK;相同 `batch_id` 不同 payload 返回 `409`;身份/撤销失败返回 `401` 且不 mutation。
+
+### POST /api/v2/heartbeat
+
+同样使用 device credential,严格 JSON 上限 1 MiB。上报 boot/agent version、能力、
+进程快照以及 outbox backlog。客户端的 `sent_at` 只用于诊断;在线/延迟/离线状态只由
+Hub 接收请求时写入的 `last_seen_at` 计算,因此错误或恶意客户端时钟不能伪造在线状态。
+成功响应包含 `protocol_version/device_id/received_at`。
 
 ## 查询
 
@@ -108,6 +176,15 @@ Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-
 权威配额(ADR-0007):每 (设备, 来源, 限额, 窗口) 的最新快照。
 `scope` ∈ five_hour | seven_day | seven_day:<模型> | primary | secondary | limit-hit;
 含 `used_percent`、`resets_at`、`window_label`、`expired`。
+
+### GET /api/v1/devices?days=30
+
+用量汇总与设备 registry 的合并视图。注册设备即使尚无 token 用量也会出现,包含
+`device_id`、`display_name`、`identity_status`、`connection_state`、
+`last_seen_at`、`last_seen_age_ms`、`capabilities`、`queued_batches`、
+`queued_bytes`、`oldest_queued_at`。
+`connection_state` 为 `online | stale | offline`;仅有历史用量、没有 v2 identity 的旧
+设备保留为 `identity_status=legacy_unbound, connection_state=unknown`。
 
 ### GET /api/v1/health
 

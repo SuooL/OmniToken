@@ -80,7 +80,8 @@ Tailscale/WireGuard 类加密组网或 SSH 隧道;不要把未加密的 `8787`/`
 | SSH 拉取 | 远端不能安装 agent;实时性与可观测性较低 | 无 |
 
 不需要公网 IP,agent 只需出站。每个 v2 agent 使用独立设备身份和 ingest credential;
-配置完成后以 `./omnitoken agent` 常驻运行。公网场景只能通过具备 HTTPS、鉴权、
+先通过 `OMNITOKEN_ADMIN_TOKEN=... ./omnitoken agent enroll -server <URL> -name <NAME>`
+在目标机器生成受保护配置,再以 `./omnitoken agent` 常驻运行。公网场景只能通过具备 HTTPS、鉴权、
 请求限制与超时的反向代理接入，不能裸露产品端口。完整示例见
 [docs/deployment.md](docs/deployment.md)。
 

@@ -214,6 +214,33 @@ server {
 使用，并要求下游鉴权、上游鉴权、请求体限制和超时。公网映射必须落到前述 HTTPS
 入口，不能把 relay 端口直接转发到互联网。
 
+relay 只转发三个明确路由:`POST /api/v1/ingest`、`POST /api/v2/ingest` 与
+`POST /api/v2/heartbeat`。下游必须另带 `X-OmniToken-Relay-Token`;原
+`Authorization` 保留为最终 Hub 的 v1/device credential,两者不能混用。示例:
+
+```json
+{
+  "server": "https://hub.example.invalid",
+  "relay_listen": "100.64.0.20:8788",
+  "relay_token": "<THIS_RELAY_LISTENER_SECRET>",
+  "relay_upstream_token": "<NEXT_RELAY_SECRET>"
+}
+```
+
+直接连 Hub 时可省略 `relay_upstream_token`;多跳 relay 应为每一跳配置不同的 listener
+secret,本跳使用 `relay_upstream_token` 换成下一跳期待的值。下游 agent 配置:
+
+```json
+{
+  "server": "http://100.64.0.20:8788",
+  "allow_insecure_http": true,
+  "relay_upstream_token": "<THIS_RELAY_LISTENER_SECRET>"
+}
+```
+
+这里仍只应在加密 overlay 或明确受控 LAN 上使用 HTTP。relay 的 health 路由开放但只
+返回状态;enrollment、settings、dashboard 与任意额外路径都不会被转发。
+
 ## v1 到 v2 的迁移
 
 v1 `/api/v1/ingest` 在迁移期继续工作，因此可以逐台迁移，不需要同时停机：
@@ -247,6 +274,17 @@ v1 `/api/v1/ingest` 在迁移期继续工作，因此可以逐台迁移，不需
 不要直接编辑 SQLite 中的 token hash 或 revocation 字段。管理命令的精确参数以当前
 版本的 `omnitoken --help` / `omnitoken agent enroll --help` 为准；自动化时通过
 权限为 `0600` 的环境文件或 secret store 传递授权，不使用命令行明文参数。
+
+```sh
+OMNITOKEN_ADMIN_TOKEN='<ADMIN_SECRET>' \
+  omnitoken agent enroll \
+  -server https://ingest.example.invalid \
+  -name research-workstation
+```
+
+对受控 LAN/仅提供 HTTP 地址的加密 overlay，必须额外写
+`-allow-insecure-http`;这个开关会持久化到 agent config。公网地址不应使用该开关，
+应修复 HTTPS ingress。
 
 ## 常驻进程
 
