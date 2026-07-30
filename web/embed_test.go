@@ -530,11 +530,12 @@ test('route empty predicates reflect meaningful data', () => {
 
 test('registered liveness ages without a new SSE payload', () => {
   const live = load('live.js');
-  const seen = 1_000_000;
-  const device = '{identity_status:"registered",connection_state:"online",last_seen_at:' + seen + '}';
-  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 120_000) + ')'), 'online');
-  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 120_001) + ')'), 'stale');
-  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',' + (seen + 600_001) + ')'), 'offline');
+  const device = '{identity_status:"registered",connection_state:"online",last_seen_age_ms:0}';
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',120000)'), 'online');
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',120001)'), 'stale');
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + device + ',600001)'), 'offline');
+  const revoked = '{identity_status:"registered",connection_state:"offline",last_seen_age_ms:1000}';
+  assert.equal(run(live, 'Live.effectiveConnectionState(' + revoked + ',0)'), 'offline');
 });
 `
 	path := filepath.Join(dir, "state-decisions.test.mjs")

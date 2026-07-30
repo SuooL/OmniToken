@@ -5,6 +5,7 @@ const Live = {
   es: null,
   data: null,
   timer: null,
+  snapshotReceivedAt: 0,
 
   start() {
     if (this.es) return;
@@ -12,6 +13,7 @@ const Live = {
     this.es = Api.stream("/api/v1/stream");
     const onData = (ev) => {
       this.data = JSON.parse(ev.data);
+      this.snapshotReceivedAt = performance.now();
       this.render();
       status.textContent = "实时连接中 · 更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     };
@@ -242,13 +244,22 @@ const Live = {
     return { online: "在线", stale: "延迟", offline: "离线" }[this.effectiveConnectionState(v)] || "未知";
   },
 
-  effectiveConnectionState(v, nowMS = Date.now()) {
+  effectiveConnectionState(v, elapsedMS = this.snapshotElapsedMS()) {
     if (v.identity_status !== "registered") return v.connection_state || "unknown";
-    if (!v.last_seen_at) return "offline";
-    const age = Math.max(0, nowMS - v.last_seen_at);
+    // The Hub's offline state is terminal for this snapshot (notably revoked
+    // credentials). Client-side ageing may only degrade a state, never improve
+    // one the authenticated Hub already classified.
+    if (v.connection_state === "offline") return "offline";
+    if (v.last_seen_age_ms == null) return v.connection_state || "offline";
+    const age = Math.max(0, v.last_seen_age_ms + Math.max(0, elapsedMS));
     if (age <= 2 * 60 * 1000) return "online";
     if (age <= 10 * 60 * 1000) return "stale";
     return "offline";
+  },
+
+  snapshotElapsedMS() {
+    if (!this.snapshotReceivedAt || typeof performance === "undefined") return 0;
+    return Math.max(0, performance.now() - this.snapshotReceivedAt);
   },
 
   visualState(v) {
