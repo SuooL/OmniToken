@@ -119,26 +119,74 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 	}
 	defer stmt.Close()
 
-	// Backfill for gen_ms only (ADR-0009). Events stored before that field
-	// existed carry 0, and re-observing them through INSERT OR IGNORE would
-	// never fill it in, so a rescan would leave the whole history without
-	// speed data. Rebuilding the database instead — what ADR-0006 did for
-	// duration_ms — is no longer an option: N6 requires stored events to
-	// outlive their source logs, which Claude Code deletes after 30 days.
+	// Merging a second observation of an already-known event (ADR-0009 for
+	// gen_ms, ADR-0013 for the rest). Two things make this necessary: a rescan
+	// re-reads history that predates a derived column, and the proxy and the
+	// log can each see one half of the same request — the log knows the repo,
+	// the proxy knows the TTFT.
 	//
-	// The guards are what keep this inside ADR-0004's idempotency rule. Only
-	// this one derived column is ever rewritten, never a count or an identity;
-	// `gen_ms = 0` means it is filled in once and not churned afterwards; and
-	// `? > 0` stops an older agent that does not compute it from erasing a
-	// good value. Because both guards fail for an already-backfilled row, the
-	// statement matches nothing and reports no change — so `inserted` keeps
-	// meaning what it always meant, and dedup still shows up as 0.
-	backfill, err := tx.Prepare(
-		`UPDATE events SET gen_ms = ? WHERE event_id = ? AND gen_ms = 0 AND ? > 0`)
+	// The rules that keep this inside ADR-0004's idempotency guarantee:
+	//
+	//   - only ever FILL a column that is empty; never overwrite one that is
+	//     set, so no observation can churn another's value;
+	//   - no count column is on the list, so tokens and event totals cannot
+	//     move no matter how many times a request is observed;
+	//   - duration_ms is deliberately absent: on a log-owned row it means "gap
+	//     to the previous record" (ADR-0006, F8 work time), which is a
+	//     different quantity from the proxy's measured span.
+	//
+	// Because every guard fails once a row is complete, a repeat observation
+	// matches nothing and reports no change — `inserted` keeps meaning what it
+	// always meant, and dedup still shows up as 0.
+	numFill, err := tx.Prepare(
+		`UPDATE events SET gen_ms = CASE WHEN gen_ms = 0 AND ?1 > 0 THEN ?1 ELSE gen_ms END,
+		                   ttft_ms = CASE WHEN ttft_ms = 0 AND ?2 > 0 THEN ?2 ELSE ttft_ms END
+		 WHERE event_id = ?3
+		   AND ((gen_ms = 0 AND ?1 > 0) OR (ttft_ms = 0 AND ?2 > 0))`)
 	if err != nil {
 		return 0, err
 	}
-	defer backfill.Close()
+	defer numFill.Close()
+
+	// Attribution only the log channel can see. A proxy row starts with these
+	// empty, and the log observation that follows fills them in.
+	textFill, err := tx.Prepare(
+		`UPDATE events SET session_id = CASE WHEN session_id = '' THEN ?1 ELSE session_id END,
+		                   cwd        = CASE WHEN cwd        = '' THEN ?2 ELSE cwd        END,
+		                   repo       = CASE WHEN repo       = '' THEN ?3 ELSE repo       END,
+		                   git_branch = CASE WHEN git_branch = '' THEN ?4 ELSE git_branch END,
+		                   app_version= CASE WHEN app_version= '' THEN ?5 ELSE app_version END
+		 WHERE event_id = ?6
+		   AND (session_id = '' OR cwd = '' OR repo = '' OR git_branch = '' OR app_version = '')`)
+	if err != nil {
+		return 0, err
+	}
+	defer textFill.Close()
+
+	// duration_ms is the log channel's alone. Its meaning is "gap to the
+	// previous log record" (ADR-0006), which F8 work time reads; the proxy's
+	// measured span is a different quantity and stays out of this column. But
+	// the log must still be able to fill it when the proxy created the row
+	// first — otherwise proxied requests would silently drop out of work time.
+	durFill, err := tx.Prepare(
+		`UPDATE events SET duration_ms = ? WHERE event_id = ? AND duration_ms = 0 AND ? > 0`)
+	if err != nil {
+		return 0, err
+	}
+	defer durFill.Close()
+
+	// The one sanctioned overwrite, and it goes one way only (ADR-0013): the
+	// tool is the source of a request, the proxy is merely how it was seen.
+	// The proxy almost always reports first — immediately, against a collector
+	// that polls — so without this every proxied request would be filed under
+	// `proxy` and the by-source history would break in half at the moment the
+	// proxy was switched on.
+	promote, err := tx.Prepare(
+		`UPDATE events SET source = ?1 WHERE event_id = ?2 AND source = 'proxy' AND ?1 != 'proxy'`)
+	if err != nil {
+		return 0, err
+	}
+	defer promote.Close()
 
 	inserted, filled := 0, 0
 	for _, e := range events {
@@ -156,20 +204,46 @@ func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error
 			inserted++
 			continue
 		}
-		// Already known. Fill in gen_ms if this observation has one and the
-		// stored row does not.
-		if e.GenMS > 0 {
-			r, err := backfill.Exec(e.GenMS, e.EventID, e.GenMS)
+		// Already known: contribute whatever this observation adds.
+		changed := false
+		if e.GenMS > 0 || e.TTFTMS > 0 {
+			r, err := numFill.Exec(e.GenMS, e.TTFTMS, e.EventID)
 			if err != nil {
 				return inserted, err
 			}
 			if n, _ := r.RowsAffected(); n > 0 {
-				filled++
+				changed = true
 			}
+		}
+		if e.SessionID != "" || e.CWD != "" || e.Repo != "" || e.GitBranch != "" || e.AppVersion != "" {
+			r, err := textFill.Exec(e.SessionID, e.CWD, e.Repo, e.GitBranch, e.AppVersion, e.EventID)
+			if err != nil {
+				return inserted, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+		}
+		if e.Source != "" && e.Source != "proxy" {
+			if _, err := promote.Exec(e.Source, e.EventID); err != nil {
+				return inserted, err
+			}
+			if e.DurationMS > 0 {
+				r, err := durFill.Exec(e.DurationMS, e.EventID, e.DurationMS)
+				if err != nil {
+					return inserted, err
+				}
+				if n, _ := r.RowsAffected(); n > 0 {
+					changed = true
+				}
+			}
+		}
+		if changed {
+			filled++
 		}
 	}
 	if filled > 0 {
-		log.Printf("store: backfilled gen_ms on %d existing events (ADR-0009)", filled)
+		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", filled)
 	}
 	return inserted, tx.Commit()
 }

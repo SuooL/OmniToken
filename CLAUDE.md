@@ -43,7 +43,7 @@ internal/agent        推送 + 中继
 |------|---------|
 | `internal/parser/claudecode/parser.go` | `message.id` + `requestId` |
 | `internal/parser/codex/parser.go` | rollout + 时间戳 + 序号(`token_count` 行无 message id) |
-| `internal/proxy/proxy.go` | 设备 + 前缀 + 起始纳秒 + 序号 |
+| `internal/proxy/proxy.go` | 能认出同一次请求时复用日志的 id(`message.id` + `request-id`,ADR-0013);认不出时用 设备 + 前缀 + 起始纳秒 + 序号 |
 
 背景见 `docs/adr/0004-event-identity.md`。
 

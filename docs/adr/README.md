@@ -16,3 +16,5 @@ ADR 标注 supersedes,不改写历史。
 | [0009](0009-generation-speed.md) | 生成速度语义:生成区间与并集口径 | 已采纳 |
 | [0010](0010-vendored-frontend-libs.md) | 前端可用 vendored 预构建库(修订 0002 前端条款) | 已采纳 |
 | [0011](0011-quota-via-statusline.md) | 配额改由 statusLine 捕获(取代 0007 的 OAuth 通道) | 已采纳 |
+| [0012](0012-live-process-state.md) | 活跃会话的地面真值:agent 侧读本机进程表 | 已采纳 |
+| [0013](0013-proxy-log-same-request.md) | 同一次请求被日志与代理同时观测:共享 event_id、字段归属、代理边界 | 已采纳 |

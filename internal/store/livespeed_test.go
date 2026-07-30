@@ -224,3 +224,180 @@ func TestTokensSinceExcludesCacheRead(t *testing.T) {
 		t.Errorf("output = %d, want 300", output)
 	}
 }
+
+// The proxy and the log see one request from two sides (ADR-0013). Merging them
+// must add what each knows and change nothing that was already there — above
+// all, not a single count.
+func TestMergeSecondObservationFillsWithoutDoubleCounting(t *testing.T) {
+	s, err := Open(t.TempDir() + "/merge.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const id = "cc:msg_01ABC:req_011CxyZ"
+	ts := time.Now().UnixMilli()
+
+	// The proxy reports first — it fires the moment the request ends, while the
+	// collector is still waiting for its next tick.
+	proxyEv := model.Event{
+		EventID: id, TS: ts, Device: "mac", Source: "proxy",
+		Model: "claude-opus-4-8", Provider: "anthropic-oauth",
+		InputTokens: 100, OutputTokens: 250, CacheReadTokens: 40,
+		GenMS: 4200, TTFTMS: 310, AccountLabel: "abc123",
+	}
+	n, err := s.InsertEvents([]model.Event{proxyEv}, ts)
+	if err != nil || n != 1 {
+		t.Fatalf("proxy insert: n=%d err=%v", n, err)
+	}
+
+	// The log describes the same request: same tokens, plus everything the
+	// proxy could not know.
+	logEv := model.Event{
+		EventID: id, TS: ts, Device: "mac", Source: "claude-code",
+		Model: "claude-opus-4-8", Provider: "anthropic",
+		InputTokens: 100, OutputTokens: 250, CacheReadTokens: 40,
+		DurationMS: 99000, // ADR-0006 gap semantics — must not land on this row
+		GenMS:      7777,  // a log-derived estimate; the measured one wins
+		SessionID:  "sess-1", CWD: "/src/omnitoken", Repo: "local:OmniToken",
+		GitBranch: "dev", AppVersion: "2.1.121",
+	}
+	n, err = s.InsertEvents([]model.Event{logEv}, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("inserted = %d, want 0 — the second observation must not create a row", n)
+	}
+
+	var (
+		count, input, output, cacheRead, genMS, ttft, duration int64
+		source, sessionID, repo, branch, cwd, appVersion       string
+	)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows = %d, want 1 — one request is one row", count)
+	}
+	if err := s.db.QueryRow(
+		`SELECT input_tokens, output_tokens, cache_read_tokens, gen_ms, ttft_ms, duration_ms,
+		        source, session_id, repo, git_branch, cwd, app_version FROM events`).
+		Scan(&input, &output, &cacheRead, &genMS, &ttft, &duration,
+			&source, &sessionID, &repo, &branch, &cwd, &appVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	// Counts: untouched, and counted once.
+	if input != 100 || output != 250 || cacheRead != 40 {
+		t.Errorf("tokens = %d/%d/%d, want 100/250/40 — merging must never move a count",
+			input, output, cacheRead)
+	}
+	// The proxy's measurement stands; the log's estimate does not overwrite it.
+	if genMS != 4200 || ttft != 310 {
+		t.Errorf("gen_ms/ttft_ms = %d/%d, want 4200/310", genMS, ttft)
+	}
+	// duration_ms carries ADR-0006's meaning, so only the log may set it — and
+	// it must be able to, or every proxied request would drop out of F8 work
+	// time. The proxy's own measured span never lands here.
+	if duration != 99000 {
+		t.Errorf("duration_ms = %d, want the log's 99000 gap", duration)
+	}
+	// Attribution only the log knows.
+	if sessionID != "sess-1" || repo != "local:OmniToken" || branch != "dev" ||
+		cwd != "/src/omnitoken" || appVersion != "2.1.121" {
+		t.Errorf("attribution not filled in: sess=%q repo=%q branch=%q cwd=%q ver=%q",
+			sessionID, repo, branch, cwd, appVersion)
+	}
+	// The tool owns the source, not the way we happened to see it.
+	if source != "claude-code" {
+		t.Errorf("source = %q, want claude-code", source)
+	}
+
+	// Re-observing either side again changes nothing at all.
+	for _, ev := range []model.Event{proxyEv, logEv} {
+		if n, err := s.InsertEvents([]model.Event{ev}, ts); err != nil || n != 0 {
+			t.Fatalf("re-observation: n=%d err=%v", n, err)
+		}
+	}
+	var input2, genMS2 int64
+	var source2 string
+	if err := s.db.QueryRow(`SELECT input_tokens, gen_ms, source FROM events`).
+		Scan(&input2, &genMS2, &source2); err != nil {
+		t.Fatal(err)
+	}
+	if input2 != input || genMS2 != genMS || source2 != source {
+		t.Errorf("a repeat observation changed the row: %d/%d/%q", input2, genMS2, source2)
+	}
+}
+
+// The promotion is one-directional: a proxy observation arriving after the log
+// must not relabel the row as proxy-sourced.
+func TestProxyObservationDoesNotStealSource(t *testing.T) {
+	s, err := Open(t.TempDir() + "/promote.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const id = "cc:msg_02:req_02"
+	ts := time.Now().UnixMilli()
+	if _, err := s.InsertEvents([]model.Event{{
+		EventID: id, TS: ts, Device: "mac", Source: "claude-code",
+		Model: "claude-opus-4-8", OutputTokens: 10, Repo: "local:x",
+	}}, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertEvents([]model.Event{{
+		EventID: id, TS: ts, Device: "mac", Source: "proxy",
+		Model: "claude-opus-4-8", OutputTokens: 10, TTFTMS: 250,
+	}}, ts); err != nil {
+		t.Fatal(err)
+	}
+	var source string
+	var ttft int64
+	if err := s.db.QueryRow(`SELECT source, ttft_ms FROM events`).Scan(&source, &ttft); err != nil {
+		t.Fatal(err)
+	}
+	if source != "claude-code" {
+		t.Errorf("source = %q, want claude-code", source)
+	}
+	if ttft != 250 {
+		t.Errorf("ttft_ms = %d, want 250 — the proxy still contributes its measurement", ttft)
+	}
+}
+
+// The proxy must never set duration_ms on a row a log owns: that column is F8's
+// gap, not a generation time.
+func TestProxyNeverWritesDurationOnSharedRow(t *testing.T) {
+	s, err := Open(t.TempDir() + "/dur.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const id = "cc:msg_03:req_03"
+	ts := time.Now().UnixMilli()
+	if _, err := s.InsertEvents([]model.Event{{
+		EventID: id, TS: ts, Source: "claude-code", Model: "claude-opus-4-8",
+		OutputTokens: 10, DurationMS: 45000,
+	}}, ts); err != nil {
+		t.Fatal(err)
+	}
+	// A proxy observation carrying a measured span in duration_ms (as a
+	// standalone row would) must not disturb the stored gap.
+	if _, err := s.InsertEvents([]model.Event{{
+		EventID: id, TS: ts, Source: "proxy", Model: "claude-opus-4-8",
+		OutputTokens: 10, DurationMS: 3000, GenMS: 3000, TTFTMS: 200,
+	}}, ts); err != nil {
+		t.Fatal(err)
+	}
+	var duration, genMS, ttft int64
+	if err := s.db.QueryRow(`SELECT duration_ms, gen_ms, ttft_ms FROM events`).
+		Scan(&duration, &genMS, &ttft); err != nil {
+		t.Fatal(err)
+	}
+	if duration != 45000 {
+		t.Errorf("duration_ms = %d, want the log's 45000 untouched", duration)
+	}
+	if genMS != 3000 || ttft != 200 {
+		t.Errorf("gen_ms/ttft_ms = %d/%d, want the proxy's 3000/200", genMS, ttft)
+	}
+}

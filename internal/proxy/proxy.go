@@ -196,13 +196,12 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	duration := time.Since(start)
 
-	u, obsModel := obs.result()
+	u, obsModel, msgID := obs.result()
 	m := reqModel
 	if m == "" {
 		m = obsModel
 	}
 	ev := model.Event{
-		EventID:             proxyEventID(p.device, prefix, start.UnixNano(), p.seq.Add(1)),
 		TS:                  start.UnixMilli(),
 		Device:              p.device,
 		Source:              Source,
@@ -213,9 +212,23 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		OutputTokens:        u.output,
 		CacheReadTokens:     u.cacheRead,
 		CacheCreationTokens: u.cacheCreate,
-		DurationMS:          duration.Milliseconds(),
-		TTFTMS:              ttft.Milliseconds(),
+		// The measured span IS the generation interval, which is what gen_ms
+		// means (ADR-0009) — better than the estimate a log can offer.
+		GenMS:  duration.Milliseconds(),
+		TTFTMS: ttft.Milliseconds(),
 		// CWD intentionally empty: the proxy cannot know the caller's cwd.
+	}
+	// Same request, same id: when the log will describe this request too, the
+	// two observations must collapse into one row rather than count twice
+	// (ADR-0013). Failing that, this is a standalone observation.
+	if shared := sharedEventID(prefix, msgID, resp.Header); shared != "" {
+		ev.EventID = shared
+	} else {
+		ev.EventID = proxyEventID(p.device, prefix, start.UnixNano(), p.seq.Add(1))
+		// duration_ms means "gap to the previous log record" on rows a log
+		// channel owns (ADR-0006, F8 work time). Only a row with no log twin
+		// can carry the measured span there without changing that meaning.
+		ev.DurationMS = duration.Milliseconds()
 	}
 	// Async so a slow sink never delays finishing the client's response.
 	go p.emitter.emit(ev)
@@ -320,6 +333,27 @@ func proxyAccountLabel(h http.Header) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// sharedEventID reproduces the id the Claude Code parser derives for this same
+// request, or "" when the request cannot be identified that way (ADR-0013).
+//
+// Both halves come off the wire: the message id from the response body or the
+// message_start event, the request id from Anthropic's response header. The
+// format has to stay in lockstep with parser/claudecode.eventID — a regression
+// test pins the two together.
+func sharedEventID(prefix, msgID string, respHeader http.Header) string {
+	if prefix != "anthropic" || msgID == "" {
+		return ""
+	}
+	reqID := respHeader.Get("request-id")
+	if reqID == "" {
+		reqID = respHeader.Get("anthropic-request-id")
+	}
+	if reqID == "" {
+		return ""
+	}
+	return "cc:" + msgID + ":" + reqID
+}
+
 func proxyEventID(device, prefix string, startNano int64, seq uint64) string {
 	sum := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d", device, prefix, startNano, seq)))
 	return "px:" + hex.EncodeToString(sum[:12])
@@ -373,6 +407,7 @@ type usageObserver struct {
 	line  bytes.Buffer // SSE partial-line assembly
 	acc   proxyTokens
 	model string
+	msgID string // Anthropic message id, half of the shared event_id (ADR-0013)
 }
 
 func newUsageObserver(sse bool) *usageObserver {
@@ -411,6 +446,7 @@ func (o *usageObserver) sseLine(line string) {
 	var ev struct {
 		Model   string `json:"model"`
 		Message *struct {
+			ID    string          `json:"id"` // half of the shared event_id (ADR-0013)
 			Model string          `json:"model"`
 			Usage *proxyWireUsage `json:"usage"`
 		} `json:"message"` // Anthropic message_start wraps usage in message
@@ -423,6 +459,9 @@ func (o *usageObserver) sseLine(line string) {
 		o.model = ev.Model
 	}
 	if ev.Message != nil {
+		if ev.Message.ID != "" {
+			o.msgID = ev.Message.ID
+		}
 		if ev.Message.Model != "" {
 			o.model = ev.Message.Model
 		}
@@ -469,13 +508,19 @@ func (o *usageObserver) merge(u *proxyWireUsage) {
 	}
 }
 
-func (o *usageObserver) result() (proxyTokens, string) {
+// result returns the accumulated usage, the model, and the Anthropic message id
+// when one was seen (ADR-0013).
+func (o *usageObserver) result() (proxyTokens, string, string) {
 	if !o.sse && o.raw.Len() > 0 {
 		var v struct {
+			ID    string          `json:"id"`
 			Model string          `json:"model"`
 			Usage *proxyWireUsage `json:"usage"`
 		}
 		if err := json.Unmarshal(o.raw.Bytes(), &v); err == nil {
+			if v.ID != "" {
+				o.msgID = v.ID
+			}
 			if v.Model != "" {
 				o.model = v.Model
 			}
@@ -484,7 +529,7 @@ func (o *usageObserver) result() (proxyTokens, string) {
 			}
 		}
 	}
-	return o.acc, o.model
+	return o.acc, o.model, o.msgID
 }
 
 // ---- event delivery with retry ring ----

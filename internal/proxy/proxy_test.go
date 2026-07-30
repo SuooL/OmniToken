@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/parser/claudecode"
 )
 
 // eventTrap is a sink that records every batch it receives; failN first calls
@@ -409,5 +410,140 @@ func TestProxyLabelsSubscriptionTrafficAsOAuth(t *testing.T) {
 	}
 	if strings.Contains(ev.AccountLabel, "sk-ant") {
 		t.Errorf("account label leaked the token: %q", ev.AccountLabel)
+	}
+}
+
+// The whole dedup rests on the two channels computing the SAME string for the
+// same request (ADR-0013). Comparing formats by eye is not enough, so this runs
+// a real log line through the real parser and demands equality.
+func TestSharedEventIDMatchesTheLogParser(t *testing.T) {
+	const msgID, reqID = "msg_01DUBynxjrQhzCabc", "req_011CcgLG5dntXYZ"
+
+	// A Claude Code transcript line for one assistant reply, shaped like the
+	// real ones (~/.claude/projects/*/*.jsonl).
+	line := `{"type":"assistant","requestId":"` + reqID + `","timestamp":"2026-07-30T01:00:00.000Z",` +
+		`"sessionId":"sess-1","cwd":"/src/omnitoken","message":{"id":"` + msgID + `",` +
+		`"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":250}}}`
+	res := claudecode.Parse(strings.NewReader(line+"\n"), "mac", 0)
+	if len(res.Events) != 1 {
+		t.Fatalf("parser produced %d events, want 1", len(res.Events))
+	}
+	fromLog := res.Events[0].EventID
+
+	// The proxy sees the same request from the other side: the message id off
+	// the wire, the request id off the response header.
+	h := http.Header{}
+	h.Set("request-id", reqID)
+	fromProxy := sharedEventID("anthropic", msgID, h)
+
+	if fromProxy != fromLog {
+		t.Fatalf("ids differ — the same request would be counted twice:\n log   = %q\n proxy = %q",
+			fromLog, fromProxy)
+	}
+}
+
+func TestSharedEventIDOnlyWhenIdentifiable(t *testing.T) {
+	withReq := http.Header{}
+	withReq.Set("request-id", "req_011C")
+	cases := []struct {
+		name, prefix, msgID string
+		h                   http.Header
+		want                string
+	}{
+		{"anthropic with both halves", "anthropic", "msg_01", withReq, "cc:msg_01:req_011C"},
+		{"anthropic header variant", "anthropic", "msg_01",
+			http.Header{"Anthropic-Request-Id": []string{"req_011C"}}, "cc:msg_01:req_011C"},
+		// No twin exists for these, so a standalone id is the honest answer.
+		{"no request id", "anthropic", "msg_01", http.Header{}, ""},
+		{"no message id", "anthropic", "", withReq, ""},
+		{"openai has no shared key", "openai", "chatcmpl-1", withReq, ""},
+		{"custom upstream", "myrelay", "msg_01", withReq, ""},
+	}
+	for _, c := range cases {
+		if got := sharedEventID(c.prefix, c.msgID, c.h); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Claude Code streams, so the message id has to be picked up from
+// message_start — not only from a non-stream body. Real-machine verification
+// caught this path returning a standalone id while the non-stream test passed.
+func TestSharedEventIDFromSSEStream(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("request-id", "req_011CStream")
+		fl := w.(http.Flusher)
+		time.Sleep(10 * time.Millisecond)
+		io.WriteString(w, `data: {"type":"message_start","message":{"id":"msg_01Stream",`+
+			`"model":"claude-opus-4-8","usage":{"input_tokens":120,"output_tokens":1}}}`+"\n\n")
+		fl.Flush()
+		time.Sleep(10 * time.Millisecond)
+		io.WriteString(w, `data: {"type":"message_delta","usage":{"output_tokens":250}}`+"\n\n")
+		fl.Flush()
+	}))
+	defer up.Close()
+
+	trap := &eventTrap{}
+	px := newTestProxy(t, map[string]string{"anthropic": up.URL}, trap.sink)
+	req, _ := http.NewRequest("POST", px.URL+"/anthropic/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-4-8","stream":true}`))
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	waitCalls(t, trap, 1)
+	ev := trap.call(0)[0]
+	if ev.EventID != "cc:msg_01Stream:req_011CStream" {
+		t.Fatalf("event id = %q, want the shared form from message_start", ev.EventID)
+	}
+	if ev.OutputTokens != 250 || ev.InputTokens != 120 {
+		t.Errorf("tokens = %d in / %d out, want 120/250", ev.InputTokens, ev.OutputTokens)
+	}
+	if ev.DurationMS != 0 || ev.GenMS <= 0 {
+		t.Errorf("duration_ms = %d, gen_ms = %d — shared rows carry the span in gen_ms only",
+			ev.DurationMS, ev.GenMS)
+	}
+}
+
+// A shared row must not carry duration_ms: that column means "gap to the
+// previous log record" wherever a log owns the row (ADR-0006 / F8). A
+// standalone proxy row has no such owner and keeps the measured span.
+func TestProxyWithholdsDurationOnSharedRows(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("request-id", "req_011CTest")
+		w.Header().Set("Content-Type", "application/json")
+		time.Sleep(10 * time.Millisecond)
+		io.WriteString(w, `{"id":"msg_01Test","model":"claude-opus-4-8",`+
+			`"usage":{"input_tokens":10,"output_tokens":20}}`)
+	}))
+	defer up.Close()
+
+	trap := &eventTrap{}
+	px := newTestProxy(t, map[string]string{"anthropic": up.URL}, trap.sink)
+	req, _ := http.NewRequest("POST", px.URL+"/anthropic/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-4-8"}`))
+	req.Header.Set("x-api-key", "sk-ant-api03-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	waitCalls(t, trap, 1)
+	ev := trap.call(0)[0]
+	if ev.EventID != "cc:msg_01Test:req_011CTest" {
+		t.Fatalf("event id = %q, want the shared form", ev.EventID)
+	}
+	if ev.DurationMS != 0 {
+		t.Errorf("duration_ms = %d, want 0 on a shared row", ev.DurationMS)
+	}
+	if ev.GenMS <= 0 || ev.TTFTMS <= 0 {
+		t.Errorf("gen_ms/ttft_ms = %d/%d, want the measured span in both", ev.GenMS, ev.TTFTMS)
 	}
 }
