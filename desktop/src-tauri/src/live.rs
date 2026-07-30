@@ -319,7 +319,33 @@ pub struct State {
     /// one instead of leaving two streams writing to the same tray.
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     alerts: Mutex<Alerts>,
+    /// Serializes snapshot acceptance and every externally visible publication.
+    ///
+    /// Lock order is `task` (respawn only) → `publication` → `snapshot`.
+    /// No publication path acquires `task`, so the order cannot be reversed.
+    publication: Mutex<()>,
     snapshot: Mutex<Snapshot>,
+}
+
+impl State {
+    /// Apply a snapshot mutation and publish its accepted result as one ordered
+    /// operation. The snapshot lock is released before calling external APIs,
+    /// but the publication gate remains held through tray painting and emit.
+    fn publish<R>(
+        &self,
+        update: impl FnOnce(&mut Snapshot) -> bool,
+        publish: impl FnOnce(&Snapshot) -> R,
+    ) -> Option<R> {
+        let _publication = self.publication.lock().ok()?;
+        let snapshot = {
+            let mut snapshot = self.snapshot.lock().ok()?;
+            if !update(&mut snapshot) {
+                return None;
+            }
+            snapshot.clone()
+        };
+        Some(publish(&snapshot))
+    }
 }
 
 // ── the bridge ────────────────────────────────────────────────────────────
@@ -451,24 +477,26 @@ async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
 
 /// One snapshot, four consumers.
 fn apply(app: &tauri::AppHandle, endpoint: &str, payload: &Value, mode: Mode) {
-    let snapshot = {
-        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
-            return;
-        };
-        if !state.record_success(endpoint, payload.clone(), now_ms(), mode) {
-            return;
-        }
-        state.clone()
-    };
-    paint_snapshot(app, &snapshot);
-    let _ = app.emit(
-        EVENT,
-        Update {
-            mode: snapshot.connection.kind.as_str(),
-            connection: &snapshot.connection,
-            data: snapshot.data(),
-        },
-    );
+    let state = app.state::<State>();
+    if state
+        .publish(
+            |snapshot| snapshot.record_success(endpoint, payload.clone(), now_ms(), mode),
+            |snapshot| {
+                paint_snapshot(app, snapshot);
+                let _ = app.emit(
+                    EVENT,
+                    Update {
+                        mode: snapshot.connection.kind.as_str(),
+                        connection: &snapshot.connection,
+                        data: snapshot.data(),
+                    },
+                );
+            },
+        )
+        .is_none()
+    {
+        return;
+    }
     notify(app, payload);
 }
 
@@ -503,43 +531,37 @@ fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
 /// while the tray deliberately suppresses its figures so stale values cannot
 /// masquerade as live ones.
 fn publish_failure(app: &tauri::AppHandle, endpoint: &str, kind: ConnectionKind, error: String) {
-    let snapshot = {
-        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
-            return;
-        };
-        if !state.record_failure(endpoint, kind, error, now_ms()) {
-            return;
-        }
-        state.clone()
-    };
-    paint_snapshot(app, &snapshot);
-    let _ = app.emit(
-        EVENT,
-        Update {
-            mode: snapshot.connection.kind.as_str(),
-            connection: &snapshot.connection,
-            data: snapshot.data(),
+    let state = app.state::<State>();
+    let _ = state.publish(
+        |snapshot| snapshot.record_failure(endpoint, kind, error, now_ms()),
+        |snapshot| {
+            paint_snapshot(app, snapshot);
+            let _ = app.emit(
+                EVENT,
+                Update {
+                    mode: snapshot.connection.kind.as_str(),
+                    connection: &snapshot.connection,
+                    data: snapshot.data(),
+                },
+            );
         },
     );
 }
 
 fn publish_endpoint_change(app: &tauri::AppHandle, endpoint: &str) {
-    let snapshot = {
-        let Ok(mut state) = app.state::<State>().inner().snapshot.lock() else {
-            return;
-        };
-        if !state.bind_endpoint(endpoint) {
-            return;
-        }
-        state.clone()
-    };
-    paint_snapshot(app, &snapshot);
-    let _ = app.emit(
-        EVENT,
-        Update {
-            mode: snapshot.connection.kind.as_str(),
-            connection: &snapshot.connection,
-            data: snapshot.data(),
+    let state = app.state::<State>();
+    let _ = state.publish(
+        |snapshot| snapshot.bind_endpoint(endpoint),
+        |snapshot| {
+            paint_snapshot(app, snapshot);
+            let _ = app.emit(
+                EVENT,
+                Update {
+                    mode: snapshot.connection.kind.as_str(),
+                    connection: &snapshot.connection,
+                    data: snapshot.data(),
+                },
+            );
         },
     );
 }
@@ -623,6 +645,8 @@ pub fn title_for(which: TrayTitle, percent: Option<f64>, tps: Option<f64>) -> Op
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
 
     #[test]
     fn takes_both_event_names_the_server_sends() {
@@ -918,5 +942,76 @@ mod tests {
         assert_eq!(snapshot.data(), None);
         assert_eq!(snapshot.connection.last_success_at_ms, None);
         assert_eq!(snapshot.endpoint.as_deref(), Some("http://server-b"));
+    }
+
+    #[test]
+    fn endpoint_rebind_cannot_overtake_an_accepted_publication() {
+        let state = Arc::new(State::default());
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (rebind_started_tx, rebind_started_rx) = mpsc::channel();
+        let (rebind_done_tx, rebind_done_rx) = mpsc::channel();
+
+        let old_state = Arc::clone(&state);
+        let old_published = Arc::clone(&published);
+        let old = thread::spawn(move || {
+            old_state.publish(
+                |snapshot| {
+                    let accepted = snapshot.record_success(
+                        "http://server-a",
+                        json!({"speed": {"tps": 68.0}}),
+                        1_000,
+                        Mode::Live,
+                    );
+                    accepted_tx.send(()).unwrap();
+                    accepted
+                },
+                |snapshot| {
+                    release_rx.recv().unwrap();
+                    old_published
+                        .lock()
+                        .unwrap()
+                        .push(snapshot.endpoint.clone().unwrap());
+                },
+            );
+        });
+
+        accepted_rx.recv().unwrap();
+        assert!(matches!(
+            state.publication.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+
+        let new_state = Arc::clone(&state);
+        let new_published = Arc::clone(&published);
+        let new = thread::spawn(move || {
+            rebind_started_tx.send(()).unwrap();
+            new_state.publish(
+                |snapshot| snapshot.bind_endpoint("http://server-b"),
+                |snapshot| {
+                    new_published
+                        .lock()
+                        .unwrap()
+                        .push(snapshot.endpoint.clone().unwrap());
+                },
+            );
+            rebind_done_tx.send(()).unwrap();
+        });
+
+        rebind_started_rx.recv().unwrap();
+        assert!(matches!(
+            rebind_done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).unwrap();
+        old.join().unwrap();
+        new.join().unwrap();
+
+        assert_eq!(
+            published.lock().unwrap().as_slice(),
+            ["http://server-a", "http://server-b"]
+        );
     }
 }
