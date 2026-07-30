@@ -137,7 +137,21 @@ func (s *Server) Run() error {
 	} else {
 		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
 	}
-	return http.ListenAndServe(s.cfg.Listen, mux)
+	return newHTTPServer(s.cfg.Listen, mux).ListenAndServe()
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// SSE connections intentionally have no total write deadline. Idle
+		// keep-alives are still bounded, and each request must finish headers
+		// and its body within the limits above.
+		WriteTimeout: 0,
+		IdleTimeout:  2 * time.Minute,
+	}
 }
 
 func (s *Server) currentTime() time.Time {
