@@ -1,6 +1,13 @@
-/* Menubar popover. Deliberately its own stylesheet rather than the panel's:
-   the panel is laid out for a 1100px page, this is 320px of glanceable text.
-   Colours mirror web/style.css so the two do not read as different products. */
+/* Menubar popover layout (ADR-0014).
+   Colour, type and radius come from tokens.css — the same file the nine-page
+   panel loads, so the two surfaces cannot drift into looking like different
+   products again. Everything here is this surface's own geometry: 340px of
+   glanceable instrument, which shares no component classes with a 1520px page.
+
+   The ground is NOT painted here. The window runs macOS's own `popover`
+   material (tauri.conf.json → windowEffects), so the panel is a hairline and a
+   whisper of tint over real translucency. A solid fill would cover the material
+   up and put us back to a CSS card pretending to be a popover. */
 
 * { box-sizing: border-box; margin: 0; }
 
@@ -8,137 +15,257 @@
    agent's `[hidden]` rule — without this the hidden view renders anyway. */
 [hidden] { display: none !important; }
 
-:root {
-  color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --text: #0b0b0b;
-  --text-2: #52514e;
-  --muted: #898781;
-  --border: rgba(11, 11, 11, 0.10);
-  --accent: #2a78d6;
-  --track: #cde2fb;
-  --warn: #fab219;
-  --serious: #ec835a;
-  --critical: #d03b3b;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --page: #1c1c1b;
-    --surface: #262625;
-    --text: #ffffff;
-    --text-2: #c3c2b7;
-    --muted: #898781;
-    --border: rgba(255, 255, 255, 0.12);
-    --accent: #3987e5;
-    --track: #184f95;
-  }
-}
+html, body { height: 100%; background: transparent; }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: var(--text);
-  /* Transparent window + rounded card reads as a native popover rather than a
-     borderless rectangle. */
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  /* The window is transparent and the vibrancy view sits behind it; anything
+     opaque here would defeat it. */
   background: transparent;
+  overflow: hidden;
 }
 
 .panel {
-  background: var(--page);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 14px 10px;
-  height: 100vh;
+  /* The shared --meter-track is tuned for the panel's bars, where there is
+     surrounding context to place it. Alone in a 340px popover it is saturated
+     enough that a 2% bar reads as a full one — you have to look twice to find
+     the value. Softening it here keeps the hue in one place (tokens.css) while
+     letting this surface set its own weight, which is the split the shared file
+     is for. The proportion is about the tray glyph's own TRACK_ALPHA (70/255). */
+  --track-soft: color-mix(in srgb, var(--meter-track) 42%, transparent);
+
+  height: 100%;
+  /* A real ground, at 62% — not a token like --surface-2, which is a 5% white
+     overlay meant to sit *on* a page that already has a colour.
+     The window is transparent and macOS's `popover` material supplies the
+     translucency (tauri.conf.json → windowEffects), so it is tempting to paint
+     nothing at all and let the material do the work. That fails badly in the one
+     case that matters: if the effect does not apply, near-white text lands on a
+     transparent window and the popover is unreadable rather than merely plain.
+     62% keeps the desktop visibly tinting through while text always has
+     something to sit on.
+     Radius matches windowEffects.radius — a mismatch shows as a bright sliver
+     in each corner. */
+  background: color-mix(in srgb, var(--page) 62%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 11px 13px 9px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow: hidden;
 }
 
-header { display: flex; align-items: baseline; justify-content: space-between; }
-.title { font-size: 13px; font-weight: 650; }
-.stamp { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-/* Four quota cards plus today's total overflow 420px on their own. The readout
-   scrolls so the footer — the only way into settings — is never pushed off the
-   bottom. min-height:0 is what actually lets a flex child shrink enough to
-   scroll instead of stretching its parent. */
-#main { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-
-.quotas { display: flex; flex-direction: column; gap: 8px; }
-
-.quota {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 10px;
+/* Opening animation: the popover rises into place rather than appearing, which
+   is what makes it read as attached to the menubar rather than drawn over the
+   screen. Kept to 120ms — this is a glance, not a transition to admire. */
+@media (prefers-reduced-motion: no-preference) {
+  .panel { animation: rise 120ms ease-out both; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+  }
 }
-.quota .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.quota .name {
-  font-size: 11px; color: var(--text-2);
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mark { font-size: 12px; font-weight: 650; letter-spacing: 0.02em; }
+
+/* Connection state, as text plus a dot — never colour alone. It has to say
+   which channel the numbers came from: a stalled stream and a live one look
+   identical if all you show is a number (ADR-0014). */
+.link {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.link::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-muted);
+}
+.link[data-mode="live"]::before    { background: var(--teal); }
+.link[data-mode="polling"]::before { background: var(--meter-warn); }
+.link[data-mode="offline"]::before { background: var(--meter-critical); }
+
+/* ── scroll region ──────────────────────────────────────────────────────── */
+
+/* min-height:0 is what actually lets a flex child shrink enough to scroll
+   instead of stretching its parent past the footer. */
+#main {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+}
+#main::-webkit-scrollbar { width: 0; }
+
+/* ── hero: the tightest quota, as the same gauge the menubar wears ──────── */
+
+.hero { display: flex; align-items: center; gap: 13px; }
+
+/* Start 135°, sweep 270°, stroke 14.5% of the box — the exact geometry of
+   desktop/icons-src/gen-tray-icons.py. The menubar glyph, the app icon and
+   this dial are then one form at three sizes, not three separately drawn
+   circles. The rotation puts the gap at the bottom, which is what makes it
+   read as a gauge rather than a pie chart or a spinner. */
+.ring { width: 76px; height: 76px; flex: none; transform: rotate(135deg); }
+.ring circle { fill: none; stroke-width: 14.5; stroke-linecap: butt; }
+.ring .track { stroke: var(--track-soft); }
+
+/* No reading at all — the same distinction the tray glyph makes, and for the
+   same reason gauge.rs spells out: an empty ring is pixel for pixel the 0%
+   ring, so "I cannot reach the server" would render as "you have used
+   nothing". A broken ring reads as no signal.
+   Four long dashes with tight gaps over the 270° sweep, then one gap the width
+   of the bottom opening so the pattern stops instead of wrapping into it —
+   270°/5 = 54° dash, 18° gap, which at r=41.75 is 39.34 and 13.11. Short even
+   dashes were what the generator rejected: they scatter into something that
+   reads as a loading spinner. */
+.ring.no-signal .track {
+  stroke-dasharray: 39.34 13.11 39.34 13.11 39.34 13.11 39.34 65.6;
+  stroke: var(--meter-track);
+}
+.ring .fill {
+  stroke: var(--accent);
+  /* Starts empty — no reading has arrived yet, and an arbitrary fill level would
+     be a number we made up. app.js writes the real length to style, which is
+     what outranks this. Full sweep is 0.75 × circumference(r=41.75) = 196.71. */
+  stroke-dasharray: 0 262.28;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ring .fill { transition: stroke-dasharray 0.5s ease, stroke 0.3s ease; }
+}
+.ring .fill.warn     { stroke: var(--meter-warn); }
+.ring .fill.serious  { stroke: var(--meter-serious); }
+.ring .fill.critical { stroke: var(--meter-critical); }
+
+.hero-read { min-width: 0; }
+.hero-value {
+  font-size: 30px; font-weight: 600; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.hero-value .unit { font-size: 15px; font-weight: 500; color: var(--text-secondary); }
+.hero-name {
+  font-size: 11px; color: var(--text-secondary); margin-top: 3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.quota .pct { font-size: 15px; font-weight: 620; font-variant-numeric: tabular-nums; }
-.quota .reset { font-size: 10px; color: var(--muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
+.hero-sub { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ── three live figures ─────────────────────────────────────────────────── */
+
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.tile {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 7px;
+  min-width: 0;
+}
+.tile .label {
+  font-size: 9px; color: var(--text-muted); letter-spacing: 0.02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tile .value {
+  font-size: 17px; font-weight: 600; margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tile .value .unit { font-size: 10px; font-weight: 500; color: var(--text-secondary); }
+.tile .sub {
+  font-size: 9px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Nothing generating is a state, not a gap: the figure dims instead of the
+   tile disappearing, so the layout does not jump every time you stop typing. */
+.tile.idle .value { color: var(--text-muted); }
+
+/* ── 10-minute activity strip ───────────────────────────────────────────── */
+
+/* The union of generation intervals over the burn window, drawn as blocks on a
+   track — the Live page's lane element at popover scale. Real data straight
+   from `speed.spans`, which is why this is a strip and not a sparkline: the
+   payload carries when generation happened, not a series to plot, and
+   accumulating one in the popover would only chart how long it had been open. */
+.strip { display: flex; align-items: center; gap: 7px; }
+.strip .track {
+  position: relative; flex: 1 1 auto; height: 12px; border-radius: 4px;
+  background: var(--surface-2); border: 1px solid var(--border); overflow: hidden;
+}
+.strip .blk {
+  position: absolute; top: 0; bottom: 0;
+  background: var(--union); border-radius: 2px; opacity: 0.85;
+}
+.strip .note { font-size: 9px; color: var(--text-muted); flex: none; font-variant-numeric: tabular-nums; }
+
+/* ── remaining quotas ───────────────────────────────────────────────────── */
+
+.quotas { display: flex; flex-direction: column; gap: 6px; }
+.quota .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.quota .name {
+  font-size: 10px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quota .pct { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; flex: none; }
 
 /* The number is always printed beside the bar, so colour reinforces rather
    than carries the value. */
-.meter { height: 5px; border-radius: 3px; background: var(--track); margin-top: 6px; overflow: hidden; }
-.meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
-.meter i.warn { background: var(--warn); }
-.meter i.serious { background: var(--serious); }
-.meter i.critical { background: var(--critical); }
-
-/* Burn rate and today's total are the same component twice over: a label, one
-   large number, and a line of context. */
-.stat {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 10px;
+.meter {
+  height: 4px; border-radius: 2px; background: var(--track-soft);
+  margin-top: 4px; overflow: hidden;
 }
-.stat .label { font-size: 11px; color: var(--text-2); }
-.stat .value { font-size: 21px; font-weight: 620; margin: 1px 0; font-variant-numeric: tabular-nums; }
-.stat .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.meter > i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .meter > i { transition: width 0.5s ease; }
+}
+.meter > i.warn     { background: var(--meter-warn); }
+.meter > i.serious  { background: var(--meter-serious); }
+.meter > i.critical { background: var(--meter-critical); }
 
-/* Settings replaces the readout rather than sitting below it: at 320x420 there
-   is no room for both, and a second window would fight the dismiss-on-blur
-   behaviour the popover depends on. */
+.procs { font-size: 10px; color: var(--text-muted); line-height: 1.5; }
+
+/* ── settings ───────────────────────────────────────────────────────────── */
+
+/* Settings replaces the readout rather than sitting below it: at this width
+   there is no room for both, and a second window would fight the
+   dismiss-on-blur behaviour the popover depends on. */
 .settings { display: flex; flex-direction: column; gap: 6px; }
-.settings .field { font-size: 11px; color: var(--text-2); }
+.settings .field { font-size: 10px; color: var(--text-secondary); }
 .settings input {
   font: inherit; font-size: 12px;
-  color: var(--text); background: var(--surface);
+  color: var(--text-primary); background: var(--surface-2);
   border: 1px solid var(--border); border-radius: 7px;
   padding: 7px 9px; width: 100%;
 }
-.settings input:focus { outline: none; border-color: var(--accent); }
-.settings .hint { font-size: 10px; color: var(--muted); line-height: 1.5; }
-.settings .hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.settings input:focus-visible { outline: none; border-color: var(--accent); }
+.settings .hint { font-size: 10px; color: var(--text-muted); line-height: 1.5; }
+.settings .hint code { font-family: var(--font-display); }
 .settings .msg { font-size: 10px; line-height: 1.5; word-break: break-all; }
-.settings .msg.bad { color: var(--critical); }
-.settings .msg.ok { color: var(--accent); }
-.settings .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.settings .msg.bad { color: var(--meter-critical); }
+.settings .actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 2px; }
+
+/* ── controls ───────────────────────────────────────────────────────────── */
 
 button { font: inherit; cursor: pointer; }
+/* Keyboard focus has to be visible: the popover is reachable by global
+   shortcut, so it can be driven without ever touching the mouse. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
 .settings button {
   font-size: 11px; border-radius: 7px; padding: 5px 12px;
-  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary);
 }
-.settings button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.settings button.primary { background: var(--accent); border-color: var(--accent); color: var(--page); }
 .settings button[disabled] { opacity: 0.5; cursor: default; }
 
 footer { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .server {
-  font-size: 10px; color: var(--muted);
+  font-size: 10px; color: var(--text-muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.link {
-  font-size: 10px; color: var(--muted);
+.textlink {
+  font-size: 10px; color: var(--text-muted);
   background: none; border: 0; padding: 0; flex: none;
 }
-.link:hover { color: var(--text-2); }
+.textlink:hover { color: var(--text-secondary); }
 
-.empty { font-size: 11px; color: var(--muted); padding: 6px 0; }
-.error { font-size: 11px; color: var(--critical); padding: 6px 0; word-break: break-all; }
+.empty { font-size: 10px; color: var(--text-muted); padding: 4px 0; }
+.error { font-size: 10px; color: var(--meter-critical); padding: 4px 0; word-break: break-all; }

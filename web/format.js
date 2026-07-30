@@ -1,59 +1,12 @@
 "use strict";
-// Shared formatting helpers (token-monitor-style renderer decomposition).
+// Panel-side formatting helpers: the ones that need the DOM or ECharts.
+//
+// The pure number/time formatters moved to format-core.js, which the menubar
+// popover shares verbatim (ADR-0014). Nothing here can go there — every
+// function below reads computed styles or talks to a chart instance.
 
 function cssVar(name) {
   return getComputedStyle(document.querySelector(".viz-root")).getPropertyValue(name).trim();
-}
-
-function compact(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
-  return String(n);
-}
-const full = (n) => n.toLocaleString("en-US");
-
-// Everything on the panel is USD: prices are entered in USD, costs are
-// computed in USD, and there is no display-currency conversion.
-function usd(v) {
-  if (v >= 1000) return "$" + (v / 1000).toFixed(1) + "K";
-  if (v >= 100) return "$" + v.toFixed(0);
-  if (v >= 1) return "$" + v.toFixed(2);
-  return v > 0 ? "$" + v.toFixed(3) : "$0";
-}
-
-function hours(sec) {
-  if (!sec) return "";
-  if (sec >= 3600) return (sec / 3600).toFixed(1) + "h";
-  return Math.round(sec / 60) + "m";
-}
-
-// Elapsed time since an instant, for things that are still going. relTime
-// says when something last happened; this says how long it has been running.
-function since(ms) {
-  if (!ms) return "—";
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return s + "s";
-  if (s < 3600) return Math.round(s / 60) + "m";
-  return Math.floor(s / 3600) + "h" + Math.round((s % 3600) / 60) + "m";
-}
-
-function relTime(ms) {
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return s + "s 前";
-  if (s < 3600) return Math.round(s / 60) + "m 前";
-  if (s < 86400) return (s / 3600).toFixed(1) + "h 前";
-  return Math.round(s / 86400) + "d 前";
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-function repoLabel(key, cwd) {
-  if (key) return key.replace(/^local:/, "");
-  if (cwd) return cwd;
-  return "(非 git 目录)";
 }
 
 // ── Chart helpers (ADR-0010) ────────────────────────────────────────────
@@ -124,11 +77,4 @@ function tooltipStyle() {
     textStyle: { color: cssVar("--text-primary"), fontSize: 11, fontFamily: chartFont() },
     extraCssText: "border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.4);backdrop-filter:blur(12px);",
   };
-}
-
-// Display name for a collection source. The stored value stays `claude-code`;
-// this only makes it read as one word beside `codex`.
-const SOURCE_LABELS = { "claude-code": "claude" };
-function sourceLabel(s) {
-  return SOURCE_LABELS[s] || s;
 }

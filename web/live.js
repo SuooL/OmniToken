@@ -124,15 +124,6 @@ const Live = {
       : `<span class="empty">近 10 分钟无活跃会话</span>`;
   },
 
-  // Consumption intensity → meter severity. The percentage or token figure is
-  // always printed beside the bar, so colour only reinforces what the text says.
-  intensityClass(pct) {
-    if (pct >= 90) return " critical";
-    if (pct >= 75) return " serious";
-    if (pct >= 50) return " warn";
-    return "";
-  },
-
   // 5-hour window cards, one per billing channel (server: buildWindowCards).
   // Subscription windows use the provider's real reset boundary when known;
   // pay-per-use has no window, so it is a rolling look-back and says so.
@@ -171,7 +162,7 @@ const Live = {
         <div class="value">${w.tokens ? compact(w.tokens) : "0"}</div>
         <div class="sub">${bits.join(" · ")}</div>
         ${proj ? `<div class="sub proj${w.projected_percent >= 100 ? " over" : ""}">${esc(proj)}</div>` : ""}
-        <div class="meter"><div class="meter-fill${this.intensityClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
+        <div class="meter"><div class="meter-fill ${severity(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
       </div>`;
     }).join("");
   },
@@ -187,10 +178,7 @@ const Live = {
       (order[a.scope] ?? 9) - (order[b.scope] ?? 9) || a.window_minutes - b.window_minutes);
     el.innerHTML = sorted.map((q) => {
       const pct = Math.max(0, Math.min(100, q.used_percent));
-      const remain = q.remaining_minutes;
-      const reset = remain > 0
-        ? `${Math.floor(remain / 60)}h${remain % 60}m 后重置`
-        : "即将重置";
+      const reset = untilReset(q.remaining_minutes);
       const scope = q.scope.startsWith("seven_day:") ? q.scope.slice(10) : "";
       return `
       <div class="stat-tile">
@@ -198,7 +186,7 @@ const Live = {
           <span class="chip authoritative">权威</span></div>
         <div class="value">${pct.toFixed(0)}<span class="unit">%</span></div>
         <div class="sub">${reset} · 观测 ${relTime(q.observed_at)}</div>
-        <div class="meter"><div class="meter-fill${this.intensityClass(pct)}" style="width:${pct}%"></div></div>
+        <div class="meter"><div class="meter-fill ${severity(pct)}" style="width:${pct}%"></div></div>
       </div>`;
     }).join("");
   },
