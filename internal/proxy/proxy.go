@@ -1,4 +1,10 @@
-// proxy.go implements F14: a local LLM API forwarding proxy inside the agent.
+// Package proxy implements F14: a local LLM API forwarding proxy.
+//
+// It sits beside collect in the layering — a collection mechanism with an
+// injected sink — because both the agent and the server host it: the agent
+// pushes what it observes over HTTP, the server writes straight to its store.
+// It lived inside internal/agent until the server needed it too, and a
+// server→agent import would have been a sideways edge between two siblings.
 //
 // Scripts point their base_url at http://127.0.0.1:8899/<prefix> (e.g.
 // /anthropic, /openai); the proxy strips the prefix and forwards the request
@@ -8,7 +14,7 @@
 // log-based collection (ADR-0001). The proxy NEVER alters request or response
 // content; a usage-parse failure still forwards the full stream and still
 // emits a timing-only event.
-package agent
+package proxy
 
 import (
 	"bytes"
@@ -29,40 +35,40 @@ import (
 	"github.com/suool/omnitoken/internal/model"
 )
 
-// ProxySource is the Event.Source value for proxy-observed usage.
-const ProxySource = "proxy"
+// Source is the Event.Source value for proxy-observed usage.
+const Source = "proxy"
 
 const (
 	proxyRingCap    = 1000    // events buffered across sink failures
 	proxyCaptureMax = 4 << 20 // non-stream response bytes kept for usage parsing
 )
 
-// defaultUpstreams are always available; ProxyConfig.Upstreams overrides/extends.
+// defaultUpstreams are always available; Config.Upstreams overrides/extends.
 var defaultUpstreams = map[string]string{
 	"anthropic": "https://api.anthropic.com",
 	"openai":    "https://api.openai.com",
 }
 
-// ProxyConfig configures the local forwarding proxy.
-type ProxyConfig struct {
+// Config configures the local forwarding proxy.
+type Config struct {
 	Listen    string            // e.g. "127.0.0.1:8899"
 	Device    string            // device name stamped on emitted events
 	Upstreams map[string]string // path prefix -> upstream base URL; merged over defaults
 }
 
-// RunProxy runs the forwarding proxy until the listener fails. It blocks;
+// Run runs the forwarding proxy until the listener fails. It blocks;
 // callers run it in a goroutine. sink has the same shape as the agent's push
 // sink; failed batches are kept in an in-memory ring (cap ~1000) and re-sent
 // together with the next event, so transient server outages lose nothing and
 // never block the forwarding path.
-func RunProxy(cfg ProxyConfig, sink func([]model.Event) error) error {
+func Run(cfg Config, sink func([]model.Event) error) error {
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           newProxyHandler(cfg, sink),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No Write/Idle timeouts: streamed generations can run for minutes.
 	}
-	log.Printf("agent: llm proxy listening on %s", cfg.Listen)
+	log.Printf("proxy: listening on %s", cfg.Listen)
 	return srv.ListenAndServe()
 }
 
@@ -74,7 +80,7 @@ type proxyHandler struct {
 	seq       atomic.Uint64
 }
 
-func newProxyHandler(cfg ProxyConfig, sink func([]model.Event) error) *proxyHandler {
+func newProxyHandler(cfg Config, sink func([]model.Event) error) *proxyHandler {
 	ups := make(map[string]string, len(defaultUpstreams)+len(cfg.Upstreams))
 	for k, v := range defaultUpstreams {
 		ups[k] = v
@@ -199,9 +205,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventID:             proxyEventID(p.device, prefix, start.UnixNano(), p.seq.Add(1)),
 		TS:                  start.UnixMilli(),
 		Device:              p.device,
-		Source:              ProxySource,
+		Source:              Source,
 		Model:               m,
-		Provider:            proxyProvider(prefix),
+		Provider:            proxyProvider(prefix, r.Header),
 		AccountLabel:        proxyAccountLabel(r.Header),
 		InputTokens:         u.input,
 		OutputTokens:        u.output,
@@ -224,18 +230,78 @@ func splitProxyPrefix(path string) (prefix, rest string) {
 	return p, "/"
 }
 
-// proxyProvider maps a path prefix to the Event.Provider label. Traffic through
-// the proxy always carries an API key, so the first-party prefixes get the
-// explicit "-api" channel labels.
-func proxyProvider(prefix string) string {
+// proxyProvider maps a request onto an Event.Provider label (ADR-0005's real
+// vs equivalent cost split depends on it).
+//
+// This used to hard-code the "-api" labels on the assumption that traffic
+// through the proxy always carries an API key. That is not true: pointing a
+// subscription tool's base URL at the proxy forwards its OAuth bearer token
+// just as verbatim as anything else, and billing it as real dollars would be a
+// straightforward accounting error.
+//
+// So the credential's shape decides, and when it says nothing the label stays
+// the undetermined first-party one — which ADR-0005 counts as equivalent value.
+// Guessing "API key" costs real money on the report; guessing "subscription"
+// only understates a figure that is already labelled an estimate.
+func proxyProvider(prefix string, h http.Header) string {
 	switch prefix {
 	case "anthropic":
-		return "anthropic-api"
+		switch credentialKind(h) {
+		case credAPIKey:
+			return "anthropic-api"
+		case credOAuth:
+			return "anthropic-oauth"
+		}
+		return "anthropic"
 	case "openai":
-		return "openai-api"
+		switch credentialKind(h) {
+		case credAPIKey:
+			return "openai-api"
+		case credOAuth:
+			return "openai" // Codex on a ChatGPT plan (store.SubscriptionProviders)
+		}
+		return "openai"
 	default:
 		return prefix
 	}
+}
+
+const (
+	credAPIKey = "api-key"
+	credOAuth  = "oauth"
+)
+
+// credentialKind reads the billing channel off the credential's shape, without
+// keeping the credential.
+//
+// The shapes were taken from this machine rather than from memory:
+//
+//   - Anthropic subscription: Authorization: Bearer sk-ant-oat<...> (the token
+//     Claude Code stores under claudeAiOauth in the login keychain item);
+//   - Anthropic API key: sent in x-api-key, and shaped sk-ant-api<...>;
+//   - ChatGPT-plan Codex: Authorization: Bearer <JWT>, i.e. starts with "eyJ"
+//     (~/.codex/auth.json has auth_mode=chatgpt, a null OPENAI_API_KEY and JWT
+//     tokens);
+//   - OpenAI API key: Authorization: Bearer sk-<...> / sk-proj-<...>.
+//
+// An unrecognised shape returns "" so the caller stays undetermined instead of
+// inventing a billing channel.
+func credentialKind(h http.Header) string {
+	if h.Get("x-api-key") != "" {
+		return credAPIKey // Anthropic's API-key header; OAuth never uses it
+	}
+	tok := strings.TrimSpace(strings.TrimPrefix(h.Get("Authorization"), "Bearer "))
+	switch {
+	case tok == "":
+		return ""
+	case strings.HasPrefix(tok, "sk-ant-oat"):
+		return credOAuth
+	case strings.HasPrefix(tok, "eyJ"): // JWT — how ChatGPT plans authenticate
+		return credOAuth
+	case strings.HasPrefix(tok, "sk-"):
+		return credAPIKey
+	}
+	return ""
 }
 
 // proxyAccountLabel fingerprints the credential without ever storing it:

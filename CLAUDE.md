@@ -43,7 +43,7 @@ internal/agent        推送 + 中继
 |------|---------|
 | `internal/parser/claudecode/parser.go` | `message.id` + `requestId` |
 | `internal/parser/codex/parser.go` | rollout + 时间戳 + 序号(`token_count` 行无 message id) |
-| `internal/agent/proxy.go` | 设备 + 前缀 + 起始纳秒 + 序号 |
+| `internal/proxy/proxy.go` | 设备 + 前缀 + 起始纳秒 + 序号 |
 
 背景见 `docs/adr/0004-event-identity.md`。
 
@@ -63,7 +63,7 @@ internal/agent        推送 + 中继
 
 ## 覆盖率门禁
 
-`make check` 只对生成 event_id 的三个包(`parser/codex`、`parser/claudecode`、`agent`)
+`make check` 只对生成 event_id 的三个包(`parser/codex`、`parser/claudecode`、`proxy`)
 强制覆盖率下限。其余包不卡覆盖率 —— 改 HTTP handler、网页面板、配置解析不会被覆盖率拦下。
 
 阈值定义在 `scripts/coverage-gate.sh`,只有那一处,不要复制到 CI 配置或文档里。

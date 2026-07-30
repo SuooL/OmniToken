@@ -1,4 +1,4 @@
-package agent
+package proxy
 
 import (
 	"crypto/sha256"
@@ -61,7 +61,7 @@ func waitCalls(t *testing.T, trap *eventTrap, n int) {
 
 func newTestProxy(t *testing.T, upstreams map[string]string, sink func([]model.Event) error) *httptest.Server {
 	t.Helper()
-	px := httptest.NewServer(newProxyHandler(ProxyConfig{Device: "test-dev", Upstreams: upstreams}, sink))
+	px := httptest.NewServer(newProxyHandler(Config{Device: "test-dev", Upstreams: upstreams}, sink))
 	t.Cleanup(px.Close)
 	return px
 }
@@ -127,7 +127,7 @@ func TestProxyAnthropicNonStream(t *testing.T) {
 	if ev.TTFTMS <= 0 || ev.DurationMS <= 0 || ev.TTFTMS > ev.DurationMS {
 		t.Fatalf("timings: ttft %dms duration %dms, want 0 < ttft <= duration", ev.TTFTMS, ev.DurationMS)
 	}
-	if ev.Source != ProxySource || ev.Provider != "anthropic-api" || ev.Device != "test-dev" {
+	if ev.Source != Source || ev.Provider != "anthropic-api" || ev.Device != "test-dev" {
 		t.Fatalf("source/provider/device = %q/%q/%q", ev.Source, ev.Provider, ev.Device)
 	}
 	if ev.Model != "claude-sonnet-4-20250514" {
@@ -326,5 +326,88 @@ func TestProxyUnknownPrefixAndBadBase(t *testing.T) {
 	}
 	if trap.callCount() != 0 {
 		t.Fatalf("error responses must not emit events, got %d sink calls", trap.callCount())
+	}
+}
+
+// The credential's shape decides the billing channel. Getting this wrong is an
+// accounting error, not a cosmetic one: an "-api" label puts the spend in
+// ADR-0005's real-dollars column, so a subscription routed through the proxy
+// would be reported as money actually charged.
+//
+// The shapes below were read off this machine (keychain item claudeAiOauth,
+// ~/.codex/auth.json), not recalled.
+func TestProxyProviderFollowsCredentialShape(t *testing.T) {
+	hdr := func(pairs ...string) http.Header {
+		h := http.Header{}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			h.Set(pairs[i], pairs[i+1])
+		}
+		return h
+	}
+	cases := []struct {
+		name, prefix string
+		h            http.Header
+		want         string
+	}{
+		{"anthropic api key header", "anthropic",
+			hdr("x-api-key", "sk-ant-api03-xxxx"), "anthropic-api"},
+		{"anthropic api key as bearer", "anthropic",
+			hdr("Authorization", "Bearer sk-ant-api03-xxxx"), "anthropic-api"},
+		{"claude code subscription", "anthropic",
+			hdr("Authorization", "Bearer sk-ant-oat01-xxxx"), "anthropic-oauth"},
+		{"openai api key", "openai",
+			hdr("Authorization", "Bearer sk-proj-xxxx"), "openai-api"},
+		{"codex on a chatgpt plan", "openai",
+			hdr("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.xxxx"), "openai"},
+		// No credential, or one we do not recognise: stay undetermined rather
+		// than invent a channel. Both labels count as equivalent value.
+		{"no credential", "anthropic", hdr(), "anthropic"},
+		{"unrecognised shape", "anthropic",
+			hdr("Authorization", "Bearer opaque-token"), "anthropic"},
+		{"unrecognised shape openai", "openai",
+			hdr("Authorization", "Bearer opaque-token"), "openai"},
+		// A custom upstream keeps its prefix: the model fingerprint classifies
+		// relay traffic, and this function must not overrule it.
+		{"custom prefix", "myrelay",
+			hdr("Authorization", "Bearer sk-whatever"), "myrelay"},
+	}
+	for _, c := range cases {
+		if got := proxyProvider(c.prefix, c.h); got != c.want {
+			t.Errorf("%s: provider = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// End to end: a subscription token through the proxy must not land in the
+// real-dollars column.
+func TestProxyLabelsSubscriptionTrafficAsOAuth(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":5}}`)
+	}))
+	defer up.Close()
+
+	trap := &eventTrap{}
+	px := newTestProxy(t, map[string]string{"anthropic": up.URL}, trap.sink)
+	req, _ := http.NewRequest("POST", px.URL+"/anthropic/v1/messages",
+		strings.NewReader(`{"model":"claude-opus-4-8"}`))
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-not-a-real-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	waitCalls(t, trap, 1)
+	ev := trap.call(0)[0]
+	if ev.Provider != "anthropic-oauth" {
+		t.Errorf("provider = %q, want anthropic-oauth", ev.Provider)
+	}
+	if ev.AccountLabel == "" {
+		t.Error("account label empty: the fingerprint must still identify the account")
+	}
+	if strings.Contains(ev.AccountLabel, "sk-ant") {
+		t.Errorf("account label leaked the token: %q", ev.AccountLabel)
 	}
 }

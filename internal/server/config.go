@@ -22,6 +22,16 @@ type Config struct {
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides,omitempty"`
 	// WorktimeIdleMinutes: idle gap that stops the work clock (F8); default 5.
 	WorktimeIdleMinutes int `json:"worktime_idle_minutes,omitempty"`
+	// ProxyListen runs the local API proxy (F14) inside the server, e.g.
+	// "127.0.0.1:8899"; empty = off. The agent has the same knob. Hosting it
+	// here is for the common single-machine setup: the server already collects
+	// this machine's logs, and running an agent purely for the proxy would
+	// scan them a second time.
+	ProxyListen string `json:"proxy_listen,omitempty"`
+	// ProxyUpstreams maps a path prefix to an upstream base URL, merged over
+	// the built-in anthropic/openai entries.
+	ProxyUpstreams map[string]string `json:"proxy_upstreams,omitempty"`
+
 	// StatuslineCachePath locates what `omnitoken statusline` leaves behind.
 	// Quota is read from a file beside it (ADR-0011) rather than polled from
 	// Anthropic, so this is the only knob the quota channel needs.

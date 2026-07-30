@@ -63,9 +63,14 @@ var SubscriptionProviders = map[string]bool{
 	"unknown":         true,
 }
 
+// IsSubscription reports whether usage falls under a subscription window.
+//
+// The provider label decides, for every source alike. Proxy traffic used to be
+// excluded outright on the grounds that it "always carries an API key" — the
+// same wrong assumption the proxy itself made when stamping the label. A
+// subscription tool pointed at the proxy forwards its OAuth token untouched,
+// and the proxy now says so (agent.proxyProvider), so there is nothing left for
+// a special case to decide.
 func IsSubscription(source, provider string) bool {
-	if source == "proxy" {
-		return false // proxy traffic always carries an API key
-	}
 	return SubscriptionProviders[provider]
 }
