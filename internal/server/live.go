@@ -90,7 +90,13 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 
 	type devView struct {
 		store.DeviceStatus
-		State string `json:"state"` // active | idle | stale
+		State           string `json:"state"` // active | idle | stale (legacy UI compatibility)
+		DeviceID        string `json:"device_id,omitempty"`
+		DisplayName     string `json:"display_name,omitempty"`
+		IdentityStatus  string `json:"identity_status"`
+		ConnectionState string `json:"connection_state"`
+		LastSeenAt      int64  `json:"last_seen_at,omitempty"`
+		LastSeenAgeMS   *int64 `json:"last_seen_age_ms,omitempty"`
 		// Running is meaningless unless HasProcs is true: a device with no
 		// agent (SSH-pulled) reports nothing, which is not the same as zero
 		// sessions and must not be rendered as "closed".
@@ -98,6 +104,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		Running  int  `json:"running"`
 	}
 	devViews := make([]devView, 0, len(devices))
+	viewByDevice := make(map[string]int, len(devices))
 	for _, d := range devices {
 		state := "stale"
 		age := now.UnixMilli() - d.LastTS
@@ -106,7 +113,49 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		} else if age <= deviceStale.Milliseconds() {
 			state = "idle"
 		}
-		devViews = append(devViews, devView{d, state, reports[d.Device], procCount[d.Device]})
+		viewByDevice[d.Device] = len(devViews)
+		devViews = append(devViews, devView{
+			DeviceStatus:    d,
+			State:           state,
+			IdentityStatus:  "legacy_unbound",
+			ConnectionState: "unknown",
+			HasProcs:        reports[d.Device],
+			Running:         procCount[d.Device],
+		})
+	}
+	registered, err := s.store.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range registered {
+		index, exists := viewByDevice[record.DeviceID]
+		if !exists {
+			index = len(devViews)
+			viewByDevice[record.DeviceID] = index
+			devViews = append(devViews, devView{
+				DeviceStatus: store.DeviceStatus{Device: record.DeviceID},
+				HasProcs:     reports[record.DeviceID],
+				Running:      procCount[record.DeviceID],
+			})
+		}
+		view := &devViews[index]
+		view.DeviceID = record.DeviceID
+		view.DisplayName = record.DisplayName
+		view.IdentityStatus = "registered"
+		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
+		view.LastSeenAt = record.LastSeenAt
+		if record.LastSeenAt > 0 {
+			age := max(now.UnixMilli()-record.LastSeenAt, 0)
+			view.LastSeenAgeMS = &age
+		}
+		switch view.ConnectionState {
+		case "online":
+			view.State = "active"
+		case "stale":
+			view.State = "idle"
+		default:
+			view.State = "stale"
+		}
 	}
 	sessions, err := s.store.ActiveSessions(now.Add(-burnWindow))
 	if err != nil {

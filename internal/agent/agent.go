@@ -16,6 +16,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
@@ -31,6 +33,8 @@ type Config struct {
 	DeviceToken     string
 	OutboxPath      string
 	OutboxMaxBytes  int64
+	AgentVersion    string
+	Capabilities    []string
 	DeviceName      string
 	ClaudeDirs      []string
 	CodexDirs       []string
@@ -43,6 +47,48 @@ type Config struct {
 	ProxyUpstreams map[string]string // prefix -> upstream base
 }
 
+type enrollmentRequest struct {
+	DeviceID     string   `json:"device_id"`
+	DeviceToken  string   `json:"device_token"`
+	DisplayName  string   `json:"display_name"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// Enroll registers a prepared stable identity using the independently scoped
+// admin credential. Credentials are never included in returned errors.
+func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) error {
+	if adminToken == "" {
+		return errors.New("admin credential is required")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	body, err := json.Marshal(enrollmentRequest{
+		DeviceID:     fc.DeviceID,
+		DeviceToken:  fc.DeviceToken,
+		DisplayName:  fc.Name,
+		Capabilities: []string{"events", "quotas", "procs", "heartbeat", "durable_outbox"},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", strings.TrimSuffix(serverURL, "/")+"/api/v2/enroll", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("enrollment request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("enrollment rejected: %s", resp.Status)
+	}
+	return nil
+}
+
 type Agent struct {
 	cfg    Config
 	state  *collect.State
@@ -52,6 +98,11 @@ type Agent struct {
 	bootID string
 	sleep  func(time.Duration)
 	jitter func() float64
+	now    func() time.Time
+
+	heartbeatSequence atomic.Uint64
+	lastScanAt        atomic.Int64
+	lastUploadAt      atomic.Int64
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -72,6 +123,7 @@ func New(cfg Config) (*Agent, error) {
 		probe:  collect.NewCachedProber(10 * time.Minute),
 		sleep:  time.Sleep,
 		jitter: mathrand.Float64,
+		now:    time.Now,
 	}
 	if cfg.ProtocolVersion == model.IngestProtocolV2 {
 		if cfg.DeviceID == "" || cfg.DeviceToken == "" {
@@ -129,6 +181,9 @@ func (a *Agent) RunOnce() (int, error) {
 		device = a.cfg.DeviceID
 	}
 	n, err := collect.ScanSources(specs, device, a.state, collect.LocalRepoResolver, sink, a.pushQuotas, a.cfg.Since)
+	if err == nil {
+		a.lastScanAt.Store(a.currentTime().UnixMilli())
+	}
 	if err != nil || !a.isV2() {
 		return n, err
 	}
@@ -147,7 +202,7 @@ func (a *Agent) reportProcs() error {
 	if a.isV2() {
 		device = a.cfg.DeviceID
 	}
-	report, err := collect.LiveProcesses(device, time.Now())
+	report, err := collect.LiveProcesses(device, a.currentTime())
 	if err != nil {
 		return err
 	}
@@ -186,11 +241,16 @@ func (a *Agent) Run() error {
 		} else if n > 0 {
 			log.Printf("agent: reported %d events", n)
 		}
-		procErr := a.reportProcs()
-		if procErr != nil {
-			log.Printf("agent: process report failed: %v", procErr)
+		var statusErr error
+		if a.isV2() {
+			statusErr = a.sendHeartbeat()
+		} else {
+			statusErr = a.reportProcs()
 		}
-		if err != nil || procErr != nil {
+		if statusErr != nil {
+			log.Printf("agent: status report failed: %v", statusErr)
+		}
+		if err != nil || statusErr != nil {
 			a.sleep(backoff.Next())
 			continue
 		}
@@ -218,6 +278,64 @@ func (a *Agent) isV2() bool {
 	return a.cfg.ProtocolVersion == model.IngestProtocolV2
 }
 
+func (a *Agent) currentTime() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
+}
+
+func (a *Agent) sendHeartbeat() error {
+	stats, err := a.outbox.Stats()
+	if err != nil {
+		return err
+	}
+	now := a.currentTime()
+	processState, err := collect.LiveProcesses(a.cfg.DeviceID, now)
+	if err != nil {
+		return err
+	}
+	capabilities := a.cfg.Capabilities
+	if len(capabilities) == 0 {
+		capabilities = []string{"events", "quotas", "procs", "heartbeat", "durable_outbox"}
+	}
+	heartbeat := model.Heartbeat{
+		ProtocolVersion: model.IngestProtocolV2,
+		DeviceID:        a.cfg.DeviceID,
+		AgentVersion:    a.cfg.AgentVersion,
+		BootID:          a.bootID,
+		Sequence:        a.heartbeatSequence.Add(1),
+		SentAt:          now.UnixMilli(),
+		Capabilities:    append([]string(nil), capabilities...),
+		QueuedBatches:   stats.QueuedBatches,
+		QueuedBytes:     stats.QueuedBytes,
+		OldestQueuedAt:  stats.OldestQueuedAt,
+		LastScanAt:      a.lastScanAt.Load(),
+		LastUploadAt:    a.lastUploadAt.Load(),
+		ProcessState:    &processState,
+	}
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/v2/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cfg.DeviceToken)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("heartbeat server %s: %s", resp.Status, msg)
+	}
+	return nil
+}
+
 func (a *Agent) enqueueEnvelope(envelope model.IngestEnvelopeV2) error {
 	sequence, err := a.outbox.NextSequence()
 	if err != nil {
@@ -232,7 +350,7 @@ func (a *Agent) enqueueEnvelope(envelope model.IngestEnvelopeV2) error {
 	envelope.BootID = a.bootID
 	envelope.BatchID = batchID
 	envelope.Sequence = sequence
-	envelope.CapturedAt = time.Now().UnixMilli()
+	envelope.CapturedAt = a.currentTime().UnixMilli()
 	return a.outbox.Enqueue(envelope)
 }
 
@@ -283,7 +401,11 @@ func (a *Agent) uploadOldest() error {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("decode ingest acknowledgement: trailing JSON")
 	}
-	return a.outbox.Acknowledge(ack)
+	if err := a.outbox.Acknowledge(ack); err != nil {
+		return err
+	}
+	a.lastUploadAt.Store(a.currentTime().UnixMilli())
+	return nil
 }
 
 func newUUID() (string, error) {

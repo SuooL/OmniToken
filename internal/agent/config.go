@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -117,4 +119,69 @@ func WriteSkeletonConfig(path string) error {
 	}
 	// 0600: this file carries the ingest token.
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// PrepareEnrollment fills the v2 identity exactly once. Subsequent enrollment
+// updates may change display metadata and server location without replacing
+// the device principal or its credential.
+func PrepareEnrollment(existing FileConfig, serverURL, displayName, deviceToken string) (FileConfig, error) {
+	if existing.DeviceID == "" {
+		deviceID, err := newUUID()
+		if err != nil {
+			return FileConfig{}, fmt.Errorf("generate device ID: %w", err)
+		}
+		existing.DeviceID = deviceID
+	}
+	if existing.DeviceToken == "" {
+		if deviceToken == "" {
+			var secret [32]byte
+			if _, err := rand.Read(secret[:]); err != nil {
+				return FileConfig{}, fmt.Errorf("generate device token: %w", err)
+			}
+			deviceToken = base64.RawURLEncoding.EncodeToString(secret[:])
+		}
+		existing.DeviceToken = deviceToken
+	} else if deviceToken != "" && deviceToken != existing.DeviceToken {
+		return FileConfig{}, fmt.Errorf("device token already exists; explicit rotation is required")
+	}
+	existing.ProtocolVersion = 2
+	existing.Server = serverURL
+	existing.Name = displayName
+	return existing, nil
+}
+
+// SaveFileConfig atomically persists credentials with owner-only permissions.
+func SaveFileConfig(path string, fc FileConfig) error {
+	data, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".agent-*.json")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(append(data, '\n')); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

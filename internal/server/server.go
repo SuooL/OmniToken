@@ -25,6 +25,7 @@ type Server struct {
 	state  *collect.State
 	prices *pricing.Table
 	bcast  *broadcaster
+	now    func() time.Time
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -100,7 +101,9 @@ func (s *Server) Run() error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", s.auth(s.handleIngest))
+	mux.HandleFunc("POST /api/v2/enroll", s.handleEnrollV2)
 	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
+	mux.HandleFunc("POST /api/v2/heartbeat", s.handleHeartbeatV2)
 	// Every read goes through readAuth. It is a no-op on a loopback-only
 	// server, so wrapping them all costs nothing in the common case and means
 	// adding an endpoint cannot accidentally leave one open.
@@ -135,6 +138,13 @@ func (s *Server) Run() error {
 		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
 	}
 	return http.ListenAndServe(s.cfg.Listen, mux)
+}
+
+func (s *Server) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // auth guards the write endpoints with the shared token, whenever one is set.

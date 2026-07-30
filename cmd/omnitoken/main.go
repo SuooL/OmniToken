@@ -9,6 +9,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,7 +36,13 @@ func main() {
 	case "serve":
 		runServe(os.Args[2:])
 	case "agent":
-		runAgent(os.Args[2:])
+		if len(os.Args) >= 3 && os.Args[2] == "enroll" {
+			if err := runAgentEnrollWith(os.Args[3:], os.Stdout); err != nil {
+				log.Fatalf("agent enroll: %v", err)
+			}
+		} else {
+			runAgent(os.Args[2:])
+		}
 	case "statusline":
 		runStatusline(os.Args[2:])
 	case "version":
@@ -49,6 +56,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-rescan]
+  omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
@@ -177,17 +185,23 @@ func runAgent(args []string) {
 		log.Fatalf("config: %v", err)
 	}
 	a, err := agent.New(agent.Config{
-		ServerURL:      strings.TrimSuffix(srvURL, "/"),
-		Token:          pick(*token, "OMNITOKEN_TOKEN", fc.Token),
-		DeviceName:     deviceName,
-		Since:          since,
-		ClaudeDirs:     claudeDirs,
-		CodexDirs:      codexDirs,
-		StatePath:      statePath,
-		Interval:       time.Duration(intervalSec) * time.Second,
-		RelayListen:    pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
-		ProxyListen:    pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
-		ProxyUpstreams: fc.ProxyUpstreams,
+		ServerURL:       strings.TrimSuffix(srvURL, "/"),
+		Token:           pick(*token, "OMNITOKEN_TOKEN", fc.Token),
+		ProtocolVersion: fc.EffectiveProtocolVersion(),
+		DeviceID:        fc.DeviceID,
+		DeviceToken:     pick("", "OMNITOKEN_DEVICE_TOKEN", fc.DeviceToken),
+		OutboxPath:      fc.Outbox,
+		OutboxMaxBytes:  fc.OutboxMaxBytes,
+		AgentVersion:    version,
+		DeviceName:      deviceName,
+		Since:           since,
+		ClaudeDirs:      claudeDirs,
+		CodexDirs:       codexDirs,
+		StatePath:       statePath,
+		Interval:        time.Duration(intervalSec) * time.Second,
+		RelayListen:     pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
+		ProxyListen:     pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
+		ProxyUpstreams:  fc.ProxyUpstreams,
 	})
 	if err != nil {
 		log.Fatalf("init: %v", err)
@@ -210,6 +224,64 @@ func runAgent(args []string) {
 		return
 	}
 	log.Fatal(a.Run())
+}
+
+func runAgentEnrollWith(args []string, output io.Writer) error {
+	fs := flag.NewFlagSet("agent enroll", flag.ContinueOnError)
+	fs.SetOutput(output)
+	configPath := fs.String("config", filepath.Join(server.DataDir(), "agent.json"), "agent config file (JSON)")
+	serverURL := fs.String("server", "", "hub base URL")
+	name := fs.String("name", "", "device display name (default: hostname)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	fc, err := agent.LoadFileConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	pick := func(flagValue, envKey, fileValue string) string {
+		if flagValue != "" {
+			return flagValue
+		}
+		if value := os.Getenv(envKey); value != "" {
+			return value
+		}
+		return fileValue
+	}
+	hub := pick(*serverURL, "OMNITOKEN_SERVER", fc.Server)
+	if hub == "" {
+		return fmt.Errorf("server URL is required")
+	}
+	admin := os.Getenv("OMNITOKEN_ADMIN_TOKEN")
+	if admin == "" {
+		return fmt.Errorf("admin credential is required")
+	}
+	displayName := pick(*name, "OMNITOKEN_NAME", fc.Name)
+	if displayName == "" {
+		displayName, err = os.Hostname()
+		if err != nil {
+			return fmt.Errorf("hostname: %w", err)
+		}
+	}
+	candidate, err := agent.PrepareEnrollment(
+		fc,
+		strings.TrimSuffix(hub, "/"),
+		displayName,
+		os.Getenv("OMNITOKEN_DEVICE_TOKEN"),
+	)
+	if err != nil {
+		return err
+	}
+	if err := agent.Enroll(candidate.Server, admin, candidate, nil); err != nil {
+		return err
+	}
+	if err := agent.SaveFileConfig(*configPath, candidate); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	fmt.Fprintf(output, "Enrolled device %s (%s); configuration saved to %s\n",
+		candidate.DeviceID, candidate.Name, *configPath)
+	return nil
 }
 
 // runStatusline must never fail loudly: Claude Code renders its output

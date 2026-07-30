@@ -177,3 +177,50 @@ func TestLoadFileConfigRejectsUnsupportedProtocol(t *testing.T) {
 		t.Fatal("unsupported protocol loaded without error")
 	}
 }
+
+func TestPrepareEnrollmentCreatesStableIdentityAndRenamePreservesIt(t *testing.T) {
+	first, err := PrepareEnrollment(FileConfig{IntervalSeconds: 15}, "https://hub.example", "Before", "fixed-device-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ProtocolVersion != 2 || first.DeviceID == "" || first.DeviceToken != "fixed-device-token" {
+		t.Fatalf("first enrollment config = %+v", first)
+	}
+
+	renamed, err := PrepareEnrollment(first, "https://hub.example", "After", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.DeviceID != first.DeviceID || renamed.DeviceToken != first.DeviceToken {
+		t.Fatalf("rename changed identity: before=%+v after=%+v", first, renamed)
+	}
+	if renamed.Name != "After" {
+		t.Fatalf("renamed display name = %q, want After", renamed.Name)
+	}
+}
+
+func TestSaveFileConfigPersistsEnrollmentWithMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "agent.json")
+	fc, err := PrepareEnrollment(FileConfig{}, "https://hub.example", "Agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveFileConfig(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DeviceID != fc.DeviceID || loaded.DeviceToken != fc.DeviceToken ||
+		loaded.ProtocolVersion != 2 || loaded.Server != "https://hub.example" {
+		t.Fatalf("loaded enrollment = %+v, want %+v", loaded, fc)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config mode = %#o, want 0600", got)
+	}
+}

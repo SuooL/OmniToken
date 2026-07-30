@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -223,5 +224,80 @@ func TestRetryBackoffIsExponentialJitterAndResets(t *testing.T) {
 	backoff.Reset()
 	if got := backoff.Next(); got != 500*time.Millisecond {
 		t.Fatalf("delay after reset=%v, want 500ms", got)
+	}
+}
+
+func TestSendHeartbeatIncludesIdentityCapabilitiesProcessAndOutboxStats(t *testing.T) {
+	var received model.Heartbeat
+	var authorization, path string
+	agent := v2TestAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		authorization = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"received_at": 123})
+	})
+	agent.cfg.AgentVersion = "test-version"
+	agent.cfg.Capabilities = []string{"events", "heartbeat"}
+	agent.bootID = outboxBootID
+	agent.now = func() time.Time { return time.UnixMilli(1_785_400_000_000) }
+	if err := agent.outbox.Enqueue(outboxEnvelope(outboxBatchA, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := agent.sendHeartbeat(); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/api/v2/heartbeat" || authorization != "Bearer device-secret" {
+		t.Fatalf("path=%q authorization=%q", path, authorization)
+	}
+	if received.ProtocolVersion != 2 || received.DeviceID != outboxDeviceID ||
+		received.BootID != outboxBootID || received.AgentVersion != "test-version" ||
+		received.Sequence != 1 || received.SentAt != 1_785_400_000_000 ||
+		received.QueuedBatches != 1 || received.QueuedBytes <= 0 ||
+		received.ProcessState == nil || received.ProcessState.Device != outboxDeviceID {
+		t.Fatalf("heartbeat = %#v", received)
+	}
+	if !reflect.DeepEqual(received.Capabilities, []string{"events", "heartbeat"}) {
+		t.Fatalf("capabilities = %v", received.Capabilities)
+	}
+	if err := agent.sendHeartbeat(); err != nil {
+		t.Fatal(err)
+	}
+	if received.Sequence != 2 {
+		t.Fatalf("second heartbeat sequence=%d, want 2", received.Sequence)
+	}
+}
+
+func TestRunOnceDoesNotSendResidentHeartbeat(t *testing.T) {
+	heartbeatRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/heartbeat" {
+			heartbeatRequests++
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	temp := t.TempDir()
+	agent, err := New(Config{
+		ServerURL:       server.URL,
+		ProtocolVersion: model.IngestProtocolV2,
+		DeviceID:        outboxDeviceID,
+		DeviceToken:     "device-secret",
+		ClaudeDirs:      []string{filepath.Join(temp, "claude")},
+		CodexDirs:       []string{filepath.Join(temp, "codex")},
+		StatePath:       filepath.Join(temp, "state.json"),
+		OutboxPath:      filepath.Join(temp, "outbox.db"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	if _, err := agent.RunOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeatRequests != 0 {
+		t.Fatalf("RunOnce sent %d resident heartbeats", heartbeatRequests)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 const deviceRegistrySchema = `
@@ -19,6 +21,12 @@ CREATE TABLE IF NOT EXISTS devices (
 	created_at INTEGER NOT NULL,
 	last_seen_at INTEGER NOT NULL DEFAULT 0,
 	revoked_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS device_heartbeats (
+	device_id TEXT PRIMARY KEY,
+	heartbeat TEXT NOT NULL,
+	received_at INTEGER NOT NULL,
+	FOREIGN KEY(device_id) REFERENCES devices(device_id)
 );
 `
 
@@ -35,6 +43,82 @@ type DeviceRecord struct {
 	CreatedAt    int64    `json:"created_at"`
 	LastSeenAt   int64    `json:"last_seen_at"`
 	RevokedAt    int64    `json:"revoked_at"`
+}
+
+func (s *Store) DeviceByID(deviceID string) (DeviceRecord, error) {
+	record, err := s.deviceByID(deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeviceRecord{}, ErrDeviceNotFound
+	}
+	return record, err
+}
+
+func (s *Store) ListDevices() ([]DeviceRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT device_id, display_name, token_hash, capabilities,
+		       created_at, last_seen_at, revoked_at
+		FROM devices
+		ORDER BY device_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []DeviceRecord
+	for rows.Next() {
+		var record DeviceRecord
+		var capabilitiesJSON string
+		if err := rows.Scan(
+			&record.DeviceID,
+			&record.DisplayName,
+			&record.TokenHash,
+			&capabilitiesJSON,
+			&record.CreatedAt,
+			&record.LastSeenAt,
+			&record.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(capabilitiesJSON), &record.Capabilities); err != nil {
+			return nil, fmt.Errorf("decode device capabilities: %w", err)
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// SaveHeartbeat coalesces latest-only agent state by server receipt time.
+// Client SentAt remains diagnostic and cannot displace a newer server receipt.
+func (s *Store) SaveHeartbeat(heartbeat model.Heartbeat, receivedAt int64) error {
+	encoded, err := json.Marshal(heartbeat)
+	if err != nil {
+		return fmt.Errorf("encode heartbeat: %w", err)
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO device_heartbeats(device_id, heartbeat, received_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(device_id) DO UPDATE SET
+			heartbeat = excluded.heartbeat,
+			received_at = excluded.received_at
+		WHERE excluded.received_at >= device_heartbeats.received_at`,
+		heartbeat.DeviceID, string(encoded), receivedAt,
+	)
+	return err
+}
+
+func (s *Store) LatestHeartbeat(deviceID string) (model.Heartbeat, int64, error) {
+	var encoded string
+	var receivedAt int64
+	if err := s.db.QueryRow(
+		`SELECT heartbeat, received_at FROM device_heartbeats WHERE device_id = ?`,
+		deviceID,
+	).Scan(&encoded, &receivedAt); err != nil {
+		return model.Heartbeat{}, 0, err
+	}
+	var heartbeat model.Heartbeat
+	if err := json.Unmarshal([]byte(encoded), &heartbeat); err != nil {
+		return model.Heartbeat{}, 0, fmt.Errorf("decode heartbeat: %w", err)
+	}
+	return heartbeat, receivedAt, nil
 }
 
 // RegisterDevice creates a stable device principal. Re-registering a device ID

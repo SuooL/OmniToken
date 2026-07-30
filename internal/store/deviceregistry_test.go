@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 const (
@@ -209,6 +211,60 @@ func TestUpdateDeviceMetadataReturnsNotFound(t *testing.T) {
 	err := s.UpdateDeviceMetadata(testDeviceIDA, "Missing", []string{"events"})
 	if !errors.Is(err, ErrDeviceNotFound) {
 		t.Fatalf("error = %v, want ErrDeviceNotFound", err)
+	}
+}
+
+func TestSaveHeartbeatKeepsLatestServerReceivedSnapshot(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.RegisterDevice(testDeviceIDA, "Agent", "token-a", []string{"events"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	newer := model.Heartbeat{
+		ProtocolVersion: 2,
+		DeviceID:        testDeviceIDA,
+		BootID:          "018f2d5a-7b31-7d98-bf8e-3c2f35a1c001",
+		Sequence:        8,
+		SentAt:          9_999_999_999,
+		Capabilities:    []string{"events", "heartbeat"},
+		QueuedBatches:   3,
+		QueuedBytes:     400,
+	}
+	if err := s.SaveHeartbeat(newer, 2_000); err != nil {
+		t.Fatal(err)
+	}
+	older := newer
+	older.Sequence = 7
+	older.QueuedBatches = 99
+	if err := s.SaveHeartbeat(older, 1_000); err != nil {
+		t.Fatal(err)
+	}
+	got, receivedAt, err := s.LatestHeartbeat(testDeviceIDA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, newer) || receivedAt != 2_000 {
+		t.Fatalf("latest heartbeat = %#v at %d, want %#v at 2000", got, receivedAt, newer)
+	}
+}
+
+func TestListDevicesIncludesRegisteredDevicesWithoutUsage(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.RegisterDevice(testDeviceIDB, "B", "token-b", nil, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterDevice(testDeviceIDA, "A", "token-a", []string{"events"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchDevice(testDeviceIDA, 30); err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.ListDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].DeviceID != testDeviceIDA || records[0].LastSeenAt != 30 ||
+		records[1].DeviceID != testDeviceIDB {
+		t.Fatalf("device records = %#v", records)
 	}
 }
 
