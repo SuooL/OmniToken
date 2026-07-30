@@ -19,52 +19,75 @@
   </header>
 
   <div id="main">
-    <!-- The tightest live quota, on the same dial the menubar wears. -->
-    <section class="hero" id="hero">
-      <svg class="ring" id="ring" viewBox="0 0 100 100" aria-hidden="true">
-        <circle class="track" cx="50" cy="50" r="41.75"
-                stroke-dasharray="196.71 262.28"></circle>
-        <circle class="fill" id="ring-fill" cx="50" cy="50" r="41.75"></circle>
+    <!-- The one question a menubar glance is for: will this window run out
+         before it resets. -->
+    <section class="forecast" id="forecast">
+      <div class="eyebrow" id="fc-window">—</div>
+      <div class="fc-read">
+        <span class="fc-now" id="fc-now">—</span>
+        <span class="fc-arrow" id="fc-arrow" aria-hidden="true">→</span>
+        <span class="fc-proj" id="fc-proj"></span>
+        <span class="fc-reset" id="fc-reset"></span>
+      </div>
+
+      <!-- Three line styles, each meaning something: dotted for a path we do
+           not know, a solid dot for the one reading we do, dashed for the
+           forecast. See app.js drawTrack. -->
+      <svg class="track" id="track" viewBox="0 0 314 46" preserveAspectRatio="none"
+           role="img" aria-labelledby="track-desc">
+        <desc id="track-desc"></desc>
+        <line class="baseline" x1="2" y1="40.5" x2="312" y2="40.5"></line>
+        <!-- The wall, labelled on the line itself: a "100%" caption stranded in
+             the axis row below has nothing to point at. The tag sits at the LEFT
+             end — a breach climbs towards the top right, so a right-hand tag is
+             exactly where the red dashes cross it. -->
+        <g id="track-ceiling" hidden>
+          <text class="ceiling-tag" x="2" y="10.3">100%</text>
+          <line class="ceiling" x1="26" y1="7.3" x2="312" y2="7.3"></line>
+        </g>
+        <path class="past" id="track-past" d=""></path>
+        <path class="future" id="track-future" d=""></path>
+        <path class="breach" id="track-breach" d=""></path>
+        <line class="nowline" id="track-nowline" x1="0" y1="0" x2="0" y2="0"></line>
+        <circle class="nowdot" id="track-nowdot" r="2.6" cx="-9" cy="-9"></circle>
       </svg>
-      <div class="hero-read">
-        <div class="hero-value" id="hero-value">—</div>
-        <div class="hero-name" id="hero-name">配额</div>
-        <div class="hero-sub" id="hero-sub"></div>
+      <div class="axis">
+        <span id="ax-start"></span>
+        <span class="axis-mid" id="ax-ceiling"></span>
+        <span id="ax-end"></span>
       </div>
     </section>
 
-    <section class="tiles">
-      <!-- Generation speed leads: it is the most live figure on the payload and
-           the one M5 raised to P0 (ADR-0009). -->
-      <div class="tile" id="tile-speed">
-        <div class="label">生成速度</div>
-        <div class="value" id="speed-value">—</div>
-        <div class="sub" id="speed-sub"></div>
+    <!-- Hairline-divided readouts rather than cards: this is an instrument
+         panel, and three bordered boxes in a row is the dashboard default. -->
+    <section class="readouts">
+      <div class="ro" id="ro-speed">
+        <div class="eyebrow">生成</div>
+        <div class="fig" id="speed-value">—</div>
       </div>
-      <div class="tile" id="tile-burn">
-        <div class="label">燃烧速率</div>
-        <div class="value" id="burn-value">—</div>
-        <div class="sub" id="burn-sub"></div>
+      <div class="ro" id="ro-burn">
+        <div class="eyebrow">燃烧</div>
+        <div class="fig" id="burn-value">—</div>
       </div>
-      <div class="tile" id="tile-today">
-        <div class="label">今日</div>
-        <div class="value" id="today-value">—</div>
-        <div class="sub" id="today-sub"></div>
+      <div class="ro" id="ro-today">
+        <div class="eyebrow">今日</div>
+        <div class="fig" id="today-value">—</div>
       </div>
     </section>
 
+    <!-- Union of generation intervals over the burn window. -->
     <section class="strip" id="strip" hidden>
-      <div class="track" id="strip-track"></div>
-      <span class="note" id="strip-note"></span>
+      <div class="strip-track" id="strip-track"></div>
+      <span class="strip-note" id="strip-note"></span>
     </section>
 
-    <section class="quotas" id="quotas"></section>
+    <section class="others" id="others"></section>
 
     <section class="procs" id="procs"></section>
   </div>
 
   <section id="settings" class="settings" hidden>
-    <label class="field" for="server-input">服务端地址</label>
+    <label class="eyebrow" for="server-input">服务端地址</label>
     <input id="server-input" type="text" placeholder="127.0.0.1:8787"
            spellcheck="false" autocapitalize="off" autocorrect="off">
     <div class="hint">运行 <code>omnitoken serve</code> 的地址。省略 http:// 也可以。</div>
