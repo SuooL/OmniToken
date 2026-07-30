@@ -99,6 +99,17 @@ func (s *Server) Run() error {
 	if s.cfg.Token == "" {
 		log.Printf("WARNING: no ingest token configured (\"token\" in config) — anyone who can reach %s can submit data", s.cfg.Listen)
 	}
+	mux := s.routes()
+
+	if s.loopbackOnly() {
+		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
+	} else {
+		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
+	}
+	return newHTTPServer(s.cfg.Listen, mux).ListenAndServe()
+}
+
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", s.auth(s.handleIngest))
 	mux.HandleFunc("POST /api/v2/enroll", s.handleEnrollV2)
@@ -131,13 +142,7 @@ func (s *Server) Run() error {
 	// on the initial navigation — so the shell is served open and every XHR it
 	// makes is authenticated. Nothing in the static files is private.
 	mux.Handle("GET /", http.FileServerFS(web.FS))
-
-	if s.loopbackOnly() {
-		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
-	} else {
-		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
-	}
-	return newHTTPServer(s.cfg.Listen, mux).ListenAndServe()
+	return mux
 }
 
 func newHTTPServer(address string, handler http.Handler) *http.Server {
