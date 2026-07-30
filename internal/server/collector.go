@@ -2,6 +2,7 @@ package server
 
 import (
 	"log"
+	"math/rand"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
@@ -9,13 +10,48 @@ import (
 	"github.com/suool/omnitoken/internal/store"
 )
 
+const (
+	sshMinInterval = time.Minute
+	sshJitterMax   = 15 * time.Second
+)
+
+type sshScheduler struct {
+	jitter  func(time.Duration) time.Duration
+	nextDue time.Time
+}
+
+func newSSHScheduler(jitter func(time.Duration) time.Duration) *sshScheduler {
+	return &sshScheduler{jitter: jitter}
+}
+
+// Due reports whether an SSH pull should run at now and advances the deadline
+// only when it does. Deadlines use elapsed time rather than a truncated tick
+// count, so odd local intervals can delay a pull but can never run one early.
+func (s *sshScheduler) Due(now time.Time) bool {
+	if !s.nextDue.IsZero() && now.Before(s.nextDue) {
+		return false
+	}
+	jitter := s.jitter(sshJitterMax)
+	jitter = min(max(jitter, 0), sshJitterMax)
+	s.nextDue = now.Add(sshMinInterval + jitter)
+	return true
+}
+
+func randomSSHJitter(bound time.Duration) time.Duration {
+	if bound <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(bound) + 1))
+}
+
 // runCollectors periodically scans the server machine's own logs (push-free
 // for the host) and pulls remote hosts over SSH. First run performs the full
 // historical backfill automatically because all offsets start at zero.
 func (s *Server) runCollectors() {
 	interval := time.Duration(s.cfg.Collect.IntervalSeconds) * time.Second
-	// SSH pulls are heavier; run them on a slower cadence (min 60s).
-	sshEvery := max(4, int(time.Minute/interval))
+	// SSH pulls are heavier. They run immediately once, then on an elapsed-time
+	// cadence of at least 60s with bounded jitter so a fleet does not synchronize.
+	sshSchedule := newSSHScheduler(randomSSHJitter)
 	// Broadcast hooks the storage layer: the local-collector path must notify
 	// SSE subscribers exactly like HTTP ingest does (references.md).
 	probe := collect.NewCachedProber(10 * time.Minute)
@@ -65,7 +101,7 @@ func (s *Server) runCollectors() {
 			s.bcast.Notify()
 		}
 	}
-	for tick := 0; ; tick++ {
+	for {
 		if s.cfg.LocalEnabled() {
 			procSink()
 			if qs := quotaReader.Collect(time.Now()); len(qs) > 0 {
@@ -83,7 +119,7 @@ func (s *Server) runCollectors() {
 				log.Printf("collect[local]: %d events", n)
 			}
 		}
-		if tick%sshEvery == 0 {
+		if sshSchedule.Due(time.Now()) {
 			for _, h := range s.cfg.Collect.SSHHosts {
 				since, err := h.SinceTime()
 				if err != nil {
