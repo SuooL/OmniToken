@@ -3,29 +3,64 @@
 <head>
 <meta charset="utf-8">
 <title>OmniToken</title>
+<!-- tokens.css is shared verbatim with the nine-page panel (ADR-0014); the
+     `viz-root` class on <body> is the scope those tokens are defined against. -->
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="viz-root">
 <div class="panel">
   <header>
-    <span class="title">OmniToken</span>
-    <span class="stamp" id="stamp"></span>
+    <span class="mark">OmniToken</span>
+    <!-- Says which channel the numbers arrived on. aria-live because it can
+         change without the user doing anything, and "these figures are 60s old"
+         is the kind of thing a screen reader user must not have to poll for. -->
+    <span class="link" id="link" data-mode="" aria-live="polite">连接中…</span>
   </header>
 
   <div id="main">
-    <section id="quotas" class="quotas"></section>
-
-    <section class="stat">
-      <div class="label">新增 token 速率</div>
-      <div class="value" id="burn-rate">—</div>
-      <div class="sub" id="burn-sub"></div>
+    <!-- The tightest live quota, on the same dial the menubar wears. -->
+    <section class="hero" id="hero">
+      <svg class="ring" id="ring" viewBox="0 0 100 100" aria-hidden="true">
+        <circle class="track" cx="50" cy="50" r="41.75"
+                stroke-dasharray="196.71 262.28"></circle>
+        <circle class="fill" id="ring-fill" cx="50" cy="50" r="41.75"></circle>
+      </svg>
+      <div class="hero-read">
+        <div class="hero-value" id="hero-value">—</div>
+        <div class="hero-name" id="hero-name">配额</div>
+        <div class="hero-sub" id="hero-sub"></div>
+      </div>
     </section>
 
-    <section class="stat">
-      <div class="label">今日</div>
-      <div class="value" id="today-tokens">—</div>
-      <div class="sub" id="today-sub"></div>
+    <section class="tiles">
+      <!-- Generation speed leads: it is the most live figure on the payload and
+           the one M5 raised to P0 (ADR-0009). -->
+      <div class="tile" id="tile-speed">
+        <div class="label">生成速度</div>
+        <div class="value" id="speed-value">—</div>
+        <div class="sub" id="speed-sub"></div>
+      </div>
+      <div class="tile" id="tile-burn">
+        <div class="label">燃烧速率</div>
+        <div class="value" id="burn-value">—</div>
+        <div class="sub" id="burn-sub"></div>
+      </div>
+      <div class="tile" id="tile-today">
+        <div class="label">今日</div>
+        <div class="value" id="today-value">—</div>
+        <div class="sub" id="today-sub"></div>
+      </div>
     </section>
+
+    <section class="strip" id="strip" hidden>
+      <div class="track" id="strip-track"></div>
+      <span class="note" id="strip-note"></span>
+    </section>
+
+    <section class="quotas" id="quotas"></section>
+
+    <section class="procs" id="procs"></section>
   </div>
 
   <section id="settings" class="settings" hidden>
@@ -33,18 +68,21 @@
     <input id="server-input" type="text" placeholder="127.0.0.1:8787"
            spellcheck="false" autocapitalize="off" autocorrect="off">
     <div class="hint">运行 <code>omnitoken serve</code> 的地址。省略 http:// 也可以。</div>
-    <div class="msg" id="settings-msg"></div>
+    <div class="msg" id="settings-msg" aria-live="polite"></div>
     <div class="actions">
-      <button type="button" id="settings-cancel" class="ghost">取消</button>
+      <button type="button" id="settings-cancel">取消</button>
       <button type="button" id="settings-save" class="primary">保存</button>
     </div>
   </section>
 
   <footer>
     <span class="server" id="server"></span>
-    <button type="button" id="open-settings" class="link">设置</button>
+    <button type="button" id="open-settings" class="textlink">设置</button>
   </footer>
 </div>
+<!-- format-core.js is shared verbatim with the panel, so both surfaces write a
+     number the same way (ADR-0014). -->
+<script src="format-core.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

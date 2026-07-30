@@ -11,14 +11,19 @@
       {
         "label": "panel",
         "title": "OmniToken",
-        "width": 320,
-        "height": 420,
+        "width": 340,
+        "height": 430,
         "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visible": false
+        "visible": false,
+        "windowEffects": {
+          "effects": ["popover"],
+          "state": "active",
+          "radius": 14
+        }
       }
     ],
     "security": {

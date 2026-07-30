@@ -145,12 +145,12 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 项 | 状态 | 备注 |
 |---|---|---|
 | ADR-0014 + F24 范围重定 | ✅ 完成 | 修订 ADR-0008 第 4 条:弹窗从「精简视图」扩为实时视图;SSE 桥不再推迟 |
-| 设计令牌单一来源(F24) | 进行中 | 抽 `web/tokens.css` + `web/format-core.js` 为唯一来源,`desktop/ui/` 用副本,`make desktop-check` 以 `diff` 卡漂移。不引打包器 —— 维持 ADR-0002/0010 的零构建链 |
-| 弹窗视觉重做(F24) | 进行中 | 原生 `windowEffects` 毛玻璃取代 CSS 卡片;环形表盘复用托盘图标的 135°/270° 几何;不引图表库;动效遵循 `prefers-reduced-motion`,meter 补 `role`/`aria-valuenow` |
+| 设计令牌单一来源(F24) | ✅ 完成 | 抽 `web/tokens.css` + `web/format-core.js` 为唯一来源,`desktop/ui/` 用副本,`make desktop-sync-check` 以 `cmp` 卡漂移(已实测:改副本即失败)。不引打包器 —— 维持 ADR-0002/0010 的零构建链。顺带把 `web` 的 `go:embed` 从点名 `style.css` 改为 `*.css`:点名会让新增样式表静默 404,而 404 的 `text/plain` 正文被浏览器拒绝当样式表用,整个面板会**无令牌**渲染却每个文件看着都在 |
+| 弹窗视觉重做(F24) | ✅ 完成 | 原生 `windowEffects` 毛玻璃取代 CSS 卡片;环形表盘复用托盘图标的 135°/270° 几何,并沿用它「无信号画虚线环」的判断(实心空环等于 0%,会把连不上说成没用过);高度按内容自适应,取代固定 420px + 内滚;不引图表库;动效遵循 `prefers-reduced-motion`,meter 补 `role`/`aria-valuenow` |
 | 托盘右键菜单(F24) | 进行中 | `show_menu_on_left_click(false)`,左键仍切弹窗。补齐**退出**、打开完整面板、设置、开机自启、配额预警、全局快捷键 |
 | SSE 实时桥(F24) | 进行中 | Rust 侧一条 `/api/v1/stream`,同一快照喂 webview + 托盘图标 + 托盘数字 + 预警;断流退回轮询 `/api/v1/live`(1s→30s 退避)并在界面标注降级 |
 | 菜单栏数字(F24) | 进行中 | `set_title`:关闭 / 配额% / 生成速度,默认关闭。Windows 不支持该 API |
-| 生成速度进弹窗(F15/F24) | 进行中 | 载荷里的 `speed` 此前完全没渲染 —— P0 指标只在浏览器里可见,与 M5 的优先级正好相反 |
+| 生成速度进弹窗(F15/F24) | ✅ 完成 | 载荷里的 `speed` 此前完全没渲染 —— P0 指标只在浏览器里可见,与 M5 的优先级正好相反。一并补上 `processes` / `devices` 摘要与 10 分钟生成活动条(用 `speed.spans`,不自己攒时序:载荷给的是「何时在生成」,攒出来的曲线只能说明弹窗开了多久) |
 | 配额预警通知(F24) | 进行中 | 跨 75%/90% 各推一次,按 `(source, scope, resets_at, threshold)` 去重;`resets_at` 变化即重新武装 |
 | 设置结构演进(F24) | 进行中 | `Settings` 加字段必须逐个 `#[serde(default)]`:`load()` 对任何解析失败都静默回落默认值,否则老 `settings.json` 会让用户填过的地址被悄悄重置 |
 

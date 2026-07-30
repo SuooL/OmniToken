@@ -11,7 +11,12 @@ LDFLAGS := -X main.version=$(VERSION)
 
 GOSRC   := ./cmd ./internal
 
-.PHONY: build test vet fmt fmt-check cover check clean release desktop desktop-check
+.PHONY: build test vet fmt fmt-check cover check clean release desktop desktop-check \
+        desktop-sync desktop-sync-check
+
+# Files the web panel and the menubar popover share verbatim (ADR-0014).
+# web/ is the source of truth; desktop/ui/ holds copies.
+SHARED_UI := tokens.css format-core.js
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/omnitoken
@@ -53,8 +58,30 @@ check: fmt-check vet cover build
 desktop:
 	cd desktop/src-tauri && cargo build
 
-desktop-check:
+desktop-check: desktop-sync-check
 	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
+
+# Copy the shared design tokens and formatters into the popover.
+# Run after editing the web/ originals; never edit the copies.
+desktop-sync:
+	@for f in $(SHARED_UI); do cp web/$$f desktop/ui/$$f && echo "  synced $$f"; done
+
+# Fail if a copy has drifted from its source. The problem with a copy was never
+# that it exists — it is that nobody notices when it changes: desktop/ui's
+# stylesheet claimed to mirror web/style.css for a whole milestone after it had
+# stopped doing so. Same stance as fmt-check: a convention that can be checked
+# mechanically should not rely on anyone remembering it.
+desktop-sync-check:
+	@drift=""; \
+	for f in $(SHARED_UI); do \
+		if ! cmp -s web/$$f desktop/ui/$$f; then drift="$$drift $$f"; fi; \
+	done; \
+	if [ -n "$$drift" ]; then \
+		echo "以下共享文件与 web/ 下的来源不一致,运行 make desktop-sync 修复:"; \
+		for f in $$drift; do echo "  desktop/ui/$$f"; done; \
+		exit 1; \
+	fi
+	@echo "shared ui: in sync"
 
 # Cross-compile the common personal-fleet targets into dist/.
 release: clean
