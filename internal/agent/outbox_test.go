@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/suool/omnitoken/internal/model"
@@ -121,9 +124,11 @@ func TestOutboxSequenceSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sequence, err := outbox.NextSequence()
-	if err != nil || sequence != 1 {
-		t.Fatalf("first sequence = %d, err=%v", sequence, err)
+	first := outboxEnvelope(outboxBatchA, 0)
+	first.Sequence = 0
+	first, err = outbox.EnqueueNext(first)
+	if err != nil || first.Sequence != 1 {
+		t.Fatalf("first sequence = %d, err=%v", first.Sequence, err)
 	}
 	if err := outbox.Close(); err != nil {
 		t.Fatal(err)
@@ -133,9 +138,116 @@ func TestOutboxSequenceSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer outbox.Close()
-	sequence, err = outbox.NextSequence()
-	if err != nil || sequence != 2 {
-		t.Fatalf("sequence after restart = %d, err=%v", sequence, err)
+	second := outboxEnvelope(outboxBatchB, 0)
+	second.Sequence = 0
+	second, err = outbox.EnqueueNext(second)
+	if err != nil || second.Sequence != 2 {
+		t.Fatalf("sequence after restart = %d, err=%v", second.Sequence, err)
+	}
+}
+
+func TestOutboxConcurrentEnqueueNextKeepsFIFOSequenceMonotonic(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	const producers = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, producers)
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			envelope := outboxEnvelope(
+				fmt.Sprintf("018f2d5a-7b31-7d98-bf8e-%012x", i+1),
+				0,
+			)
+			envelope.Sequence = 0
+			_, err := outbox.EnqueueNext(envelope)
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := outbox.db.Query(`SELECT envelope FROM outbox_batches ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var want uint64 = 1
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var envelope model.IngestEnvelopeV2
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Sequence != want {
+			t.Fatalf("FIFO sequence = %d, want %d", envelope.Sequence, want)
+		}
+		want++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want != producers+1 {
+		t.Fatalf("rows = %d, want %d", want-1, producers)
+	}
+}
+
+func TestOutboxRejectsProtocolOversizeEnvelopeBeforePersistence(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	envelope := outboxEnvelope(outboxBatchA, 1)
+	envelope.Events[0].CWD = string(make([]byte, model.MaxIngestEnvelopeBytes))
+	if err := outbox.Enqueue(envelope); !errors.Is(err, ErrEnvelopeTooLarge) {
+		t.Fatalf("oversize error = %v, want ErrEnvelopeTooLarge", err)
+	}
+	stats, err := outbox.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.QueuedBatches != 0 {
+		t.Fatalf("oversize envelope persisted: %#v", stats)
+	}
+}
+
+func TestOutboxEnqueueManyNextIsAtomicUnderCapacityPressure(t *testing.T) {
+	probe := openTestOutbox(t, filepath.Join(t.TempDir(), "probe.db"), DefaultOutboxMaxBytes)
+	one := outboxEnvelope(outboxBatchA, 1)
+	if err := probe.Enqueue(one); err != nil {
+		t.Fatal(err)
+	}
+	probeStats, err := probe.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), probeStats.QueuedBytes)
+	first := outboxEnvelope(outboxBatchA, 0)
+	first.Sequence = 0
+	second := outboxEnvelope(outboxBatchB, 0)
+	second.Sequence = 0
+	if _, err := outbox.EnqueueManyNext([]model.IngestEnvelopeV2{first, second}); !errors.Is(err, ErrOutboxFull) {
+		t.Fatalf("group error = %v, want ErrOutboxFull", err)
+	}
+	stats, err := outbox.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.QueuedBatches != 0 || stats.QueuedBytes != 0 {
+		t.Fatalf("partial group persisted: %#v", stats)
+	}
+	got, err := outbox.EnqueueNext(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sequence != 1 {
+		t.Fatalf("rolled-back group consumed sequence: got %d, want 1", got.Sequence)
 	}
 }
 

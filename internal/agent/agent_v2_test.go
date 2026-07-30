@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -127,6 +128,13 @@ func TestUploadOldestRetainsBatchForEveryUntrustedResponse(t *testing.T) {
 			ack.AckSequence++
 			_ = json.NewEncoder(w).Encode(ack)
 		}},
+		{name: "ack beyond response limit", handler: func(w http.ResponseWriter, _ *http.Request) {
+			envelope := outboxEnvelope(outboxBatchA, 9)
+			payload, _ := json.Marshal(ackFor(envelope))
+			_, _ = w.Write(payload)
+			_, _ = io.WriteString(w, string(make([]byte, ingestAckBodyMax)))
+			_, _ = io.WriteString(w, `{}`)
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,6 +151,74 @@ func TestUploadOldestRetainsBatchForEveryUntrustedResponse(t *testing.T) {
 				t.Fatalf("oldest after failure = %#v, err=%v", got, err)
 			}
 		})
+	}
+}
+
+func TestV2PushSplitsOversizeEventsWithoutPersistingOversizeRows(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	agent := &Agent{
+		cfg: Config{
+			ProtocolVersion: model.IngestProtocolV2,
+			DeviceID:        outboxDeviceID,
+			DeviceToken:     "device-secret",
+		},
+		outbox: outbox,
+		bootID: outboxBootID,
+		now:    func() time.Time { return time.UnixMilli(1_785_400_000_000) },
+	}
+	large := string(bytes.Repeat([]byte("x"), model.MaxIngestEnvelopeBytes/2))
+	events := []model.Event{
+		{EventID: "large-a", TS: 1, Device: outboxDeviceID, CWD: large},
+		{EventID: "large-b", TS: 2, Device: outboxDeviceID, CWD: large},
+	}
+	if err := agent.push(events); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := outbox.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.QueuedBatches != 2 {
+		t.Fatalf("queued batches = %d, want 2", stats.QueuedBatches)
+	}
+	rows, err := outbox.db.Query(`SELECT length(envelope) FROM outbox_batches`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var size int
+		if err := rows.Scan(&size); err != nil {
+			t.Fatal(err)
+		}
+		if size > model.MaxIngestEnvelopeBytes {
+			t.Fatalf("persisted envelope size = %d, max %d", size, model.MaxIngestEnvelopeBytes)
+		}
+	}
+}
+
+func TestV2PushRejectsSingleOversizeEventWithoutPartialPersistence(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	agent := &Agent{
+		cfg:    Config{ProtocolVersion: model.IngestProtocolV2, DeviceID: outboxDeviceID},
+		outbox: outbox,
+		bootID: outboxBootID,
+	}
+	event := model.Event{
+		EventID: "too-large",
+		TS:      1,
+		Device:  outboxDeviceID,
+		CWD:     string(bytes.Repeat([]byte("x"), model.MaxIngestEnvelopeBytes)),
+	}
+	if err := agent.push([]model.Event{event}); !errors.Is(err, ErrEnvelopeTooLarge) {
+		t.Fatalf("error = %v, want ErrEnvelopeTooLarge", err)
+	}
+	stats, err := outbox.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.QueuedBatches != 0 {
+		t.Fatalf("partial persistence after oversize event: %#v", stats)
 	}
 }
 

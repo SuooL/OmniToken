@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	mathrand "math/rand"
 	"net/http"
 	"net/http/httputil"
@@ -24,6 +25,8 @@ import (
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/proxy"
 )
+
+const ingestAckBodyMax int64 = 1 << 20
 
 type Config struct {
 	ServerURL       string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
@@ -261,7 +264,7 @@ func (a *Agent) Run() error {
 
 func (a *Agent) push(events []model.Event) error {
 	if a.isV2() {
-		return a.enqueueEnvelope(model.IngestEnvelopeV2{Kind: model.IngestKindEvents, Events: events})
+		return a.enqueueEvents(events)
 	}
 	return a.postIngest(map[string]any{"events": events})
 }
@@ -337,21 +340,70 @@ func (a *Agent) sendHeartbeat() error {
 }
 
 func (a *Agent) enqueueEnvelope(envelope model.IngestEnvelopeV2) error {
-	sequence, err := a.outbox.NextSequence()
+	prepared, err := a.prepareEnvelope(envelope)
 	if err != nil {
 		return err
 	}
+	_, err = a.outbox.EnqueueNext(prepared)
+	return err
+}
+
+func (a *Agent) enqueueEvents(events []model.Event) error {
+	envelopes, err := a.partitionEventEnvelopes(events)
+	if err != nil {
+		return err
+	}
+	_, err = a.outbox.EnqueueManyNext(envelopes)
+	return err
+}
+
+func (a *Agent) partitionEventEnvelopes(events []model.Event) ([]model.IngestEnvelopeV2, error) {
+	prepared, err := a.prepareEnvelope(model.IngestEnvelopeV2{
+		Kind:   model.IngestKindEvents,
+		Events: events,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Size using the longest possible decimal sequence. EnqueueManyNext will
+	// assign a value no wider than this, so a chunk accepted here cannot grow
+	// beyond the shared Hub limit when persisted.
+	sizeProbe := prepared
+	sizeProbe.Sequence = math.MaxUint64
+	payload, err := json.Marshal(sizeProbe)
+	if err != nil {
+		return nil, fmt.Errorf("encode ingest envelope: %w", err)
+	}
+	if len(payload) <= model.MaxIngestEnvelopeBytes {
+		return []model.IngestEnvelopeV2{prepared}, nil
+	}
+	if len(events) <= 1 {
+		return nil, ErrEnvelopeTooLarge
+	}
+	middle := len(events) / 2
+	left, err := a.partitionEventEnvelopes(events[:middle])
+	if err != nil {
+		return nil, err
+	}
+	right, err := a.partitionEventEnvelopes(events[middle:])
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
+}
+
+func (a *Agent) prepareEnvelope(envelope model.IngestEnvelopeV2) (model.IngestEnvelopeV2, error) {
 	batchID, err := newUUID()
 	if err != nil {
-		return fmt.Errorf("generate batch ID: %w", err)
+		return model.IngestEnvelopeV2{}, fmt.Errorf("generate batch ID: %w", err)
 	}
 	envelope.ProtocolVersion = model.IngestProtocolV2
 	envelope.DeviceID = a.cfg.DeviceID
 	envelope.BootID = a.bootID
 	envelope.BatchID = batchID
-	envelope.Sequence = sequence
+	envelope.Sequence = 0
 	envelope.CapturedAt = a.currentTime().UnixMilli()
-	return a.outbox.Enqueue(envelope)
+	return envelope, nil
 }
 
 func (a *Agent) drainOutbox() (int, error) {
@@ -392,8 +444,15 @@ func (a *Agent) uploadOldest() error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("server %s: %s", resp.Status, msg)
 	}
+	ackBody, err := io.ReadAll(io.LimitReader(resp.Body, ingestAckBodyMax+1))
+	if err != nil {
+		return fmt.Errorf("read ingest acknowledgement: %w", err)
+	}
+	if int64(len(ackBody)) > ingestAckBodyMax {
+		return errors.New("decode ingest acknowledgement: response too large")
+	}
 	var ack model.IngestAckV2
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	decoder := json.NewDecoder(bytes.NewReader(ackBody))
 	if err := decoder.Decode(&ack); err != nil {
 		return fmt.Errorf("decode ingest acknowledgement: %w", err)
 	}
