@@ -10,6 +10,10 @@
 // 高亮、渐变与自适应都不值得再手写一遍 SVG。此前这两张图是手绘的,没有
 // 十字准星,tooltip 是自己挂在透明 hit 区上的一套平行实现。
 
+function modelsIsEmpty(data) {
+  return !(data.by_source || []).some((row) => (row.total_tokens || 0) > 0);
+}
+
 const ModelsView = {
   // 固定槽位:即使某来源当前无数据也占住它的色号,换时间窗颜色不会漂移。
   ORDER: ["claude-code", "codex", "proxy"],
@@ -19,6 +23,7 @@ const ModelsView = {
   DAYS: 30,
   _timer: null,
   lastData: null,
+  _loadGeneration: 0,
 
   enter() {
     this.load();
@@ -27,21 +32,33 @@ const ModelsView = {
 
   leave() {
     clearInterval(this._timer);
+    this._loadGeneration += 1;
   },
 
   async load() {
+    const loadID = ++this._loadGeneration;
     const root = document.getElementById("view-models");
     if (!this.lastData) {
       renderState(root, { kind: "loading", title: "正在加载模型数据" });
     }
     try {
       // top=4:每日图最多 4 个模型 + 「其他」,正好用满调色板,不新造色相。
-      this.lastData = await Api.get(`/api/v1/models?days=${this.DAYS}&top=4`);
-      this.render(this.lastData);
-      renderState(root, { kind: "ready", title: "" });
+      const data = await Api.get(`/api/v1/models?days=${this.DAYS}&top=4`);
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.render(data);
+      this.lastData = data;
+      if (modelsIsEmpty(data)) {
+        renderState(root, {
+          kind: "empty", title: "暂无模型用量",
+          detail: "近 30 天尚无可展示的模型与来源数据。",
+        });
+      } else {
+        renderState(root, { kind: "ready", title: "" });
+      }
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,

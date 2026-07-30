@@ -12,13 +12,23 @@
 // outside this file needs to know which transport is in use.
 class APIError extends Error {
   constructor(path, status) {
-    const detail = status === 401
-      ? "401 未授权:设置页填写读取 token"
-      : `HTTP ${status}`;
+    const detail = status === 0
+      ? "网络连接失败"
+      : status === 401
+        ? "401 未授权:设置页填写读取 token"
+        : `HTTP ${status}`;
     super(`${path} → ${detail}`);
     this.name = "APIError";
     this.status = status;
   }
+}
+
+function isCurrentGeneration(current, captured) {
+  return current === captured;
+}
+
+function canCommitRevision(current, sent) {
+  return current === sent;
 }
 
 function classifyAPIError(error) {
@@ -29,7 +39,7 @@ function classifyAPIError(error) {
       detail: "请到设置页填写读取 token 后重试。",
     };
   }
-  if (error instanceof TypeError) {
+  if (error instanceof APIError && error.status === 0) {
     return {
       kind: "error",
       title: "服务不可达",
@@ -82,7 +92,13 @@ async function apiFetch(path, init = {}) {
   const request = Object.assign({}, init, {
     headers: Api.headers(init.headers),
   });
-  const res = await fetch(Api.url(path), request);
+  let res;
+  try {
+    res = await fetch(Api.url(path), request);
+  } catch (error) {
+    if (error instanceof TypeError) throw new APIError(path, 0);
+    throw error;
+  }
   if (!res.ok) throw new APIError(path, res.status);
   return res;
 }
@@ -142,7 +158,12 @@ const Api = {
     try {
       if (this.token) localStorage.setItem(this.TOKEN_KEY, this.token);
       else localStorage.removeItem(this.TOKEN_KEY);
-    } catch (e) { /* nothing we can do, and nothing that should break a render */ }
+      return true;
+    } catch (e) {
+      // The in-memory credential remains useful for this browser session even
+      // when private mode or policy blocks persistence.
+      return false;
+    }
   },
 
   url(path) {

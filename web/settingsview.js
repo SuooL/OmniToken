@@ -13,12 +13,43 @@
 // entered, and Api owns the storage.
 const SETTINGS_TOKEN_KEY = Api.TOKEN_KEY;
 
+function buildPricingPayload(rows) {
+  const value = {};
+  for (const row of rows) {
+    const name = String(row.model || "").trim();
+    if (!name) return { ok: false, error: "有一行没有填模型名" };
+    const key = name.toLowerCase();
+    if (value[key]) return { ok: false, error: `模型 ${name} 重复` };
+
+    const prices = {};
+    for (const [field, label] of [["in", "输入"], ["out", "输出"], ["cr", "缓存读取"], ["cw", "缓存写入"]]) {
+      const raw = row[field];
+      if (raw == null || String(raw).trim() === "") {
+        return { ok: false, error: `${name} 的${label}价格不能为空` };
+      }
+      const number = Number(raw);
+      if (!isFinite(number) || number < 0 || number > 10000) {
+        return { ok: false, error: `${name} 的${label}价格 ${raw} 非法(0–10000 美元/百万 token)` };
+      }
+      prices[field] = number;
+    }
+    value[key] = {
+      input_per_mtok: prices.in,
+      output_per_mtok: prices.out,
+      cache_read_per_mtok: prices.cr,
+      cache_write_per_mtok: prices.cw,
+    };
+  }
+  return { ok: true, value };
+}
+
 const SettingsView = {
   _rows: [],       // pricing overrides being edited: {model, in, out, cr, cw}
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
   _loaded: false,
   _draft: { pricing: null, devices: null, token: null },
+  _revision: { pricing: 0, devices: 0, token: 0 },
 
   enter() {
     this.load();
@@ -98,10 +129,10 @@ const SettingsView = {
     const rows = pricing.map((r, i) => `<tr>
         <td><input class="form-input model" data-i="${i}" type="text" value="${esc(r.model)}"
                    placeholder="claude-opus-4" spellcheck="false"></td>
-        <td><input class="form-input num" data-i="${i}" data-f="in" type="number" min="0" max="10000" step="0.01" value="${r.in}"></td>
-        <td><input class="form-input num" data-i="${i}" data-f="out" type="number" min="0" max="10000" step="0.01" value="${r.out}"></td>
-        <td><input class="form-input num" data-i="${i}" data-f="cr" type="number" min="0" max="10000" step="0.01" value="${r.cr}"></td>
-        <td><input class="form-input num" data-i="${i}" data-f="cw" type="number" min="0" max="10000" step="0.01" value="${r.cw}"></td>
+        <td><input class="form-input num" data-i="${i}" data-f="in" type="number" min="0" max="10000" step="0.01" value="${esc(r.in)}"></td>
+        <td><input class="form-input num" data-i="${i}" data-f="out" type="number" min="0" max="10000" step="0.01" value="${esc(r.out)}"></td>
+        <td><input class="form-input num" data-i="${i}" data-f="cr" type="number" min="0" max="10000" step="0.01" value="${esc(r.cr)}"></td>
+        <td><input class="form-input num" data-i="${i}" data-f="cw" type="number" min="0" max="10000" step="0.01" value="${esc(r.cw)}"></td>
         <td><button class="ghost-btn" data-act="del-price" data-i="${i}">删除</button></td>
       </tr>`).join("");
     const body = pricing.length
@@ -158,7 +189,7 @@ const SettingsView = {
 
   tokenCard() {
     const tok = this._draft.token == null
-      ? localStorage.getItem(SETTINGS_TOKEN_KEY) || ""
+      ? Api.token
       : this._draft.token;
     return `
       <section class="card" id="card-token">
@@ -187,9 +218,11 @@ const SettingsView = {
       const act = btn.dataset.act;
       if (act === "add-price") {
         this.pricingDraft().push({ model: "", in: 0, out: 0, cr: 0, cw: 0 });
+        this._revision.pricing += 1;
         this.render();
       } else if (act === "del-price") {
         this.pricingDraft().splice(Number(btn.dataset.i), 1);
+        this._revision.pricing += 1;
         this.render();
       } else if (act === "save-price") {
         this.savePricing();
@@ -218,47 +251,41 @@ const SettingsView = {
       const row = this.pricingDraft()[Number(target.dataset.i)];
       if (!row) return;
       if (target.classList.contains("model")) row.model = target.value;
-      else row[target.dataset.f] = target.value === "" ? 0 : Number(target.value);
+      else row[target.dataset.f] = target.value;
+      this._revision.pricing += 1;
     } else if (target.matches("input.label")) {
       this.devicesDraft()[target.dataset.host] = target.value;
+      this._revision.devices += 1;
     } else if (target.id === "settings-token") {
       this._draft.token = target.value;
+      this._revision.token += 1;
     }
   },
 
   async savePricing() {
-    const rows = this._draft.pricing || this._rows;
-    const out = {};
-    for (const r of rows) {
-      const name = (r.model || "").trim();
-      if (!name) return this.note("price", false, "有一行没有填模型名");
-      const key = name.toLowerCase();
-      if (out[key]) return this.note("price", false, `模型 ${name} 重复`);
-      for (const [label, v] of [["输入", r.in], ["输出", r.out], ["缓存读取", r.cr], ["缓存写入", r.cw]]) {
-        if (!isFinite(v) || v < 0 || v > 10000) {
-          return this.note("price", false, `${name} 的${label}价格 ${v} 非法(0–10000 美元/百万 token)`);
-        }
-      }
-      out[key] = {
-        input_per_mtok: Number(r.in),
-        output_per_mtok: Number(r.out),
-        cache_read_per_mtok: Number(r.cr),
-        cache_write_per_mtok: Number(r.cw),
-      };
-    }
-    const ok = await this.put({ pricing_overrides: out }, "price");
+    const snapshot = (this._draft.pricing || this._rows).map((row) => ({ ...row }));
+    const sentRevision = this._revision.pricing;
+    const built = buildPricingPayload(snapshot);
+    if (!built.ok) return this.note("price", false, built.error);
+    const ok = await this.put({ pricing_overrides: built.value }, "price");
     if (ok) {
-      this._rows = rows.map((r) => ({ ...r }));
-      this._draft.pricing = null;
-      this.note("price", true, "已保存并热重载定价表,成本已按新价重算");
+      if (canCommitRevision(this._revision.pricing, sentRevision)) {
+        this._rows = snapshot;
+        this._draft.pricing = null;
+        this.note("price", true, "已保存并热重载定价表,成本已按新价重算");
+      } else {
+        this.note("price", true, "发送版本已保存;当前编辑仍未保存");
+      }
     }
   },
 
   async saveDevices() {
+    const snapshot = { ...(this._draft.devices || this._labels) };
+    const sentRevision = this._revision.devices;
     const labels = {};
     let bad = null;
-    Object.entries(this._draft.devices || this._labels).forEach(([host, value]) => {
-      const v = value.trim();
+    Object.entries(snapshot).forEach(([host, value]) => {
+      const v = String(value).trim();
       if (!v) return; // empty = no rename
       if ([...v].length > 64) bad = host;
       labels[host] = v;
@@ -266,22 +293,29 @@ const SettingsView = {
     if (bad) return this.note("devices", false, `设备 ${bad} 的显示名超过 64 字符`);
     const ok = await this.put({ device_labels: labels }, "devices");
     if (ok) {
-      this._labels = labels;
-      this._draft.devices = null;
-      this.note("devices", true, `已保存 ${Object.keys(labels).length} 个显示名`);
+      if (canCommitRevision(this._revision.devices, sentRevision)) {
+        this._labels = labels;
+        this._draft.devices = null;
+        this.note("devices", true, `已保存 ${Object.keys(labels).length} 个显示名`);
+      } else {
+        this.note("devices", true, "发送版本已保存;当前编辑仍未保存");
+      }
     }
   },
 
   async saveToken() {
     const current = this._draft.token == null
-      ? localStorage.getItem(SETTINGS_TOKEN_KEY) || ""
+      ? Api.token
       : this._draft.token;
     const value = current.trim();
-    Api.saveToken(value);
-    this._draft.token = null;
-    this.note("token", true, value ? "令牌已记住(仅本浏览器)" : "令牌已清除");
+    const persisted = Api.saveToken(value);
+    if (persisted) this._draft.token = null;
     await refreshAuthState();
     await this.load();
+    this.note("token", persisted,
+      persisted
+        ? (value ? "令牌已记住(仅本浏览器)" : "令牌已清除")
+        : "令牌当前会话有效,但浏览器拒绝持久化");
   },
 
   // put sends one section; the server leaves absent sections untouched.
@@ -289,7 +323,7 @@ const SettingsView = {
     this.note(noteKey, true, "保存中…");
     try {
       const res = await Api.put("/api/v1/settings", body,
-        localStorage.getItem(SETTINGS_TOKEN_KEY));
+        Api.token);
       if (res.status === 401) {
         this.note(noteKey, false, "未授权:请在下方填写写入令牌后重试");
         return false;

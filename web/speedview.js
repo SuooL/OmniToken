@@ -13,9 +13,16 @@
 // Three channels, never averaged together: the log-derived curve and model
 // table, the proxy's measured numbers, and nothing at all for Codex.
 
+function speedIsEmpty(data) {
+  const groups = [data.models || [], data.exact || [], (data.series && data.series.buckets) || []];
+  const output = groups.flat().reduce((sum, row) => sum + (row.output_tokens || 0), 0);
+  return output + (((data.live || {}).output_tokens) || 0) === 0;
+}
+
 const SpeedView = {
   _timer: null,
   lastData: null,
+  _loadGeneration: 0,
 
   enter() {
     this.load();
@@ -27,20 +34,32 @@ const SpeedView = {
 
   leave() {
     clearInterval(this._timer);
+    this._loadGeneration += 1;
   },
 
   async load() {
+    const loadID = ++this._loadGeneration;
     const root = document.getElementById("view-speed");
     if (!this.lastData) {
       renderState(root, { kind: "loading", title: "正在加载速度数据" });
     }
     try {
-      this.lastData = await Api.get("/api/v1/speed?days=30");
-      this.render(this.lastData);
-      renderState(root, { kind: "ready", title: "" });
+      const data = await Api.get("/api/v1/speed?days=30");
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.render(data);
+      this.lastData = data;
+      if (speedIsEmpty(data)) {
+        renderState(root, {
+          kind: "empty", title: "暂无速度数据",
+          detail: "没有可计算的输出或生成区间;产生带时长的输出后这里会显示速度。",
+        });
+      } else {
+        renderState(root, { kind: "ready", title: "" });
+      }
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,

@@ -5,7 +5,7 @@ const Views = {
   overview: {
     el: () => document.getElementById("view-overview"),
     enter() { Overview.load(); this._timer = setInterval(() => Overview.load(), 30000); },
-    leave() { clearInterval(this._timer); },
+    leave() { clearInterval(this._timer); Overview.invalidate(); },
   },
   live: {
     el: () => document.getElementById("view-live"),

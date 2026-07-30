@@ -8,9 +8,15 @@ function pct(r) {
   return (r * 100).toFixed(1) + "%";
 }
 
+function cacheIsEmpty(data) {
+  return !(data.models || []).some((row) =>
+    (row.input_tokens || 0) + (row.cache_read_tokens || 0) + (row.cache_creation_tokens || 0) > 0);
+}
+
 const CacheView = {
   _timer: null,
   lastData: null,
+  _loadGeneration: 0,
 
   enter() {
     this.load();
@@ -19,20 +25,32 @@ const CacheView = {
 
   leave() {
     clearInterval(this._timer);
+    this._loadGeneration += 1;
   },
 
   async load() {
+    const loadID = ++this._loadGeneration;
     const root = document.getElementById("view-cache");
     if (!this.lastData) {
       renderState(root, { kind: "loading", title: "正在加载缓存数据" });
     }
     try {
-      this.lastData = await Api.get("/api/v1/cache?days=30");
-      this.render(this.lastData);
-      renderState(root, { kind: "ready", title: "" });
+      const data = await Api.get("/api/v1/cache?days=30");
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.render(data);
+      this.lastData = data;
+      if (cacheIsEmpty(data)) {
+        renderState(root, {
+          kind: "empty", title: "暂无缓存用量",
+          detail: "近 30 天没有输入、缓存读取或缓存写入数据。",
+        });
+      } else {
+        renderState(root, { kind: "ready", title: "" });
+      }
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,

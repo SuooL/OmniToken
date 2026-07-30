@@ -14,9 +14,14 @@
 const DEVICE_SERIES_VARS = ["--series-1", "--series-2", "--series-3", "--series-4"];
 const DEVICE_SERIES_MAX = 4;
 
+function devicesIsEmpty(data) {
+  return !(data.summary || []).some((row) => (row.total_tokens || 0) > 0);
+}
+
 const DevicesView = {
   _timer: null,
   lastData: null,
+  _loadGeneration: 0,
 
   enter() {
     this.load();
@@ -26,20 +31,32 @@ const DevicesView = {
   leave() {
     clearInterval(this._timer);
     this._timer = null;
+    this._loadGeneration += 1;
   },
 
   async load() {
+    const loadID = ++this._loadGeneration;
     const root = document.getElementById("view-devices");
     if (!this.lastData) {
       renderState(root, { kind: "loading", title: "正在加载设备数据" });
     }
     try {
-      this.lastData = await Api.get("/api/v1/devices?days=30");
-      this.render(this.lastData);
-      renderState(root, { kind: "ready", title: "" });
+      const data = await Api.get("/api/v1/devices?days=30");
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.render(data);
+      this.lastData = data;
+      if (devicesIsEmpty(data)) {
+        renderState(root, {
+          kind: "empty", title: "暂无设备用量",
+          detail: "近 30 天尚无可比较的设备 token 数据。",
+        });
+      } else {
+        renderState(root, { kind: "ready", title: "" });
+      }
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,
