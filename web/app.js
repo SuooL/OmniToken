@@ -79,7 +79,7 @@ function route() {
 // One line each, saying what the page answers rather than what it contains.
 const PAGE_SUB = {
   live: "这台机器现在在生成什么",
-  speed: "各模型的吐字速度",
+  speed: "现在多快,以及各模型的吐字速度",
   overview: "累计与趋势",
   reports: "按日/周/月/会话聚合,可导出",
   details: "事件级下钻",
