@@ -240,13 +240,17 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 	// Attribution only the log channel can see. A proxy row starts with these
 	// empty, and the log observation that follows fills them in.
 	textFill, err := tx.Prepare(
-		`UPDATE events SET session_id = CASE WHEN session_id = '' THEN ?1 ELSE session_id END,
-		                   cwd        = CASE WHEN cwd        = '' THEN ?2 ELSE cwd        END,
-		                   repo       = CASE WHEN repo       = '' THEN ?3 ELSE repo       END,
-		                   git_branch = CASE WHEN git_branch = '' THEN ?4 ELSE git_branch END,
-		                   app_version= CASE WHEN app_version= '' THEN ?5 ELSE app_version END
-		 WHERE event_id = ?6
-		   AND (session_id = '' OR cwd = '' OR repo = '' OR git_branch = '' OR app_version = '')`)
+		`UPDATE events SET session_id = CASE WHEN session_id = '' AND ?1 != '' THEN ?1 ELSE session_id END,
+		                   cwd        = CASE WHEN cwd        = '' AND ?2 != '' THEN ?2 ELSE cwd        END,
+		                   repo       = CASE WHEN repo       = '' AND ?3 != '' THEN ?3 ELSE repo       END,
+		                   git_branch = CASE WHEN git_branch = '' AND ?4 != '' THEN ?4 ELSE git_branch END,
+		                   app_version= CASE WHEN app_version= '' AND ?5 != '' THEN ?5 ELSE app_version END
+			 WHERE event_id = ?6
+			   AND ((session_id = '' AND ?1 != '')
+			     OR (cwd = '' AND ?2 != '')
+			     OR (repo = '' AND ?3 != '')
+			     OR (git_branch = '' AND ?4 != '')
+			     OR (app_version = '' AND ?5 != ''))`)
 	if err != nil {
 		return result, err
 	}

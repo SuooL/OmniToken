@@ -188,6 +188,25 @@ func applyProcReportTx(tx *sql.Tx, report model.ProcReport) (bool, error) {
 		return false, nil
 	}
 
+	known := map[int]bool{}
+	rows, err := tx.Query(`SELECT pid FROM live_sessions WHERE device = ?`, report.Device)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var pid int
+		if err := rows.Scan(&pid); err != nil {
+			rows.Close()
+			return false, err
+		}
+		known[pid] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	changed := len(known) != len(report.Sessions)
+
 	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO live_sessions
 		(device, pid, source, started_at, observed_at) VALUES (?,?,?,?,?)`)
 	if err != nil {
@@ -195,6 +214,9 @@ func applyProcReportTx(tx *sql.Tx, report model.ProcReport) (bool, error) {
 	}
 	defer stmt.Close()
 	for _, session := range report.Sessions {
+		if !known[session.PID] {
+			changed = true
+		}
 		if _, err := stmt.Exec(
 			report.Device,
 			session.PID,
@@ -219,5 +241,5 @@ func applyProcReportTx(tx *sql.Tx, report model.ProcReport) (bool, error) {
 	); err != nil {
 		return false, err
 	}
-	return true, nil
+	return changed, nil
 }

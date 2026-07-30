@@ -411,6 +411,23 @@ func TestValidateIngestEnvelopeBindsEveryPayloadDevice(t *testing.T) {
 	}
 }
 
+func TestValidateIngestEnvelopeRejectsNonPositiveProcessObservedAt(t *testing.T) {
+	for _, observedAt := range []int64{0, -1} {
+		t.Run(strconv.FormatInt(observedAt, 10), func(t *testing.T) {
+			envelope := validProcEnvelope()
+			envelope.Procs.ObservedAt = observedAt
+
+			got := ValidateIngestEnvelope(envelope)
+			if len(got) != 1 {
+				t.Fatalf("ValidateIngestEnvelope() returned %d rejections, want 1: %#v", len(got), got)
+			}
+			if got[0].Code != "invalid_proc_observed_at" {
+				t.Errorf("rejection code = %q, want invalid_proc_observed_at", got[0].Code)
+			}
+		})
+	}
+}
+
 func TestValidateIngestEnvelopeAcceptsBoundariesAndEveryKind(t *testing.T) {
 	boundary := validIngestEnvelope()
 	boundary.CapturedAt = testMaxCapturedAt

@@ -41,6 +41,7 @@ const (
 	RejectionUnexpectedProcs     = "unexpected_procs_payload"
 	RejectionQuotaDeviceMismatch = "quota_device_mismatch"
 	RejectionProcDeviceMismatch  = "proc_device_mismatch"
+	RejectionProcObservedAt      = "invalid_proc_observed_at"
 )
 
 // IngestEnvelopeV2 is one acknowledged edge-to-hub delivery batch.
@@ -179,6 +180,9 @@ func ValidateIngestEnvelope(envelope IngestEnvelopeV2) []IngestRejection {
 		}
 		if deviceValid && envelope.Procs != nil && envelope.Procs.Device != envelope.DeviceID {
 			rejected = append(rejected, IngestRejection{Code: RejectionProcDeviceMismatch})
+		}
+		if envelope.Procs != nil && envelope.Procs.ObservedAt <= 0 {
+			rejected = append(rejected, IngestRejection{Code: RejectionProcObservedAt})
 		}
 	default:
 		rejected = append(rejected, IngestRejection{Code: RejectionKind})

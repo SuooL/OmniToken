@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/store"
@@ -53,6 +55,27 @@ func validV2Envelope(batchID string) model.IngestEnvelopeV2 {
 			Device:  testV2DeviceA,
 			Source:  "codex",
 		}},
+	}
+}
+
+func validV2ProcEnvelope(batchID string, observedAt int64) model.IngestEnvelopeV2 {
+	return model.IngestEnvelopeV2{
+		ProtocolVersion: model.IngestProtocolV2,
+		DeviceID:        testV2DeviceA,
+		BootID:          testV2Boot,
+		BatchID:         batchID,
+		Sequence:        42,
+		CapturedAt:      1_785_319_948_062,
+		Kind:            model.IngestKindProcs,
+		Procs: &model.ProcReport{
+			Device:     testV2DeviceA,
+			ObservedAt: observedAt,
+			Sessions: []model.ProcSession{{
+				PID:       123,
+				Source:    "codex",
+				StartedAt: 1_785_319_900_000,
+			}},
+		},
 	}
 }
 
@@ -140,6 +163,7 @@ func TestHandleIngestV2AcceptsAndReplaysWithOriginalAck(t *testing.T) {
 func TestHandleIngestV2AcknowledgesExistingEventAsDuplicateWithoutNotify(t *testing.T) {
 	s, st := newIngestV2TestServer(t)
 	envelope := validV2Envelope(testV2BatchA)
+	envelope.Events[0].SessionID = "known-session"
 	if _, err := st.InsertEvents(envelope.Events, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +182,123 @@ func TestHandleIngestV2AcknowledgesExistingEventAsDuplicateWithoutNotify(t *test
 	select {
 	case <-notifications:
 		t.Fatal("receipt-only duplicate notified SSE")
+	default:
+	}
+}
+
+func TestHandleIngestV2RejectsNonPositiveProcessObservedAtWithoutReceipt(t *testing.T) {
+	s, st := newIngestV2TestServer(t)
+	envelope := validV2ProcEnvelope(testV2BatchA, 0)
+
+	recorder := httptest.NewRecorder()
+	s.handleIngestV2(recorder, ingestV2Request(t, envelope, "device-a-token"))
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%q", recorder.Code, recorder.Body.String())
+	}
+	ack := decodeV2Ack(t, recorder)
+	if len(ack.Rejected) != 1 || ack.Rejected[0].Code != "invalid_proc_observed_at" {
+		t.Fatalf("rejections = %#v", ack.Rejected)
+	}
+	reporters, err := st.ProcReporters(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reporters) != 0 {
+		t.Fatalf("invalid process report mutated state: %#v", reporters)
+	}
+
+	// Validation must happen before receipt persistence: the corrected payload
+	// can reuse the same batch ID and be accepted.
+	envelope.Procs.ObservedAt = 1_785_319_948_062
+	retry := httptest.NewRecorder()
+	s.handleIngestV2(retry, ingestV2Request(t, envelope, "device-a-token"))
+	if retry.Code != http.StatusOK || decodeV2Ack(t, retry).Accepted != 1 {
+		t.Fatalf("corrected retry status=%d body=%q", retry.Code, retry.Body.String())
+	}
+}
+
+func TestHandleIngestV2IdenticalProcessSetRefreshDoesNotNotify(t *testing.T) {
+	s, st := newIngestV2TestServer(t)
+	notifications, unsubscribe := s.bcast.Subscribe()
+	defer unsubscribe()
+
+	first := httptest.NewRecorder()
+	s.handleIngestV2(first, ingestV2Request(t,
+		validV2ProcEnvelope(testV2BatchA, 1_000), "device-a-token"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body=%q", first.Code, first.Body.String())
+	}
+	select {
+	case <-notifications:
+	default:
+		t.Fatal("initial PID set did not notify")
+	}
+
+	secondEnvelope := validV2ProcEnvelope(testV2BatchB, 2_000)
+	secondEnvelope.Sequence = 43
+	second := httptest.NewRecorder()
+	s.handleIngestV2(second, ingestV2Request(t, secondEnvelope, "device-a-token"))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body=%q", second.Code, second.Body.String())
+	}
+	select {
+	case <-notifications:
+		t.Fatal("identical PID set notified SSE")
+	default:
+	}
+	running, err := st.RunningSessions(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 1 || running[0].ObservedAt != 2_000 {
+		t.Fatalf("process timestamp refresh did not commit: %#v", running)
+	}
+}
+
+func TestHandleIngestV2ConcurrentSameBatchHasIdenticalAcksAndOneNotify(t *testing.T) {
+	s, st := newIngestV2TestServer(t)
+	notifications, unsubscribe := s.bcast.Subscribe()
+	defer unsubscribe()
+	envelope := validV2Envelope(testV2BatchA)
+
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			recorder := httptest.NewRecorder()
+			s.handleIngestV2(recorder, ingestV2Request(t, envelope, "device-a-token"))
+			responses <- recorder
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(responses)
+
+	var acks []model.IngestAckV2
+	for recorder := range responses {
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%q", recorder.Code, recorder.Body.String())
+		}
+		acks = append(acks, decodeV2Ack(t, recorder))
+	}
+	if len(acks) != 2 || !reflect.DeepEqual(acks[0], acks[1]) {
+		t.Fatalf("concurrent acknowledgements = %#v, want identical values", acks)
+	}
+	if countV2Events(t, st) != 1 {
+		t.Fatalf("event count = %d, want 1", countV2Events(t, st))
+	}
+	select {
+	case <-notifications:
+	default:
+		t.Fatal("committed concurrent batch did not notify")
+	}
+	select {
+	case <-notifications:
+		t.Fatal("same concurrent batch notified more than once")
 	default:
 	}
 }

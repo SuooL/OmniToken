@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,6 +231,158 @@ func TestApplyIngestV2SupportsQuotaAndProcessPayloads(t *testing.T) {
 	}
 	if len(quotas) != 1 || len(running) != 1 || running[0].PID != 123 {
 		t.Fatalf("stored payloads = quotas:%#v running:%#v", quotas, running)
+	}
+}
+
+func TestApplyIngestV2ProcessTimestampRefreshWithoutPIDChangeIsNotMutation(t *testing.T) {
+	s := openTestStore(t)
+	first := model.IngestEnvelopeV2{
+		ProtocolVersion: model.IngestProtocolV2,
+		DeviceID:        testDeviceIDA,
+		BootID:          testIngestBoot,
+		BatchID:         testIngestBatchA,
+		Sequence:        1,
+		CapturedAt:      1_000,
+		Kind:            model.IngestKindProcs,
+		Procs: &model.ProcReport{
+			Device:     testDeviceIDA,
+			ObservedAt: 1_000,
+			Sessions: []model.ProcSession{{
+				PID:       123,
+				Source:    "codex",
+				StartedAt: 900,
+			}},
+		},
+	}
+	firstResult, err := s.ApplyIngestV2(first, 1_100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !firstResult.Mutated {
+		t.Fatal("initial PID set was not reported as mutation")
+	}
+
+	second := first
+	second.BatchID = testIngestBatchB
+	second.Sequence = 2
+	second.CapturedAt = 2_000
+	second.Procs = &model.ProcReport{
+		Device:     testDeviceIDA,
+		ObservedAt: 2_000,
+		Sessions: []model.ProcSession{{
+			PID:       123,
+			Source:    "codex",
+			StartedAt: 900,
+		}},
+	}
+	secondResult, err := s.ApplyIngestV2(second, 2_100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResult.Mutated {
+		t.Fatal("identical PID set was reported as mutation")
+	}
+
+	running, err := s.RunningSessions(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 1 || running[0].PID != 123 || running[0].ObservedAt != 2_000 {
+		t.Fatalf("timestamp refresh did not commit: %#v", running)
+	}
+	var receipts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ingest_receipts`).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 2 {
+		t.Fatalf("receipt count = %d, want 2", receipts)
+	}
+}
+
+func TestApplyIngestV2KnownTextDuplicateIsNotMutation(t *testing.T) {
+	s := openTestStore(t)
+	event := model.Event{
+		EventID:   "known-text",
+		Device:    testDeviceIDA,
+		Source:    "codex",
+		SessionID: "session-known",
+	}
+	if _, err := s.InsertEvents([]model.Event{event}, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.ApplyIngestV2(testEventEnvelope(testIngestBatchA, event), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mutated {
+		t.Fatal("duplicate carrying only already-known text was reported as mutation")
+	}
+	if result.Ack.Accepted != 0 || result.Ack.Duplicates != 1 {
+		t.Fatalf("ack = %#v, want 0 accepted and 1 duplicate", result.Ack)
+	}
+}
+
+func TestApplyIngestV2ConcurrentSameBatchHasOnePayloadReceiptAndAck(t *testing.T) {
+	s := openTestStore(t)
+	envelope := testEventEnvelope(testIngestBatchA, model.Event{
+		EventID: "concurrent-event",
+		Device:  testDeviceIDA,
+		Source:  "codex",
+	})
+
+	start := make(chan struct{})
+	results := make(chan IngestV2Result, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, receivedAt := range []int64{1_000, 2_000} {
+		wg.Add(1)
+		go func(receivedAt int64) {
+			defer wg.Done()
+			<-start
+			result, err := s.ApplyIngestV2(envelope, receivedAt)
+			results <- result
+			errs <- err
+		}(receivedAt)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []IngestV2Result
+	for result := range results {
+		got = append(got, result)
+	}
+	if len(got) != 2 || !reflect.DeepEqual(got[0].Ack, got[1].Ack) {
+		t.Fatalf("concurrent results = %#v, want identical acknowledgements", got)
+	}
+	mutations, replays := 0, 0
+	for _, result := range got {
+		if result.Mutated {
+			mutations++
+		}
+		if result.Replay {
+			replays++
+		}
+	}
+	if mutations != 1 || replays != 1 {
+		t.Fatalf("result flags = mutations:%d replays:%d, want 1/1", mutations, replays)
+	}
+	var events, receipts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ingest_receipts`).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || receipts != 1 {
+		t.Fatalf("persisted rows = events:%d receipts:%d, want 1/1", events, receipts)
 	}
 }
 
