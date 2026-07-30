@@ -13,6 +13,11 @@ import (
 type FileConfig struct {
 	Server          string   `json:"server"`                     // server or relay-peer base URL
 	Token           string   `json:"token,omitempty"`            // ingest bearer token
+	ProtocolVersion int      `json:"protocol_version,omitempty"` // absent means legacy v1
+	DeviceID        string   `json:"device_id,omitempty"`
+	DeviceToken     string   `json:"device_token,omitempty"`
+	Outbox          string   `json:"outbox,omitempty"`
+	OutboxMaxBytes  int64    `json:"outbox_max_bytes,omitempty"`
 	Name            string   `json:"name,omitempty"`             // device name; default hostname
 	RelayListen     string   `json:"relay_listen,omitempty"`     // e.g. ":8788" to relay for peers
 	IntervalSeconds int      `json:"interval_seconds,omitempty"` // scan interval; default 15
@@ -59,7 +64,19 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	if _, err := fc.SinceTime(); err != nil {
 		return fc, err
 	}
+	if version := fc.EffectiveProtocolVersion(); version != 1 && version != 2 {
+		return fc, fmt.Errorf("agent config: unsupported protocol_version %d", fc.ProtocolVersion)
+	}
 	return fc, nil
+}
+
+// EffectiveProtocolVersion keeps every pre-v2 config explicitly compatible:
+// an omitted version continues to use the legacy endpoint and token.
+func (fc FileConfig) EffectiveProtocolVersion() int {
+	if fc.ProtocolVersion == 0 {
+		return 1
+	}
+	return fc.ProtocolVersion
 }
 
 // SinceTime resolves Since to the first instant to report; the zero time means

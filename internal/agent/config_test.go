@@ -140,3 +140,40 @@ func TestWriteSkeletonConfigNeverOverwrites(t *testing.T) {
 		t.Errorf("existing config was modified:\n got %s\nwant %s", got, original)
 	}
 }
+
+func TestFileConfigDefaultsExistingFilesToProtocolV1(t *testing.T) {
+	path := writeAgentConfig(t, `{"server":"http://x:1","token":"legacy"}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fc.EffectiveProtocolVersion(); got != 1 {
+		t.Fatalf("effective protocol = %d, want 1", got)
+	}
+}
+
+func TestLoadFileConfigAcceptsProtocolV2Settings(t *testing.T) {
+	path := writeAgentConfig(t, `{
+		"server":"http://x:1",
+		"protocol_version":2,
+		"device_id":"018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+		"device_token":"device-secret",
+		"outbox":"/tmp/omnitoken-outbox.db",
+		"outbox_max_bytes":12345
+	}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.EffectiveProtocolVersion() != 2 || fc.DeviceToken != "device-secret" ||
+		fc.Outbox != "/tmp/omnitoken-outbox.db" || fc.OutboxMaxBytes != 12345 {
+		t.Fatalf("loaded config = %+v", fc)
+	}
+}
+
+func TestLoadFileConfigRejectsUnsupportedProtocol(t *testing.T) {
+	path := writeAgentConfig(t, `{"server":"http://x:1","protocol_version":3}`)
+	if _, err := LoadFileConfig(path); err == nil {
+		t.Fatal("unsupported protocol loaded without error")
+	}
+}
