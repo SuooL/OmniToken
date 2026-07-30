@@ -197,6 +197,7 @@ func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
 		"position: sticky",
 		"overflow-x: auto",
 		"scrollbar-width: none",
+		"main:not(#view-live):not(#view-speed) .card",
 	} {
 		if !strings.Contains(style, contract) {
 			t.Errorf("quiet instrument CSS contract missing %q", contract)
@@ -206,6 +207,15 @@ func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
 	app := embeddedAsset(t, "app.js")
 	if !strings.Contains(app, `active.scrollIntoView({block: "nearest", inline: "center"})`) {
 		t.Error("active mobile navigation item must be scrolled into view")
+	}
+
+	for _, name := range []string{
+		"overview.js", "speedview.js", "devicesview.js", "modelsview.js",
+	} {
+		source := embeddedAsset(t, name)
+		if !strings.Contains(source, `animation: !matchMedia("(prefers-reduced-motion: reduce)").matches`) {
+			t.Errorf("%s must disable canvas animation for reduced motion", name)
+		}
 	}
 }
 

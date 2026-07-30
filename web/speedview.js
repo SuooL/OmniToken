@@ -197,6 +197,7 @@ const SpeedView = {
     const hue = cssVar("--series-1");
     chart.setOption({
       aria: { enabled: true },
+      animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 8, top: 16, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis",

@@ -240,6 +240,7 @@ const ModelsView = {
 
     echartsFor(el).setOption({
       aria: { enabled: true },
+      animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 90, top: 28, bottom: 0, containLabel: true },
       tooltip: {
         trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
@@ -310,6 +311,7 @@ const ModelsView = {
     const buckets = this.fillDays(daily, series, days);
     echartsFor(el).setOption({
       aria: { enabled: true },
+      animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
