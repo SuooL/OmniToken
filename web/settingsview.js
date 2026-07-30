@@ -4,13 +4,9 @@
 // costs are computed at query time, so the server hot-swaps its price table on
 // save and the next refresh shows the new numbers.
 //
-// Renders into #view-settings. Writes go to PUT /api/v1/settings, which is
-// token-protected; the token is kept in localStorage (this panel is meant for
-// a LAN/tailnet, the token is the same one the agents use).
-//
-// Since ADR-0016 the same token also authenticates *reads* whenever the server
-// listens on anything but loopback — so this box is the one place a token is
-// entered, and Api owns the storage.
+// Renders into #view-settings. Read and admin credentials are independently
+// scoped and kept behind Api's storage boundary; neither is sent as settings
+// payload data.
 function buildPricingPayload(rows) {
   const value = {};
   for (const row of rows) {
@@ -46,8 +42,8 @@ const SettingsView = {
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
   _loaded: false,
-  _draft: { pricing: null, devices: null, token: null },
-  _revision: { pricing: 0, devices: 0, token: 0 },
+  _draft: { pricing: null, devices: null, readToken: null, adminToken: null },
+  _revision: { pricing: 0, devices: 0, tokens: 0 },
   _saving: { pricing: false, devices: false },
 
   enter() {
@@ -184,25 +180,34 @@ const SettingsView = {
       </section>`;
   },
 
-  // ---- write token -------------------------------------------------------
+  // ---- scoped credentials ------------------------------------------------
 
   tokenCard() {
-    const tok = this._draft.token == null
+    const readToken = this._draft.readToken == null
       ? Api.token
-      : this._draft.token;
+      : this._draft.readToken;
+    const adminToken = this._draft.adminToken == null
+      ? Api.adminToken
+      : this._draft.adminToken;
     return `
       <section class="card" id="card-token">
         <div class="card-head">
-          <h2>访问令牌</h2>
-          <div class="head-tools"><button class="ghost-btn" data-act="save-token">记住</button></div>
+          <h2>访问凭据</h2>
+          <div class="head-tools"><button class="ghost-btn" data-act="save-tokens">记住</button></div>
         </div>
         <div class="filter-row">
-          <input class="form-input" id="settings-token" type="password" size="36"
-                 value="${esc(tok)}" placeholder="config.json 里的 token,未配置则留空">
+          <label>读取 token
+            <input class="form-input" id="settings-read-token" type="password" size="36"
+                   value="${esc(readToken)}" placeholder="config.json 里的 read_token">
+          </label>
+          <label>管理 token
+            <input class="form-input" id="settings-admin-token" type="password" size="36"
+                   value="${esc(adminToken)}" placeholder="config.json 里的 admin_token">
+          </label>
         </div>
-        <p class="subtle">与 agent 相同的 bearer token,来自 <code>config.json</code> 的 <code>token</code>。
-          保存设置(写接口)一直需要它;服务端若监听非 loopback 地址,读接口也需要它(ADR-0016)。
-          只监听 127.0.0.1 时留空即可。令牌只存在本浏览器的 localStorage,不会上报。</p>
+        <p class="subtle">读取 token 用于 GET 与实时流;管理 token 只用于保存设置。
+          旧浏览器没有管理 token 记录时会临时沿用读取 token,保存后两者独立。
+          凭据只存在本浏览器的 localStorage,不会作为设置内容上报。</p>
         <div class="save-note" data-note="token">&nbsp;</div>
       </section>`;
   },
@@ -227,8 +232,8 @@ const SettingsView = {
         this.savePricing();
       } else if (act === "save-devices") {
         this.saveDevices();
-      } else if (act === "save-token") {
-        this.saveToken();
+      } else if (act === "save-tokens") {
+        this.saveTokens();
       }
     };
   },
@@ -255,9 +260,12 @@ const SettingsView = {
     } else if (target.matches("input.label")) {
       this.devicesDraft()[target.dataset.host] = target.value;
       this._revision.devices += 1;
-    } else if (target.id === "settings-token") {
-      this._draft.token = target.value;
-      this._revision.token += 1;
+    } else if (target.id === "settings-read-token") {
+      this._draft.readToken = target.value;
+      this._revision.tokens += 1;
+    } else if (target.id === "settings-admin-token") {
+      this._draft.adminToken = target.value;
+      this._revision.tokens += 1;
     }
   },
 
@@ -318,29 +326,35 @@ const SettingsView = {
     }
   },
 
-  async saveToken() {
-    const current = this._draft.token == null
+  async saveTokens() {
+    const currentRead = this._draft.readToken == null
       ? Api.token
-      : this._draft.token;
-    const value = current.trim();
-    const persisted = Api.saveToken(value);
-    if (persisted) this._draft.token = null;
+      : this._draft.readToken;
+    const currentAdmin = this._draft.adminToken == null
+      ? Api.adminToken
+      : this._draft.adminToken;
+    const readValue = currentRead.trim();
+    const adminValue = currentAdmin.trim();
+    const persisted = Api.saveTokens(readValue, adminValue);
+    if (persisted) {
+      this._draft.readToken = null;
+      this._draft.adminToken = null;
+    }
     await refreshAuthState();
     await this.load();
     this.note("token", persisted,
       persisted
-        ? (value ? "令牌已记住(仅本浏览器)" : "令牌已清除")
-        : "令牌当前会话有效,但浏览器拒绝持久化");
+        ? "读取与管理凭据已记住(仅本浏览器)"
+        : "凭据当前会话有效,但浏览器拒绝持久化");
   },
 
   // put sends one section; the server leaves absent sections untouched.
   async put(body, noteKey) {
     this.note(noteKey, true, "保存中…");
     try {
-      const res = await Api.put("/api/v1/settings", body,
-        Api.token);
+      const res = await Api.put("/api/v1/settings", body);
       if (res.status === 401) {
-        this.note(noteKey, false, "未授权:请在下方填写写入令牌后重试");
+        this.note(noteKey, false, "未授权:请在下方填写管理 token 后重试");
         return false;
       }
       if (!res.ok) {
