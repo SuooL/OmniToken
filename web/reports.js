@@ -59,7 +59,7 @@ const Reports = {
     });
     root.querySelector("#reports-export").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-format]");
-      if (btn) this.download(btn.dataset.format);
+      if (btn) this.download(btn.dataset.format, btn);
     });
   },
 
@@ -72,14 +72,24 @@ const Reports = {
     document.getElementById("reports-note").textContent = `近 ${this.days} 天 · 按${g[1]}`;
   },
 
-  async download(format) {
+  async download(format, button) {
+    if (button.disabled) return;
     const status = document.getElementById("reports-status");
-    status.hidden = true;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    status.textContent = "正在导出";
+    status.hidden = false;
     try {
       await downloadAPI(this.apiPath(format), `omnitoken-${this.granularity}-${this.days}d.${format}`);
+      status.hidden = true;
     } catch (e) {
-      status.textContent = `导出失败:${e.message}`;
+      status.textContent = e instanceof APIError && e.status === 401
+        ? "导出失败:未授权,请在设置页填写读取 token"
+        : `导出失败:${e.message}`;
       status.hidden = false;
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
     }
   },
 

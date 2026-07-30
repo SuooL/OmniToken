@@ -93,8 +93,8 @@ const Api = {
   },
 
   headers(extra) {
-    const h = Object.assign({}, extra);
-    if (this.token) h["Authorization"] = "Bearer " + this.token;
+    const h = new Headers(extra);
+    if (this.token) h.set("Authorization", "Bearer " + this.token);
     return h;
   },
 
