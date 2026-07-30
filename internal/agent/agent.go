@@ -6,6 +6,8 @@ package agent
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"log"
 	"math"
 	mathrand "math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -26,24 +29,32 @@ import (
 	"github.com/suool/omnitoken/internal/proxy"
 )
 
-const ingestAckBodyMax int64 = 1 << 20
+const (
+	ingestAckBodyMax      int64 = 1 << 20
+	relayV1IngestBodyMax  int64 = 64 << 20
+	relayHeartbeatBodyMax int64 = 1 << 20
+	relayTokenHeader            = "X-OmniToken-Relay-Token"
+)
 
 type Config struct {
-	ServerURL       string // e.g. http://192.0.2.1:8787 or http://peer:8788 (relay)
-	Token           string // legacy v1 bearer token
-	ProtocolVersion int    // zero and one are legacy v1; two uses the durable outbox
-	DeviceID        string
-	DeviceToken     string
-	OutboxPath      string
-	OutboxMaxBytes  int64
-	AgentVersion    string
-	Capabilities    []string
-	DeviceName      string
-	ClaudeDirs      []string
-	CodexDirs       []string
-	StatePath       string
-	Interval        time.Duration
-	RelayListen     string // e.g. ":8788"; empty = relay disabled
+	ServerURL          string // e.g. https://hub.example or http://127.0.0.1:8788
+	AllowInsecureHTTP  bool
+	Token              string // legacy v1 bearer token
+	ProtocolVersion    int    // zero and one are legacy v1; two uses the durable outbox
+	DeviceID           string
+	DeviceToken        string
+	OutboxPath         string
+	OutboxMaxBytes     int64
+	AgentVersion       string
+	Capabilities       []string
+	DeviceName         string
+	ClaudeDirs         []string
+	CodexDirs          []string
+	StatePath          string
+	Interval           time.Duration
+	RelayListen        string // e.g. ":8788"; empty = relay disabled
+	RelayToken         string // protects this relay's listener
+	RelayUpstreamToken string // next-hop relay credential; falls back to RelayToken
 	// Since is the first instant to report; the zero time means no window.
 	Since          time.Time
 	ProxyListen    string            // e.g. "127.0.0.1:8899"; empty = proxy disabled
@@ -114,6 +125,14 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.ProtocolVersion != 1 && cfg.ProtocolVersion != model.IngestProtocolV2 {
 		return nil, fmt.Errorf("unsupported ingest protocol version %d", cfg.ProtocolVersion)
+	}
+	serverURL, err := validateServerURL(cfg.ServerURL, cfg.AllowInsecureHTTP)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ServerURL = serverURL.String()
+	if cfg.RelayListen != "" && cfg.RelayToken == "" {
+		return nil, errors.New("relay token is required when relay is enabled")
 	}
 	st, err := collect.LoadState(cfg.StatePath)
 	if err != nil {
@@ -327,6 +346,7 @@ func (a *Agent) sendHeartbeat() error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.cfg.DeviceToken)
+	a.addRelayCredential(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
@@ -435,6 +455,7 @@ func (a *Agent) uploadOldest() error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.cfg.DeviceToken)
+	a.addRelayCredential(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
@@ -518,6 +539,7 @@ func (a *Agent) postIngest(payload map[string]any) error {
 	if a.cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
 	}
+	a.addRelayCredential(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
@@ -535,19 +557,130 @@ func (a *Agent) postIngest(payload map[string]any) error {
 // returns an error to the downstream agent, which keeps its offsets and
 // retries later.
 func (a *Agent) runRelay() {
-	upstream, err := url.Parse(a.cfg.ServerURL)
+	server, err := a.relayServer()
 	if err != nil {
-		log.Printf("relay: bad server url: %v", err)
+		log.Printf("relay: configure: %v", err)
 		return
+	}
+	log.Printf("agent: relaying ingest on %s -> %s", a.cfg.RelayListen, a.cfg.ServerURL)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("relay: %v", err)
+	}
+}
+
+func (a *Agent) relayServer() (*http.Server, error) {
+	upstream, err := validateServerURL(a.cfg.ServerURL, a.cfg.AllowInsecureHTTP)
+	if err != nil {
+		return nil, err
+	}
+	if a.cfg.RelayToken == "" {
+		return nil, errors.New("relay token is required")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	mux := http.NewServeMux()
-	mux.Handle("POST /api/v1/ingest", proxy)
-	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"status":"relay"}`))
-	})
-	log.Printf("agent: relaying ingest on %s -> %s", a.cfg.RelayListen, a.cfg.ServerURL)
-	if err := http.ListenAndServe(a.cfg.RelayListen, mux); err != nil {
-		log.Printf("relay: %v", err)
+	for path, maxBytes := range map[string]int64{
+		"/api/v1/ingest":    relayV1IngestBodyMax,
+		"/api/v2/ingest":    model.MaxIngestEnvelopeBytes,
+		"/api/v2/heartbeat": relayHeartbeatBodyMax,
+	} {
+		mux.Handle("POST "+path, a.relayForward(maxBytes, proxy))
 	}
+	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"relay"}`)
+	})
+	return &http.Server{
+		Addr:              a.cfg.RelayListen,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}, nil
+}
+
+func (a *Agent) relayForward(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values(relayTokenHeader)
+		if len(values) != 1 || !relayCredentialOK(values[0], a.cfg.RelayToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// Replace the accepted listener credential with the configured
+		// next-hop credential. Authorization continues to carry the end
+		// device's credential unchanged.
+		r.Header.Set(relayTokenHeader, a.relayUpstreamToken())
+		if r.ContentLength > maxBytes {
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if int64(len(body)) > maxBytes {
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *Agent) addRelayCredential(req *http.Request) {
+	if token := a.relayUpstreamToken(); token != "" {
+		req.Header.Set(relayTokenHeader, token)
+	}
+}
+
+func (a *Agent) relayUpstreamToken() string {
+	if a.cfg.RelayUpstreamToken != "" {
+		return a.cfg.RelayUpstreamToken
+	}
+	return a.cfg.RelayToken
+}
+
+func relayCredentialOK(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+func validateServerURL(raw string, allowInsecureHTTP bool) (*url.URL, error) {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, errors.New("server URL scheme must be http or https")
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return nil, errors.New("server URL host is required")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return nil, errors.New("server URL must not contain credentials, query, fragment, or base path")
+	}
+	if parsed.Scheme == "http" && !allowInsecureHTTP && !loopbackHost(parsed.Hostname()) {
+		return nil, errors.New("plaintext HTTP requires a loopback host or allow_insecure_http")
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	return parsed, nil
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

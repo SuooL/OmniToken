@@ -155,18 +155,23 @@ func TestFileConfigDefaultsExistingFilesToProtocolV1(t *testing.T) {
 func TestLoadFileConfigAcceptsProtocolV2Settings(t *testing.T) {
 	path := writeAgentConfig(t, `{
 		"server":"http://x:1",
+		"allow_insecure_http":true,
 		"protocol_version":2,
 		"device_id":"018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
 		"device_token":"device-secret",
 		"outbox":"/tmp/omnitoken-outbox.db",
-		"outbox_max_bytes":12345
+		"outbox_max_bytes":12345,
+		"relay_token":"relay-secret",
+		"relay_upstream_token":"next-relay-secret"
 	}`)
 	fc, err := LoadFileConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fc.EffectiveProtocolVersion() != 2 || fc.DeviceToken != "device-secret" ||
-		fc.Outbox != "/tmp/omnitoken-outbox.db" || fc.OutboxMaxBytes != 12345 {
+		fc.Outbox != "/tmp/omnitoken-outbox.db" || fc.OutboxMaxBytes != 12345 ||
+		!fc.AllowInsecureHTTP || fc.RelayToken != "relay-secret" ||
+		fc.RelayUpstreamToken != "next-relay-secret" {
 		t.Fatalf("loaded config = %+v", fc)
 	}
 }

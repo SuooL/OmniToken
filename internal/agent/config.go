@@ -13,19 +13,22 @@ import (
 // FileConfig is the agent's config file (~/.omnitoken/agent.json).
 // Precedence: command-line flags > environment > this file > defaults.
 type FileConfig struct {
-	Server          string   `json:"server"`                     // server or relay-peer base URL
-	Token           string   `json:"token,omitempty"`            // ingest bearer token
-	ProtocolVersion int      `json:"protocol_version,omitempty"` // absent means legacy v1
-	DeviceID        string   `json:"device_id,omitempty"`
-	DeviceToken     string   `json:"device_token,omitempty"`
-	Outbox          string   `json:"outbox,omitempty"`
-	OutboxMaxBytes  int64    `json:"outbox_max_bytes,omitempty"`
-	Name            string   `json:"name,omitempty"`             // device name; default hostname
-	RelayListen     string   `json:"relay_listen,omitempty"`     // e.g. ":8788" to relay for peers
-	IntervalSeconds int      `json:"interval_seconds,omitempty"` // scan interval; default 15
-	ClaudeDirs      []string `json:"claude_dirs,omitempty"`      // default: auto-detect
-	CodexDirs       []string `json:"codex_dirs,omitempty"`       // default: auto-detect
-	State           string   `json:"state,omitempty"`            // offset state file path
+	Server             string   `json:"server"`                        // server or relay-peer base URL
+	AllowInsecureHTTP  bool     `json:"allow_insecure_http,omitempty"` // permit plaintext to a non-loopback target
+	Token              string   `json:"token,omitempty"`               // ingest bearer token
+	ProtocolVersion    int      `json:"protocol_version,omitempty"`    // absent means legacy v1
+	DeviceID           string   `json:"device_id,omitempty"`
+	DeviceToken        string   `json:"device_token,omitempty"`
+	Outbox             string   `json:"outbox,omitempty"`
+	OutboxMaxBytes     int64    `json:"outbox_max_bytes,omitempty"`
+	Name               string   `json:"name,omitempty"`                 // device name; default hostname
+	RelayListen        string   `json:"relay_listen,omitempty"`         // e.g. ":8788" to relay for peers
+	RelayToken         string   `json:"relay_token,omitempty"`          // protects this relay's listener
+	RelayUpstreamToken string   `json:"relay_upstream_token,omitempty"` // credential expected by the next relay hop
+	IntervalSeconds    int      `json:"interval_seconds,omitempty"`     // scan interval; default 15
+	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
+	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
+	State              string   `json:"state,omitempty"`                // offset state file path
 	// Since ("YYYY-MM-DD", local time) is the start of collection: events older
 	// than that midnight are never reported. Empty means no window.
 	//
