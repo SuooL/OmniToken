@@ -18,3 +18,4 @@ ADR 标注 supersedes,不改写历史。
 | [0011](0011-quota-via-statusline.md) | 配额改由 statusLine 捕获(取代 0007 的 OAuth 通道) | 已采纳 |
 | [0012](0012-live-process-state.md) | 活跃会话的地面真值:agent 侧读本机进程表 | 已采纳 |
 | [0013](0013-proxy-log-same-request.md) | 同一次请求被日志与代理同时观测:共享 event_id、字段归属、代理边界 | 已采纳 |
+| [0014](0014-menubar-realtime-and-interaction.md) | 菜单栏客户端:SSE 实时桥、交互与视觉对齐(修订 0008) | 已采纳 |
