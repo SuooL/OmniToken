@@ -6,6 +6,11 @@
 // single muted "其他" band. Minting extra hues would imply distinctions the
 // four-colour palette can't keep legible in both themes — the detail table
 // below carries the per-device numbers instead.
+//
+// The chart is ECharts (ADR-0010), same as every other page. It used to be
+// hand-drawn SVG with its own tooltip bolted onto invisible hit rectangles —
+// a second implementation of what the library already does, and the only
+// reason this page behaved differently from the overview beside it.
 const DEVICE_SERIES_VARS = ["--series-1", "--series-2", "--series-3", "--series-4"];
 const DEVICE_SERIES_MAX = 4;
 
@@ -38,20 +43,27 @@ const DevicesView = {
     const summary = (d.summary || []).filter((r) => r.total_tokens > 0);
     const series = this.series(summary);
     const matrix = this.matrix(d.daily || [], series, days);
-    root.innerHTML = `
-      <section class="stat-row">${this.tiles(summary, days)}</section>
-      <section class="card">
-        <div class="card-head">
-          <h2>每日用量 · 按设备堆叠 · 近 ${days} 天</h2>
-          <div class="legend">${this.legend(series)}</div>
-        </div>
-        <div id="devices-chart" class="chart">${this.chart(matrix, series)}</div>
-      </section>
-      <section class="card">
-        <h2>设备明细 · 近 ${days} 天</h2>
-        <div class="data-table">${this.table(summary)}</div>
-      </section>`;
-    this.attachTooltip(document.getElementById("devices-chart"), matrix, series);
+    // Built once: an ECharts instance cannot survive its container being
+    // rewritten on every poll.
+    if (!root.dataset.built) {
+      root.innerHTML = `
+        <section class="stat-row" id="devices-tiles"></section>
+        <section class="card">
+          <div class="card-head"><h2 id="devices-chart-title">每日用量 · 按设备堆叠</h2></div>
+          <div id="devices-chart" style="height:300px"></div>
+        </section>
+        <section class="card">
+          <h2 id="devices-table-title">设备明细</h2>
+          <div class="data-table" id="devices-table"></div>
+        </section>`;
+      root.dataset.built = "1";
+    }
+    document.getElementById("devices-chart-title").textContent =
+      `每日用量 · 按设备堆叠 · 近 ${days} 天`;
+    document.getElementById("devices-table-title").textContent = `设备明细 · 近 ${days} 天`;
+    document.getElementById("devices-tiles").innerHTML = this.tiles(summary, days);
+    document.getElementById("devices-table").innerHTML = this.table(summary);
+    this.chart(matrix, series);
   },
 
   label(device) {
@@ -70,13 +82,6 @@ const DevicesView = {
       out.push({ key: null, other: true, label: `其他 (${rest.length})`, varName: "--text-muted" });
     }
     return out;
-  },
-
-  legend(series) {
-    if (series.length < 2) return "";
-    return series.map((s) =>
-      `<span class="item"><span class="swatch" style="background:${cssVar(s.varName)}"></span>${esc(s.label)}</span>`
-    ).join("");
   },
 
   // matrix folds the sparse (device, day) rows into one dense row per day
@@ -129,91 +134,54 @@ const DevicesView = {
   },
 
   chart(rows, series) {
+    const el = document.getElementById("devices-chart");
     if (!rows.some((r) => r.total > 0)) {
-      return `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
+      el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
+      return;
     }
-    const W = 1060, H = 240, padL = 46, padR = 8, padT = 10, padB = 22;
-    const plotW = W - padL - padR, plotH = H - padT - padB;
-    const yMax = this.niceCeil(Math.max(...rows.map((r) => r.total), 1));
-    const slot = plotW / rows.length;
-    const barW = Math.min(24, slot * 0.7);
-    const y = (v) => padT + plotH * (1 - v / yMax);
-    const colors = series.map((s) => cssVar(s.varName));
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日 token 用量按设备堆叠柱状图">`;
-    for (let i = 1; i <= 4; i++) {
-      const gy = padT + (plotH * i) / 4;
-      const val = yMax * (1 - i / 4);
-      svg += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${cssVar("--grid")}" stroke-width="1"/>`;
-      if (val > 0) svg += `<text x="${padL - 6}" y="${gy + 4}" text-anchor="end">${compact(val)}</text>`;
-    }
-    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${compact(yMax)}</text>`;
-    svg += `<line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="${cssVar("--baseline")}" stroke-width="1"/>`;
-
-    const labelEvery = Math.ceil(rows.length / 8);
-    rows.forEach((row, i) => {
-      const cx = padL + slot * i + slot / 2;
-      const x = cx - barW / 2;
-      // Only non-empty slots become segments, so the 2px gap always lands
-      // between two visible bands instead of doubling up on a skipped one.
-      const parts = row.values.map((v, si) => ({ v, si })).filter((p) => p.v > 0);
-      let cum = 0;
-      parts.forEach((p, k) => {
-        const y0 = y(cum), y1 = y(cum + p.v);
-        cum += p.v;
-        const isTop = k === parts.length - 1;
-        const gapTop = isTop ? 0 : 2; // surface shows through between segments
-        const h = Math.max(y0 - y1 - gapTop, 0.5);
-        const top = y1 + gapTop;
-        svg += isTop
-          ? `<path d="${this.roundedTop(x, top, barW, h, Math.min(4, h / 2))}" fill="${colors[p.si]}"/>`
-          : `<rect x="${x}" y="${top}" width="${barW}" height="${h}" fill="${colors[p.si]}"/>`;
-      });
-      if (i % labelEvery === 0) {
-        svg += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${row.bucket.slice(5)}</text>`;
-      }
-      svg += `<rect class="hit" data-i="${i}" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${plotH}" fill="transparent"/>`;
-    });
-    return svg + `</svg>`;
-  },
-
-  roundedTop(x, y, w, h, r) {
-    return `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`;
-  },
-
-  niceCeil(v) {
-    const mag = Math.pow(10, Math.floor(Math.log10(v)));
-    for (const m of [1, 2, 2.5, 4, 5, 8, 10]) {
-      if (m * mag >= v) return m * mag;
-    }
-    return 10 * mag;
-  },
-
-  attachTooltip(el, rows, series) {
-    const tip = document.getElementById("tooltip");
-    if (!el || !tip) return;
-    el.querySelectorAll(".hit").forEach((hit) => {
-      hit.addEventListener("mousemove", (ev) => {
-        const row = rows[+hit.dataset.i];
-        const lines = series
-          .map((s, i) => ({ s, v: row.values[i] }))
-          .filter((e) => e.v > 0)
-          .map((e) => `<div class="t-row"><span class="k"><span class="swatch" style="background:${cssVar(e.s.varName)}"></span>${esc(e.s.label)}</span><span class="v">${full(e.v)}</span></div>`)
-          .join("");
-        tip.innerHTML = `<div class="t-date">${row.bucket}</div>` +
-          (lines || `<div class="t-row"><span class="k">无用量</span></div>`) +
-          `<div class="t-row"><span class="k">合计</span><span class="v">${full(row.total)}</span></div>`;
-        tip.hidden = false;
-        const pad = 14;
-        let tx = ev.clientX + pad, ty = ev.clientY + pad;
-        const r = tip.getBoundingClientRect();
-        if (tx + r.width > innerWidth - 8) tx = ev.clientX - r.width - pad;
-        if (ty + r.height > innerHeight - 8) ty = ev.clientY - r.height - pad;
-        tip.style.left = tx + "px";
-        tip.style.top = ty + "px";
-      });
-      hit.addEventListener("mouseleave", () => { tip.hidden = true; });
-    });
+    echartsFor(el).setOption({
+      grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
+        valueFormatter: (v) => (v ? full(v) : "—"),
+      },
+      legend: {
+        top: 0, left: 0, itemWidth: 9, itemHeight: 9, itemGap: 14,
+        // A single device needs no legend: the card title already says what
+        // the bars are, and one swatch explains nothing.
+        show: series.length > 1,
+        textStyle: { color: cssVar("--text-secondary"), fontSize: 11, fontFamily: chartFont() },
+      },
+      xAxis: {
+        type: "category",
+        data: rows.map((r) => r.bucket.slice(5)),
+        axisLine: { lineStyle: { color: cssVar("--baseline") } },
+        axisTick: { show: false },
+        axisLabel: { color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont() },
+      },
+      yAxis: {
+        type: "value",
+        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        axisLabel: {
+          color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont(),
+          formatter: (v) => compact(v),
+        },
+      },
+      series: series.map((s, i) => ({
+        name: s.label,
+        type: "bar",
+        stack: "tokens",
+        barMaxWidth: 26,
+        itemStyle: {
+          color: gradientOf(cssVar(s.varName)),
+          borderRadius: i === series.length - 1 ? [4, 4, 0, 0] : 0,
+        },
+        emphasis: { focus: "series" },
+        data: rows.map((r) => r.values[i] || 0),
+      })),
+      animationDuration: 420,
+      animationEasing: "cubicOut",
+    }, true);
   },
 
   // Cost is absent (not zero) when nothing the device ran had a price —

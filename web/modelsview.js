@@ -5,6 +5,10 @@
 // 配色纪律:只用既有的 --series-1..4,按固定顺序分配(来源图按 ORDER,
 // 每日图按用量排名);第 5 个及以后一律并入「其他」走 --text-muted。
 // 文字不着色,颜色只由图例和色块承担。
+//
+// 图表走 ECharts(ADR-0010),与总览/实时/速度页同一套:共享 tooltip、hover
+// 高亮、渐变与自适应都不值得再手写一遍 SVG。此前这两张图是手绘的,没有
+// 十字准星,tooltip 是自己挂在透明 hit 区上的一套平行实现。
 
 const ModelsView = {
   // 固定槽位:即使某来源当前无数据也占住它的色号,换时间窗颜色不会漂移。
@@ -44,28 +48,34 @@ const ModelsView = {
     const daily = (d.daily || []).filter((r) => r.total_tokens > 0);
     const dailySeries = this.modelSeries(daily);
 
-    root.innerHTML = `
-      <section class="stat-row">${this.tiles(models, srcSeries, unpriced)}</section>
-      <section class="card">
-        <div class="card-head">
-          <h2>模型 × 来源 · 近 ${d.days || this.DAYS} 天</h2>
-          <div class="head-tools"><div class="legend">${this.legend(srcSeries)}</div></div>
-        </div>
-        <div class="chart">${this.sourceChart(models, srcSeries)}</div>
-      </section>
-      <section class="card">
-        <div class="card-head">
-          <h2>每日模型构成 · 前 ${d.top_n || 4} 个模型</h2>
-          <div class="head-tools"><div class="legend">${this.legend(dailySeries)}</div></div>
-        </div>
-        <div class="chart" id="models-daily-chart">${this.dailyChart(daily, dailySeries, d.days || this.DAYS)}</div>
-      </section>
-      <section class="card">
-        <h2>模型明细 · 按来源拆分</h2>
-        <div class="data-table">${this.table(rows, unpriced)}</div>
-      </section>`;
-
-    this.attachTooltip(daily, dailySeries, d.days || this.DAYS);
+    // 结构只建一次:ECharts 实例挂在这些节点上,每轮轮询重建 innerHTML 会把
+    // 画布连同它的动画状态一起丢掉。
+    if (!root.dataset.built) {
+      root.innerHTML = `
+        <section class="stat-row" id="models-tiles"></section>
+        <section class="card">
+          <div class="card-head"><h2 id="models-source-title">模型 × 来源</h2></div>
+          <div id="models-source-chart"></div>
+          <p class="subtle" id="models-source-note"></p>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2 id="models-daily-title">每日模型构成</h2></div>
+          <div id="models-daily-chart" style="height:300px"></div>
+        </section>
+        <section class="card">
+          <h2>模型明细 · 按来源拆分</h2>
+          <div class="data-table" id="models-table"></div>
+        </section>`;
+      root.dataset.built = "1";
+    }
+    document.getElementById("models-source-title").textContent =
+      `模型 × 来源 · 近 ${d.days || this.DAYS} 天`;
+    document.getElementById("models-daily-title").textContent =
+      `每日模型构成 · 前 ${d.top_n || 4} 个模型`;
+    document.getElementById("models-tiles").innerHTML = this.tiles(models, srcSeries, unpriced);
+    document.getElementById("models-table").innerHTML = this.table(rows, unpriced);
+    this.sourceChart(models, srcSeries);
+    this.dailyChart(daily, dailySeries, d.days || this.DAYS);
   },
 
   // ---- 序列与配色 ---------------------------------------------------
@@ -150,13 +160,6 @@ const ModelsView = {
     return [...byModel.values()].sort((a, b) => b.total - a.total);
   },
 
-  legend(series) {
-    if (series.length < 2) return "";
-    return series.map((s) =>
-      `<span class="item"><span class="swatch" style="background:${s.color}"></span>${esc(s.label)}</span>`
-    ).join("");
-  },
-
   // ---- 概览数字 -----------------------------------------------------
 
   tiles(models, series, unpriced) {
@@ -185,38 +188,78 @@ const ModelsView = {
   // ---- 图一:模型 × 来源横向堆叠 ------------------------------------
 
   sourceChart(models, series) {
-    if (!models.length) return `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
-    const shown = models.slice(0, 12);
-    const W = 1060, labelW = 190, valueW = 150, rowH = 30, barH = 16;
-    const plotW = W - labelW - valueW;
-    const H = shown.length * rowH;
-    const max = Math.max(...shown.map((m) => m.total), 1);
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="模型按工具来源堆叠柱状图">`;
-    shown.forEach((m, i) => {
-      const y = i * rowH + (rowH - barH) / 2;
-      const base = y + barH - 4;
-      svg += `<text class="strong" x="0" y="${base}" text-anchor="start">${esc(this.trunc(this.modelLabel(m.model)))}` +
-        `<title>${esc(this.modelLabel(m.model))}</title></text>`;
-      const visible = series.filter((s) => (m.by[s.key] || 0) > 0);
-      let x = labelW;
-      visible.forEach((s, si) => {
-        const v = m.by[s.key];
-        const w = (v / max) * plotW;
-        // 段间留 2px:露出卡片表面色,不额外画分隔线。
-        const ww = Math.max(w - (si === visible.length - 1 ? 0 : 2), 1);
-        svg += `<rect x="${x.toFixed(1)}" y="${y}" width="${ww.toFixed(1)}" height="${barH}" rx="2" fill="${s.color}">` +
-          `<title>${esc(s.label)} · ${full(v)} tokens</title></rect>`;
-        x += w;
-      });
-      const cost = m.unpriced ? "无定价" : usd(m.cost);
-      svg += `<text x="${W}" y="${base}" text-anchor="end">${compact(m.total)} · ${esc(cost)}</text>`;
-    });
-    svg += `</svg>`;
-    if (models.length > shown.length) {
-      svg += `<p class="subtle">另有 ${models.length - shown.length} 个模型,见下方明细表</p>`;
+    const el = document.getElementById("models-source-chart");
+    const note = document.getElementById("models-source-note");
+    if (!models.length) {
+      el.style.height = "auto";
+      el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
+      note.textContent = "";
+      return;
     }
-    return svg;
+    const shown = models.slice(0, 12);
+    note.textContent = models.length > shown.length
+      ? `另有 ${models.length - shown.length} 个模型,见下方明细表` : "";
+    // 行高固定,画布高度跟着行数走:12 个模型和 3 个模型不该占同样的空间。
+    el.style.height = shown.length * 30 + 46 + "px";
+
+    const names = shown.map((m) => this.modelLabel(m.model));
+    const totals = shown.map((m) => m.total);
+    const costs = shown.map((m) => (m.unpriced ? "无定价" : usd(m.cost)));
+
+    echartsFor(el).setOption({
+      grid: { left: 8, right: 90, top: 28, bottom: 0, containLabel: true },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
+        valueFormatter: (v) => (v ? full(v) : "—"),
+      },
+      legend: {
+        top: 0, left: 0, itemWidth: 9, itemHeight: 9, itemGap: 14,
+        textStyle: { color: cssVar("--text-secondary"), fontSize: 11, fontFamily: chartFont() },
+      },
+      xAxis: { type: "value", show: false },
+      yAxis: {
+        type: "category",
+        data: names,
+        inverse: true, // 用量最大的排在最上面,与表格同序
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: cssVar("--text-secondary"), fontSize: 11, fontFamily: chartFont(),
+          width: 180, overflow: "truncate",
+        },
+      },
+      series: series.map((sr, i) => ({
+        name: sr.label,
+        type: "bar",
+        stack: "tokens",
+        barMaxWidth: 16,
+        itemStyle: {
+          color: sr.color,
+          borderRadius: i === series.length - 1 ? [0, 3, 3, 0] : 0,
+        },
+        emphasis: { focus: "series" },
+        data: shown.map((m) => m.by[sr.key] || 0),
+      })).concat([{
+        // 值标签挂在一根零宽的透明段上。ECharts 的 label 属于某个 series,
+        // 而「哪一段是这一行的最后一段」逐行不同,拿一根空段收尾才能让
+        // 合计与成本稳定地落在条形右侧。
+        name: "",
+        type: "bar",
+        stack: "tokens",
+        silent: true,
+        tooltip: { show: false },
+        legendHoverLink: false,
+        itemStyle: { color: "transparent" },
+        label: {
+          show: true, position: "right", color: cssVar("--text-muted"),
+          fontSize: 11, fontFamily: chartFont(),
+          formatter: (p) => `${compact(totals[p.dataIndex])} · ${costs[p.dataIndex]}`,
+        },
+        data: shown.map(() => 0),
+      }]),
+      animationDuration: 420,
+      animationEasing: "cubicOut",
+    }, true);
   },
 
   trunc(s, n = 26) {
@@ -226,46 +269,53 @@ const ModelsView = {
   // ---- 图二:每日模型构成 -------------------------------------------
 
   dailyChart(daily, series, days) {
-    if (!daily.length) return `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
-    const buckets = this.fillDays(daily, series, days);
-    const W = 1060, H = 240, padL = 46, padR = 8, padT = 10, padB = 22;
-    const plotW = W - padL - padR, plotH = H - padT - padB;
-    const yMax = this.niceCeil(Math.max(...buckets.map((b) => b.total), 1));
-    const slot = plotW / buckets.length;
-    const barW = Math.min(24, slot * 0.7);
-    const y = (v) => padT + plotH * (1 - v / yMax);
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日模型构成堆叠柱状图">`;
-    for (let i = 1; i <= 4; i++) {
-      const gy = padT + (plotH * i) / 4;
-      const val = yMax * (1 - i / 4);
-      svg += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${cssVar("--grid")}" stroke-width="1"/>`;
-      if (val > 0) svg += `<text x="${padL - 6}" y="${gy + 4}" text-anchor="end">${compact(val)}</text>`;
+    const el = document.getElementById("models-daily-chart");
+    if (!daily.length) {
+      el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
+      return;
     }
-    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${compact(yMax)}</text>`;
-    svg += `<line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="${cssVar("--baseline")}" stroke-width="1"/>`;
-
-    const labelEvery = Math.ceil(buckets.length / 8);
-    buckets.forEach((row, i) => {
-      const cx = padL + slot * i + slot / 2;
-      const x = cx - barW / 2;
-      let cum = 0;
-      series.forEach((s) => {
-        const v = row.by[s.key] || 0;
-        if (!v) return;
-        const top = y(cum + v), hgt = y(cum) - y(cum + v);
-        cum += v;
-        if (hgt < 0.5) return;
-        const isTop = cum >= row.total;
-        const gap = isTop ? 0 : 2; // 段间 2px 表面色间隙
-        svg += `<rect x="${x.toFixed(1)}" y="${(top + gap).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(hgt - gap, 0.5).toFixed(1)}" fill="${s.color}"/>`;
-      });
-      if (i % labelEvery === 0) {
-        svg += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${esc(row.bucket.slice(5))}</text>`;
-      }
-      svg += `<rect class="hit" data-i="${i}" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${plotH}" fill="transparent"/>`;
-    });
-    return svg + `</svg>`;
+    const buckets = this.fillDays(daily, series, days);
+    echartsFor(el).setOption({
+      grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "shadow" }, ...tooltipStyle(),
+        valueFormatter: (v) => (v ? full(v) : "—"),
+      },
+      legend: {
+        top: 0, left: 0, itemWidth: 9, itemHeight: 9, itemGap: 14,
+        textStyle: { color: cssVar("--text-secondary"), fontSize: 11, fontFamily: chartFont() },
+      },
+      xAxis: {
+        type: "category",
+        data: buckets.map((b) => b.bucket.slice(5)),
+        axisLine: { lineStyle: { color: cssVar("--baseline") } },
+        axisTick: { show: false },
+        axisLabel: { color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont() },
+      },
+      yAxis: {
+        type: "value",
+        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        axisLabel: {
+          color: cssVar("--text-muted"), fontSize: 10, fontFamily: chartFont(),
+          formatter: (v) => compact(v),
+        },
+      },
+      series: series.map((sr, i) => ({
+        name: sr.label,
+        type: "bar",
+        stack: "tokens",
+        barMaxWidth: 26,
+        // 只有最顶上那段圆角,整叠柱子才读作一根柱子(与总览页一致)。
+        itemStyle: {
+          color: gradientOf(sr.color),
+          borderRadius: i === series.length - 1 ? [4, 4, 0, 0] : 0,
+        },
+        emphasis: { focus: "series" },
+        data: buckets.map((b) => b.by[sr.key] || 0),
+      })),
+      animationDuration: 420,
+      animationEasing: "cubicOut",
+    }, true);
   },
 
   // fillDays 补齐区间内无数据的日子,免得柱子被挤成假的连续序列。
@@ -286,40 +336,6 @@ const ModelsView = {
       out.push(byBucket[key] || { bucket: key, total: 0, by: {} });
     }
     return out;
-  },
-
-  niceCeil(v) {
-    const mag = Math.pow(10, Math.floor(Math.log10(v)));
-    for (const m of [1, 2, 2.5, 4, 5, 8, 10]) {
-      if (m * mag >= v) return m * mag;
-    }
-    return 10 * mag;
-  },
-
-  attachTooltip(daily, series, days) {
-    const el = document.getElementById("models-daily-chart");
-    if (!el) return;
-    const buckets = this.fillDays(daily, series, days);
-    const tip = document.getElementById("tooltip");
-    el.querySelectorAll(".hit").forEach((hit) => {
-      hit.addEventListener("mousemove", (ev) => {
-        const row = buckets[+hit.dataset.i];
-        tip.innerHTML = `<div class="t-date">${esc(row.bucket)}</div>` +
-          series.filter((s) => row.by[s.key]).map((s) =>
-            `<div class="t-row"><span class="k"><span class="swatch" style="background:${s.color}"></span>${esc(s.label)}</span><span class="v">${full(row.by[s.key])}</span></div>`
-          ).join("") +
-          `<div class="t-row"><span class="k">合计</span><span class="v">${full(row.total)}</span></div>`;
-        tip.hidden = false;
-        const pad = 14;
-        let tx = ev.clientX + pad, ty = ev.clientY + pad;
-        const r = tip.getBoundingClientRect();
-        if (tx + r.width > innerWidth - 8) tx = ev.clientX - r.width - pad;
-        if (ty + r.height > innerHeight - 8) ty = ev.clientY - r.height - pad;
-        tip.style.left = tx + "px";
-        tip.style.top = ty + "px";
-      });
-      hit.addEventListener("mouseleave", () => { tip.hidden = true; });
-    });
   },
 
   // ---- 明细表 -------------------------------------------------------
