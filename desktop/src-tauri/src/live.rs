@@ -374,20 +374,18 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
                 .get("authoritative")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
+                && window
+                    .get("resets_at")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|resets_at| resets_at > 0)
                 && (window
                     .get("projected_percent")
                     .and_then(Value::as_f64)
                     .is_some_and(|projected| projected > 100.0)
-                    || (window
-                        .get("resets_at")
+                    || window
+                        .get("remaining_minutes")
                         .and_then(Value::as_i64)
-                        .is_some_and(|resets_at| resets_at > 0)
-                        && window
-                            .get("remaining_minutes")
-                            .and_then(Value::as_i64)
-                            .is_some_and(|remaining| {
-                                (0..=URGENT_RESET_MINUTES).contains(&remaining)
-                            })))
+                        .is_some_and(|remaining| (0..=URGENT_RESET_MINUTES).contains(&remaining)))
         })
         .max_by(|a, b| {
             let a_projected = a
@@ -442,16 +440,21 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             let window = quota
                 .get("window_label")
                 .and_then(Value::as_str)
-                .or_else(|| quota.get("scope").and_then(Value::as_str))
                 .filter(|label| !label.is_empty())
                 .unwrap_or("窗口");
+            let scope = quota
+                .get("scope")
+                .and_then(Value::as_str)
+                .filter(|scope| !scope.is_empty())
+                .map(|scope| format!(" [{scope}]"))
+                .unwrap_or_default();
             let device = quota
                 .get("device")
                 .and_then(Value::as_str)
                 .filter(|device| !device.is_empty());
             let identity = device
-                .map(|device| format!("{source} {window} · {device}"))
-                .unwrap_or_else(|| format!("{source} {window}"));
+                .map(|device| format!("{source} {window}{scope} · {device}"))
+                .unwrap_or_else(|| format!("{source} {window}{scope}"));
             let reset = quota
                 .get("resets_at")
                 .and_then(Value::as_i64)
@@ -1443,7 +1446,7 @@ mod tests {
         assert!(view.risk.is_none());
         assert!(view
             .quota_summary
-            .contains("Claude 5 小时窗口 · macmini 42% · 192 分钟后重置"));
+            .contains("Claude 5 小时窗口 [five_hour] · macmini 42% · 192 分钟后重置"));
     }
 
     #[test]
@@ -1523,14 +1526,21 @@ mod tests {
             "speed":{"tps":0.0,"sessions":[]},
             "processes":{"sessions":[]},
             "devices":[],
-            "quotas":[{
-                "source":"claude-code","scope":"five_hour",
-                "window_label":"5 小时窗口","device":"macmini",
-                "used_percent":42.0,"resets_at":0,"remaining_minutes":0
-            }],
+            "quotas":[
+                {
+                    "source":"claude-code","scope":"seven_day_sonnet",
+                    "window_label":"7 天窗口","device":"macmini",
+                    "used_percent":42.0,"resets_at":0,"remaining_minutes":0
+                },
+                {
+                    "source":"claude-code","scope":"seven_day_opus",
+                    "window_label":"7 天窗口","device":"macmini",
+                    "used_percent":18.0,"resets_at":0,"remaining_minutes":0
+                }
+            ],
             "windows":[{
                 "key":"unknown-reset","authoritative":true,
-                "used_percent":42.0,"projected_percent":70.0,
+                "used_percent":42.0,"projected_percent":121.0,
                 "resets_at":0,"remaining_minutes":0
             }],
             "burn":{"per_minute":0}
@@ -1539,7 +1549,10 @@ mod tests {
         assert!(view.risk.is_none());
         assert!(view
             .quota_summary
-            .contains("Claude 5 小时窗口 · macmini 42%"));
+            .contains("Claude 7 天窗口 [seven_day_sonnet] · macmini 42%"));
+        assert!(view
+            .quota_summary
+            .contains("Claude 7 天窗口 [seven_day_opus] · macmini 18%"));
         assert!(!view.quota_summary.contains("重置"));
         assert_eq!(view.quota_reset_minutes, None);
     }
