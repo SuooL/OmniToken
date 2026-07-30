@@ -322,7 +322,7 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             rate,
             session_count: open_count,
         }
-    } else if payload.is_some() {
+    } else if rate.is_some() {
         ActivityView {
             kind: ActivityKind::Idle,
             text: "当前空闲".to_string(),
@@ -378,10 +378,16 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
                     .get("projected_percent")
                     .and_then(Value::as_f64)
                     .is_some_and(|projected| projected > 100.0)
-                    || window
-                        .get("remaining_minutes")
+                    || (window
+                        .get("resets_at")
                         .and_then(Value::as_i64)
-                        .is_some_and(|remaining| (0..=URGENT_RESET_MINUTES).contains(&remaining)))
+                        .is_some_and(|resets_at| resets_at > 0)
+                        && window
+                            .get("remaining_minutes")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|remaining| {
+                                (0..=URGENT_RESET_MINUTES).contains(&remaining)
+                            })))
         })
         .max_by(|a, b| {
             let a_projected = a
@@ -432,9 +438,30 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         .iter()
         .take(MAX_POPOVER_ITEMS)
         .map(|quota| {
+            let source = source_label(quota.get("source").and_then(Value::as_str).unwrap_or(""));
+            let window = quota
+                .get("window_label")
+                .and_then(Value::as_str)
+                .or_else(|| quota.get("scope").and_then(Value::as_str))
+                .filter(|label| !label.is_empty())
+                .unwrap_or("窗口");
+            let device = quota
+                .get("device")
+                .and_then(Value::as_str)
+                .filter(|device| !device.is_empty());
+            let identity = device
+                .map(|device| format!("{source} {window} · {device}"))
+                .unwrap_or_else(|| format!("{source} {window}"));
+            let reset = quota
+                .get("resets_at")
+                .and_then(Value::as_i64)
+                .filter(|resets_at| *resets_at > 0)
+                .and_then(|_| quota.get("remaining_minutes").and_then(Value::as_i64))
+                .filter(|remaining| *remaining >= 0)
+                .map(|remaining| format!(" · {remaining} 分钟后重置"))
+                .unwrap_or_default();
             format!(
-                "{} {:.0}%",
-                source_label(quota.get("source").and_then(Value::as_str).unwrap_or("")),
+                "{identity} {:.0}%{reset}",
                 quota
                     .get("used_percent")
                     .and_then(Value::as_f64)
@@ -442,12 +469,11 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             )
         })
         .collect::<Vec<_>>()
-        .join(" · ");
+        .join(" / ");
     let quotas_more = quotas.len().saturating_sub(MAX_POPOVER_ITEMS);
-    let quota_reset_minutes = quotas
-        .iter()
-        .filter_map(|quota| quota.get("remaining_minutes").and_then(Value::as_i64))
-        .min();
+    // Reset timing is embedded beside the quota it describes. A single tail
+    // would be ambiguous when one provider exposes several windows.
+    let quota_reset_minutes = None;
 
     let mut devices: Vec<DeviceView> = payload
         .and_then(|data| data.get("devices"))
@@ -1397,8 +1423,8 @@ mod tests {
                 {"device":"laptop","state":"stale","has_procs":true,"running":0}
             ],
             "quotas": [
-                {"source":"claude-code","used_percent":42.0,"remaining_minutes":192},
-                {"source":"codex","used_percent":18.0,"remaining_minutes":192}
+                {"source":"claude-code","scope":"five_hour","window_label":"5 小时窗口","device":"macmini","used_percent":42.0,"resets_at":99_999,"remaining_minutes":192},
+                {"source":"codex","scope":"weekly","window_label":"7 天窗口","device":"workstation","used_percent":18.0,"resets_at":99_999,"remaining_minutes":192}
             ],
             "windows": [],
             "burn": {"per_minute":3100}
@@ -1415,7 +1441,9 @@ mod tests {
         assert_eq!(view.sessions_more, 1);
         assert_eq!(view.devices_more, 1);
         assert!(view.risk.is_none());
-        assert!(view.quota_summary.contains("Claude 42%"));
+        assert!(view
+            .quota_summary
+            .contains("Claude 5 小时窗口 · macmini 42% · 192 分钟后重置"));
     }
 
     #[test]
@@ -1435,6 +1463,22 @@ mod tests {
         assert_eq!(view.activity.kind, ActivityKind::Idle);
         assert_eq!(view.activity.text, "当前空闲");
         assert_eq!(view.connection.kind, ConnectionKind::Polling);
+    }
+
+    #[test]
+    fn missing_speed_with_no_open_process_is_unknown() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[],
+            "burn":{}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+        assert_eq!(view.activity.kind, ActivityKind::Unknown);
+        assert_eq!(view.activity.text, "活动未知");
     }
 
     #[test]
@@ -1473,6 +1517,31 @@ mod tests {
         assert!(view_for(Some(&expired_only), ConnectionKind::Live, 11_000)
             .risk
             .is_none());
+
+        let unknown_reset = json!({
+            "generated_at": 10_000,
+            "speed":{"tps":0.0,"sessions":[]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[{
+                "source":"claude-code","scope":"five_hour",
+                "window_label":"5 小时窗口","device":"macmini",
+                "used_percent":42.0,"resets_at":0,"remaining_minutes":0
+            }],
+            "windows":[{
+                "key":"unknown-reset","authoritative":true,
+                "used_percent":42.0,"projected_percent":70.0,
+                "resets_at":0,"remaining_minutes":0
+            }],
+            "burn":{"per_minute":0}
+        });
+        let view = view_for(Some(&unknown_reset), ConnectionKind::Live, 11_000);
+        assert!(view.risk.is_none());
+        assert!(view
+            .quota_summary
+            .contains("Claude 5 小时窗口 · macmini 42%"));
+        assert!(!view.quota_summary.contains("重置"));
+        assert_eq!(view.quota_reset_minutes, None);
     }
 
     #[test]

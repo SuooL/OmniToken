@@ -26,13 +26,22 @@ async function apiGet(path) {
 
 function contentHeight() {
   const panel = document.querySelector(".panel");
-  const cs = getComputedStyle(panel);
-  const kids = [...panel.children].filter((el) => !el.hidden);
-  const inner = kids.reduce((height, el) => height + el.scrollHeight, 0) +
-    (parseFloat(cs.rowGap) || 0) * Math.max(0, kids.length - 1);
-  return Math.ceil(inner +
-    parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
-    parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth));
+  // Measure an intrinsic clone. Measuring the live flex item makes #main's
+  // current clientHeight a lower bound, so a popover can grow but never shrink.
+  const clone = panel.cloneNode(true);
+  Object.assign(clone.style, {
+    position: "fixed",
+    visibility: "hidden",
+    pointerEvents: "none",
+    width: `${PANEL_W}px`,
+    height: "auto",
+    maxHeight: "none",
+    inset: "0 auto auto -10000px",
+  });
+  document.body.appendChild(clone);
+  const height = Math.ceil(clone.scrollHeight);
+  clone.remove();
+  return height;
 }
 
 function fitWindow() {
