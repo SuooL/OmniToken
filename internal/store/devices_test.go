@@ -160,3 +160,47 @@ func seedDeviceStore(t *testing.T) (s *Store, day1, from, to time.Time) {
 	}
 	return s, day1, day1.Add(-time.Hour), day2.Add(3 * time.Hour)
 }
+
+// The dominant-model label is display, so it folds routing variants — while
+// the rows behind it stay unfolded because the caller prices them by the id
+// the tool reported. Before this, the devices page said 1.8B for a model the
+// models page (which folds) reported as 2.3B.
+func TestDeviceSummaryFoldsTopModelButKeepsRawRows(t *testing.T) {
+	s, err := Open(t.TempDir() + "/devfold.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.Local)
+	ev := func(id, mdl string, out int64) model.Event {
+		return model.Event{EventID: id, TS: base.UnixMilli(), Device: "mac",
+			Source: "claude-code", Model: mdl, OutputTokens: out}
+	}
+	if _, err := s.InsertEvents([]model.Event{
+		ev("a", "claude-opus-4-8", 600),
+		ev("b", "anthropic.claude-opus-4-8", 500),
+		ev("c", "claude-opus-5", 900), // beats either half, loses to the whole
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.DeviceSummary(base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one device", rows)
+	}
+	if rows[0].TopModel != "claude-opus-4-8" || rows[0].TopModelTokens != 1100 {
+		t.Errorf("top model = %q %d, want claude-opus-4-8 1100",
+			rows[0].TopModel, rows[0].TopModelTokens)
+	}
+	// The per-model rows keep the reported ids — pricing looks up those.
+	ids := map[string]bool{}
+	for _, m := range rows[0].Models {
+		ids[m.Model] = true
+	}
+	if !ids["anthropic.claude-opus-4-8"] {
+		t.Errorf("reported ids lost: %v — pricing would miss them", ids)
+	}
+}

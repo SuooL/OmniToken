@@ -2,7 +2,10 @@ package server
 
 import (
 	"net/http"
+	"sort"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 // cacheModelEntry is one row of the cache view (F16): raw aggregates plus
@@ -31,6 +34,12 @@ type cacheTotals struct {
 	SavedUSD float64 `json:"saved_usd"`
 	Cache1h  int64   `json:"cache_1h_tokens"`
 	Cache5m  int64   `json:"cache_5m_tokens"`
+}
+
+// cacheTraffic is what the cache page ranks by: everything that either hit the
+// cache or had to be sent because it did not.
+func cacheTraffic(e *cacheModelEntry) int64 {
+	return e.Input + e.CacheRead + e.CacheCreation
 }
 
 func hitRate(cacheRead, input int64) float64 {
@@ -63,34 +72,60 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models := make([]cacheModelEntry, 0, len(rows))
+	// Priced per reported id, displayed per folded name (internal/model/
+	// canonical.go). The order matters: a price is looked up by what the tool
+	// sent, while one model reaching us through two channels is one row on
+	// screen. Merging after pricing gets both.
+	models := []*cacheModelEntry{}
+	byName := map[string]*cacheModelEntry{}
 	totals := cacheTotals{}
 	var totalRead, totalInput int64
 	unpriced := []string{}
 	for _, row := range rows {
-		e := cacheModelEntry{
-			Model: row.Model, Events: row.Events, Input: row.Input,
-			CacheRead: row.CacheRead, CacheCreation: row.CacheCreation,
-			Cache1h: row.Cache1h, Cache5m: row.Cache5m,
-			HitRate: hitRate(row.CacheRead, row.Input),
-		}
+		var saved float64
 		// Resolve handles Codex synthetic model names (codex-auto-review, "").
 		p, ok := s.Prices().Lookup(s.Prices().Resolve(row.Model, time.UnixMilli(row.MinTS)))
 		if ok && p.CacheRead > 0 {
-			e.SavedUSD = float64(row.CacheRead) * (p.Input - p.CacheRead)
+			saved = float64(row.CacheRead) * (p.Input - p.CacheRead)
 		} else if !ok {
+			// Reported id, not the display name: this list exists so the user
+			// can write a pricing override that actually matches.
 			unpriced = append(unpriced, row.Model)
 		}
 		// If ok but CacheRead price is 0, reads bill at the input rate
 		// (ADR-0005 fallback) — genuinely zero savings, not unpriced.
-		models = append(models, e)
-		totals.SavedUSD += e.SavedUSD
+		name := model.CanonicalModel(row.Model)
+		e := byName[name]
+		if e == nil {
+			e = &cacheModelEntry{Model: name}
+			byName[name] = e
+			models = append(models, e)
+		}
+		e.Events += row.Events
+		e.Input += row.Input
+		e.CacheRead += row.CacheRead
+		e.CacheCreation += row.CacheCreation
+		e.Cache1h += row.Cache1h
+		e.Cache5m += row.Cache5m
+		e.SavedUSD += saved
+		// Rates are recomputed from the merged sums, never averaged: the mean
+		// of two hit rates is not the hit rate of the two together.
+		e.HitRate = hitRate(e.CacheRead, e.Input)
+
+		totals.SavedUSD += saved
 		totals.Cache1h += row.Cache1h
 		totals.Cache5m += row.Cache5m
 		totalRead += row.CacheRead
 		totalInput += row.Input
 	}
 	totals.HitRate = hitRate(totalRead, totalInput)
+
+	// Re-sorted rather than kept in the store's order: merging changes the
+	// ranking, since a model split across two channels can outweigh one that
+	// was listed above both of its halves.
+	sort.Slice(models, func(i, j int) bool {
+		return cacheTraffic(models[i]) > cacheTraffic(models[j])
+	})
 
 	dailyOut := make([]cacheDailyEntry, 0, len(daily))
 	for _, d := range daily {

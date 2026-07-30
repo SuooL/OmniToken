@@ -38,6 +38,11 @@ type SpeedModelRow struct {
 // Quantiles are computed in SQL with window functions: the median averages
 // the two middle ranks (exact for odd and even n), P90 uses the nearest-rank
 // method (value at rank ceil(0.9*n)). TTFT is ranked independently of speed.
+// Routing variants are not folded here, unlike the aggregate views. Quantiles
+// cannot be merged after the fact — the median of two medians is not a median —
+// so folding would mean re-ranking every event in Go for a channel that reports
+// the id its own client sent. If a proxy ever does see one model under two ids,
+// it shows as two rows, which is at least not a wrong number.
 func (s *Store) ProxySpeedByModel(from, to time.Time) ([]SpeedModelRow, error) {
 	const srcCond = `source = 'proxy'`
 	rows, err := s.db.Query(

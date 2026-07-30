@@ -52,6 +52,10 @@ func (f EventFilter) where() (string, []any) {
 }
 
 // EventPage returns one page of raw events matching the filter, newest first.
+// Model ids are returned exactly as the tool reported them, unlike every
+// aggregate view (internal/model/canonical.go). This is the drill-down: the
+// row is one event, and the point of looking at one event is to see what was
+// actually recorded — including which channel it came through.
 func (s *Store) EventPage(f EventFilter, limit, offset int) ([]model.Event, error) {
 	if limit <= 0 {
 		limit = 100

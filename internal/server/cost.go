@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/store"
 )
 
@@ -26,10 +27,15 @@ func (s *Server) costFromUsage(rows []store.ModelUsageRow) (PeriodCost, map[stri
 		cost, ok := s.Prices().Cost(r.Model, time.UnixMilli(r.MinTS),
 			r.InputTokens, r.OutputTokens, r.CacheRead, r.CacheCreation, r.Cache1h, r.Cache5m)
 		if !ok {
+			// Unpriced ids stay exactly as reported: this list is what the user
+			// pastes into pricing_overrides, and a folded display name would not
+			// match the events it is meant to price.
 			unpricedSet[r.Model] = true
 			continue
 		}
-		perModel[r.Model] += cost
+		// Priced by the reported id, reported under the display name — two
+		// routing variants of one model are one line of spend, not two.
+		perModel[model.CanonicalModel(r.Model)] += cost
 		if realProviders[r.Provider] {
 			pc.RealUSD += cost
 		} else {

@@ -20,6 +20,24 @@ import (
 // These names are never written to the database. Pricing keys off the id the
 // tool actually reported, and rewriting history to match a display preference
 // would be a bad trade.
+//
+// # Where to fold
+//
+// The rule is: fold when displaying or grouping, never before a price lookup.
+// Folding early breaks pricing, because a display name is not guaranteed to
+// exist in the pricing table; folding late splits one model across two rows.
+// Where both apply — the cache page, per-device cost — price each reported id
+// first, then merge the results under the folded name.
+//
+// Fold before any LIMIT or top-N as well. Two variants that each place below
+// the cut can outrank everything once added together, and separately they let
+// one model compete against itself for a slot.
+//
+// Two places deliberately keep the reported id, and are commented as such:
+// the event drill-down (looking at one event means seeing what was recorded)
+// and the unpriced-model list (that string is what a pricing override must
+// match). The proxy speed channel keeps it too, for a narrower reason —
+// quantiles cannot be merged after the fact.
 
 var (
 	// Bedrock region prefixes: us.anthropic.claude-x → anthropic.claude-x
