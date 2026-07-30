@@ -17,6 +17,7 @@ import (
 
 	"github.com/suool/omnitoken/internal/collect"
 	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/proxy"
 )
 
 type Config struct {
@@ -88,7 +89,7 @@ func (a *Agent) Run() error {
 	}
 	if a.cfg.ProxyListen != "" {
 		go func() {
-			err := RunProxy(ProxyConfig{
+			err := proxy.Run(proxy.Config{
 				Listen:    a.cfg.ProxyListen,
 				Device:    a.cfg.DeviceName,
 				Upstreams: a.cfg.ProxyUpstreams,

@@ -11,6 +11,7 @@ import (
 	"github.com/suool/omnitoken/internal/collect"
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/pricing"
+	"github.com/suool/omnitoken/internal/proxy"
 	"github.com/suool/omnitoken/internal/store"
 	"github.com/suool/omnitoken/web"
 )
@@ -54,8 +55,36 @@ func New(cfg *Config) (*Server, error) {
 // Doing it here, before Run starts the collectors, has no such race.
 func (s *Server) ResetOffsets() (int, error) { return s.state.ResetOffsets() }
 
+// startProxy hosts the local API proxy (F14) when configured.
+//
+// The sink writes straight to the store instead of posting to /api/v1/ingest:
+// the events are already inside the process that owns the database, and a
+// round trip through its own HTTP endpoint would only add a way to fail. It
+// notifies the broadcaster for the same reason the collectors do — the Live
+// page must see proxy traffic as it happens (references.md).
+func (s *Server) startProxy() {
+	if s.cfg.ProxyListen == "" {
+		return
+	}
+	go func() {
+		err := proxy.Run(proxy.Config{
+			Listen:    s.cfg.ProxyListen,
+			Device:    s.cfg.DeviceName,
+			Upstreams: s.cfg.ProxyUpstreams,
+		}, func(events []model.Event) error {
+			inserted, err := s.store.InsertEvents(events, time.Now().UnixMilli())
+			if err == nil && inserted > 0 {
+				s.bcast.Notify()
+			}
+			return err
+		})
+		log.Printf("proxy: %v", err)
+	}()
+}
+
 func (s *Server) Run() error {
 	go s.runCollectors()
+	s.startProxy()
 
 	if s.cfg.Token == "" {
 		log.Printf("WARNING: no ingest token configured (\"token\" in config) — anyone who can reach %s can submit data", s.cfg.Listen)

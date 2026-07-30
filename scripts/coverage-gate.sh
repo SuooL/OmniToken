@@ -7,6 +7,12 @@
 # we deliberately do NOT gate coverage on I/O-heavy packages (server, collect's SSH
 # and git paths, cmd) where mocking costs a lot and catches little.
 #
+# internal/agent is no longer on this list. The proxy — the only thing in it that
+# minted event_ids — moved to internal/proxy when the server needed to host it as
+# well, and the floor followed the code rather than the directory name. What is
+# left in agent (push loop, relay, config) mints no ids, so by this file's own
+# stated rule it does not belong here.
+#
 # Thresholds are the measured values rounded down by 1-2 points, so an ordinary
 # refactor that shifts the percentage slightly does not fail the build. Raise them
 # by hand when coverage improves — this script never rewrites itself, because a CI
@@ -23,7 +29,7 @@ MODULE="github.com/suool/omnitoken"
 CRITICAL=(
   "internal/parser/codex:90"
   "internal/parser/claudecode:80"
-  "internal/agent:64"
+  "internal/proxy:88"
 )
 
 output="$(go test ./... -cover 2>&1)"

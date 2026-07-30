@@ -42,6 +42,8 @@
 | `collect.local_dirs` | 自动探测 | Claude Code 日志目录 |
 | `collect.codex_dirs` | 自动探测 | Codex 日志目录(`$CODEX_HOME` 生效) |
 | `collect.ssh_hosts` | — | `[{host, name}]`,host 可用 ~/.ssh/config 别名 |
+| `proxy_listen` | 空 | 在服务端内起本地 API 代理(F14),如 `127.0.0.1:8899`;空 = 不启用 |
+| `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` |
 
 ### 重扫 `-rescan`
 
@@ -148,9 +150,34 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 
 ### 本地代理用法(F14)
 
-agent 配置 `"proxy_listen": "127.0.0.1:8899"` 后,脚本把 base_url 指向
-`http://127.0.0.1:8899/anthropic`(或 `/openai`、自定义前缀),请求被透明转发
-(方法/头/体原样,Authorization 一并转发,仅剥 Accept-Encoding 由 Go 透明解压),
-同时产出 `source=proxy` 事件:token 四分量、**精确 TTFT 与耗时**、
-`account_label` = API key 的 SHA1 指纹前 12 位(绝不存明文),可区分多账号。
+**服务端或 agent 都能起**,配 `"proxy_listen": "127.0.0.1:8899"` 即可,二选一:
+单机场景配在服务端(它本来就在扫这台机器的日志,再跑一个 agent 只为代理会把
+日志白扫一遍);被监控机器上没有服务端时配在 agent。
+
+把工具的 base_url 指过去:
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8899/anthropic   # Claude Code
+export OPENAI_BASE_URL=http://127.0.0.1:8899/openai         # Codex 等
+```
+
+请求被透明转发(方法/头/体原样,Authorization 一并转发,仅剥 Accept-Encoding
+由 Go 透明解压),同时产出 `source=proxy` 事件:token 四分量、**精确 TTFT 与耗时**、
+`account_label` = 凭据的 SHA-256 指纹前 12 位(绝不存明文),可区分多账号。
 上报失败进内存缓冲(1000 条)自动补发。
+
+计费通道按**凭据形态**判定,不按「走了代理就是 API key」:
+`x-api-key` 或 `Bearer sk-ant-api…` / `sk-…` 记为 API 计费(真实美元);
+`Bearer sk-ant-oat…`(Claude Code 订阅)与 `Bearer eyJ…`(ChatGPT 计划的 Codex)
+记为订阅(等效成本);认不出的形态保持未定,按等效成本算 —— 猜成 API key 会在
+账单上凭空多出真实支出,猜成订阅只是少算一个本就标着「等效」的数。
+
+#### 与 Clash / 分流代理共存
+
+TUN 模式抓的是 IP 层流量,而 127.0.0.0/8 走 lo0 不进 TUN,所以「工具 → 本地代理」
+这一跳分流规则看不见也不需要看见。代理自己发往上游的那一跳走正常网络栈,照样进
+TUN、照样匹配你的**域名规则**。
+
+**唯一会失效的是按进程匹配的规则**(`PROCESS-NAME` / `PROCESS-PATH`):发起连接的
+进程从 `claude` / `codex` 变成了 `omnitoken`。有这类规则的话,补一条指向同一节点的
+`PROCESS-NAME,omnitoken,<节点>` 即可。
