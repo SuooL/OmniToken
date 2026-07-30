@@ -23,9 +23,9 @@ const listen = window.__TAURI__ && window.__TAURI__.event.listen;
 // Set from the stored settings before the first snapshot. Rust owns the value
 // and the normalisation; this is only the copy the panel reads between saves.
 let SERVER = "";
-// Kept only so the settings box can be pre-filled. Every request's credential is
-// attached on the Rust side (ADR-0016).
-let TOKEN = "";
+// The secret itself never crosses IPC. This bit only lets settings explain that
+// leaving the password field blank retains the credential already stored.
+let HAS_TOKEN = false;
 
 // Live data is pushed, not pulled: Rust holds one /api/v1/stream connection and
 // forwards each snapshot here, to the tray glyph and to the quota alerts at the
@@ -471,7 +471,10 @@ function say(text, kind) {
 
 function openSettings() {
   els.input.value = SERVER;
-  els.token.value = TOKEN;
+  els.token.value = "";
+  els.token.placeholder = HAS_TOKEN
+    ? "已保存访问令牌；留空保持不变"
+    : "服务端只监听本机时留空";
   say("");
   els.main.hidden = true;
   els.settings.hidden = false;
@@ -480,10 +483,6 @@ function openSettings() {
   els.input.select();
 }
 
-// Always reconnect on the way out. A save can succeed even when the probe fails,
-// so leaving by way of 取消 can still mean the address changed — and the readout
-// would otherwise keep showing another server's numbers until that server
-// happens to broadcast something.
 function closeSettings() {
   els.settings.hidden = true;
   els.main.hidden = false;
@@ -496,28 +495,18 @@ async function saveSettings() {
   els.save.disabled = true;
   say("保存中…");
   try {
-    // Persist first, then check. The address may well be right and the server
-    // simply not started yet, and throwing away what was just typed would be a
-    // poor way to report that.
     const stored = await invoke("settings_set", {
       server: els.input.value,
       token: els.token.value,
     });
     SERVER = stored.server;
-    TOKEN = stored.token;
+    HAS_TOKEN = stored.has_token;
     showServer();
     els.input.value = SERVER;
-
-    try {
-      await apiGet("/api/v1/health");
-    } catch (e) {
-      say("已保存,但连接失败:" + String(e), "bad");
-      return;
-    }
-    // settings_set already restarted the bridge against the new address.
     closeSettings();
   } catch (e) {
-    // settings_set rejected the input, or could not write the file.
+    // Validation happens before persistence, so prior working settings remain
+    // active when the address or credentials fail.
     say(String(e), "bad");
   } finally {
     els.save.disabled = false;
@@ -555,7 +544,7 @@ document.addEventListener("keydown", (e) => {
 async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
-  TOKEN = stored.token || "";
+  HAS_TOKEN = !!stored.has_token;
   showServer();
 
   // Subscribe before anything else: the bridge is already running by the time

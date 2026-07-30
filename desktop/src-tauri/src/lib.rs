@@ -87,32 +87,28 @@ async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn settings_get(app: tauri::AppHandle) -> settings::Settings {
-    settings::load(&app)
+fn settings_get(app: tauri::AppHandle) -> settings::SettingsView {
+    settings::SettingsView::from(&settings::load(&app))
 }
 
-/// Normalize, persist, and hand back what was actually stored.
-///
-/// Saving happens before the panel has confirmed the address answers: the
-/// server may simply not be running yet, and losing the address the user just
-/// typed would be the wrong way to say so. The frontend probes afterwards and
-/// reports the result separately.
+/// Authenticate the complete candidate before replacing persisted settings.
+/// The response is redacted even after success: the webview learns only whether
+/// a credential exists, never what it is.
 #[tauri::command]
-fn settings_set(
+async fn settings_set(
     app: tauri::AppHandle,
     server: String,
     token: String,
-) -> Result<settings::Settings, String> {
-    let mut next = settings::load(&app);
-    next.server = settings::normalize(&server)?;
-    next.token = token.trim().to_string();
+) -> Result<settings::SettingsView, String> {
+    let current = settings::load(&app);
+    let next = settings::validate_candidate(&current, &server, &token).await?;
     settings::save(&app, &next)?;
 
     // Point the bridge at the new address now instead of waiting for the old
     // connection to break on its own — otherwise the tray would keep reporting
     // the previous server, possibly for as long as it stays up.
     live::respawn(&app);
-    Ok(next)
+    Ok(settings::SettingsView::from(&next))
 }
 
 /// The tray's own poll is gone: the bridge pushes every snapshot to both the

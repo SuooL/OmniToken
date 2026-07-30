@@ -88,6 +88,32 @@ impl Default for Settings {
     }
 }
 
+/// The settings shape exposed over IPC. The bearer credential never crosses
+/// into the webview; it gets only enough information to explain that a blank
+/// token field will retain an existing credential.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SettingsView {
+    pub server: String,
+    pub has_token: bool,
+    pub tray_title: TrayTitle,
+    pub notify: bool,
+    pub autostart: bool,
+    pub hotkey: bool,
+}
+
+impl From<&Settings> for SettingsView {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            server: settings.server.clone(),
+            has_token: !settings.token.is_empty(),
+            tray_title: settings.tray_title,
+            notify: settings.notify,
+            autostart: settings.autostart,
+            hotkey: settings.hotkey,
+        }
+    }
+}
+
 /// Turn what a person would actually type into a base URL.
 ///
 /// `192.168.1.10:8787` is what someone reads off another machine, so a missing
@@ -152,9 +178,39 @@ pub fn save(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
     std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Build and authenticate a replacement before the persisted settings change.
+///
+/// A blank token means "keep the credential already stored", because the
+/// webview receives only `has_token` and can never pre-fill the secret itself.
+pub async fn validate_candidate(
+    current: &Settings,
+    server: &str,
+    token: &str,
+) -> Result<Settings, String> {
+    let mut candidate = current.clone();
+    candidate.server = normalize(server)?;
+    let token = token.trim();
+    if !token.is_empty() {
+        candidate.token = token.to_string();
+    }
+
+    crate::get_json(
+        &candidate.server,
+        "/api/v1/overview?days=1",
+        &candidate.token,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(candidate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[test]
     fn fills_in_a_missing_scheme() {
@@ -251,5 +307,118 @@ mod tests {
             let back: Settings = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
             assert_eq!(back.tray_title, t);
         }
+    }
+
+    fn authenticated_server(
+        required_token: &'static str,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let (request_tx, request_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                bytes.extend_from_slice(&buf[..n]);
+                if n == 0 || bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            let authorized = request
+                .lines()
+                .any(|line| line == format!("authorization: Bearer {required_token}"));
+            request_tx.send(request).unwrap();
+            let (status, body) = if authorized {
+                ("200 OK", "{}")
+            } else {
+                ("401 Unauthorized", r#"{"error":"unauthorized"}"#)
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (address, request_rx, handle)
+    }
+
+    #[test]
+    fn valid_bearer_credential_passes_the_overview_probe() {
+        let (server, request_rx, handle) = authenticated_server("valid-token");
+
+        let candidate = tauri::async_runtime::block_on(validate_candidate(
+            &Settings::default(),
+            &server,
+            "valid-token",
+        ))
+        .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(request.starts_with("GET /api/v1/overview?days=1 HTTP/1.1\r\n"));
+        assert!(request.contains("\r\nauthorization: Bearer valid-token\r\n"));
+        assert_eq!(candidate.server, server);
+        assert_eq!(candidate.token, "valid-token");
+    }
+
+    #[test]
+    fn invalid_bearer_credential_fails_before_settings_can_be_saved() {
+        let (server, request_rx, handle) = authenticated_server("valid-token");
+
+        let result = tauri::async_runtime::block_on(validate_candidate(
+            &Settings::default(),
+            &server,
+            "wrong-token",
+        ));
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(request.contains("\r\nauthorization: Bearer wrong-token\r\n"));
+        assert!(result.unwrap_err().contains("401"));
+    }
+
+    #[test]
+    fn missing_bearer_credential_fails_an_authenticated_probe() {
+        let (server, request_rx, handle) = authenticated_server("valid-token");
+
+        let result =
+            tauri::async_runtime::block_on(validate_candidate(&Settings::default(), &server, ""));
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(!request.to_ascii_lowercase().contains("\r\nauthorization:"));
+        assert!(result.unwrap_err().contains("401"));
+    }
+
+    #[test]
+    fn blank_token_keeps_the_existing_credential() {
+        let (server, request_rx, handle) = authenticated_server("saved-token");
+        let mut current = Settings::default();
+        current.server = server.clone();
+        current.token = "saved-token".into();
+
+        let candidate =
+            tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ")).unwrap();
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(request.contains("\r\nauthorization: Bearer saved-token\r\n"));
+        assert_eq!(candidate.token, "saved-token");
+    }
+
+    #[test]
+    fn serialized_settings_view_redacts_the_token() {
+        let mut settings = Settings::default();
+        settings.token = "never-send-this".into();
+
+        let json = serde_json::to_value(SettingsView::from(&settings)).unwrap();
+
+        assert_eq!(json["has_token"], true);
+        assert!(json.get("token").is_none());
+        assert!(!json.to_string().contains("never-send-this"));
     }
 }
