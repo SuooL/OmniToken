@@ -74,6 +74,10 @@ func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) er
 	if adminToken == "" {
 		return errors.New("admin credential is required")
 	}
+	hubURL, err := validateServerURL(serverURL, fc.AllowInsecureHTTP)
+	if err != nil {
+		return err
+	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -86,7 +90,7 @@ func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) er
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", strings.TrimSuffix(serverURL, "/")+"/api/v2/enroll", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", hubURL.String()+"/api/v2/enroll", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -36,6 +36,7 @@ func TestAgentEnrollPersistsStableIdentityAndDoesNotPrintCredentials(t *testing.
 		"-config", configPath,
 		"-server", server.URL,
 		"-name", "Before",
+		"-allow-insecure-http",
 	}, &output); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,8 @@ func TestAgentEnrollPersistsStableIdentityAndDoesNotPrintCredentials(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ProtocolVersion != 2 || first.DeviceID == "" || first.DeviceToken != "device-secret" {
+	if first.ProtocolVersion != 2 || first.DeviceID == "" || first.DeviceToken != "device-secret" ||
+		!first.AllowInsecureHTTP {
 		t.Fatalf("first config = %+v", first)
 	}
 	if strings.Contains(output.String(), "device-secret") || strings.Contains(output.String(), "admin-secret") {

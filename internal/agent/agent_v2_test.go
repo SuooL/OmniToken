@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,5 +376,21 @@ func TestRunOnceDoesNotSendResidentHeartbeat(t *testing.T) {
 	}
 	if heartbeatRequests != 0 {
 		t.Fatalf("RunOnce sent %d resident heartbeats", heartbeatRequests)
+	}
+}
+
+func TestEnrollRejectsRemotePlaintextWithoutExplicitOptIn(t *testing.T) {
+	err := Enroll(
+		"http://hub.example:8787",
+		"admin-secret",
+		FileConfig{
+			DeviceID:    outboxDeviceID,
+			DeviceToken: "device-secret",
+			Name:        "agent",
+		},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "allow_insecure_http") {
+		t.Fatalf("Enroll plaintext error = %v", err)
 	}
 }

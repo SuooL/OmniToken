@@ -56,7 +56,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-rescan]
-  omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME]
+  omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
@@ -185,23 +185,26 @@ func runAgent(args []string) {
 		log.Fatalf("config: %v", err)
 	}
 	a, err := agent.New(agent.Config{
-		ServerURL:       strings.TrimSuffix(srvURL, "/"),
-		Token:           pick(*token, "OMNITOKEN_TOKEN", fc.Token),
-		ProtocolVersion: fc.EffectiveProtocolVersion(),
-		DeviceID:        fc.DeviceID,
-		DeviceToken:     pick("", "OMNITOKEN_DEVICE_TOKEN", fc.DeviceToken),
-		OutboxPath:      fc.Outbox,
-		OutboxMaxBytes:  fc.OutboxMaxBytes,
-		AgentVersion:    version,
-		DeviceName:      deviceName,
-		Since:           since,
-		ClaudeDirs:      claudeDirs,
-		CodexDirs:       codexDirs,
-		StatePath:       statePath,
-		Interval:        time.Duration(intervalSec) * time.Second,
-		RelayListen:     pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
-		ProxyListen:     pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
-		ProxyUpstreams:  fc.ProxyUpstreams,
+		ServerURL:          strings.TrimSuffix(srvURL, "/"),
+		AllowInsecureHTTP:  fc.AllowInsecureHTTP,
+		Token:              pick(*token, "OMNITOKEN_TOKEN", fc.Token),
+		ProtocolVersion:    fc.EffectiveProtocolVersion(),
+		DeviceID:           fc.DeviceID,
+		DeviceToken:        pick("", "OMNITOKEN_DEVICE_TOKEN", fc.DeviceToken),
+		OutboxPath:         fc.Outbox,
+		OutboxMaxBytes:     fc.OutboxMaxBytes,
+		AgentVersion:       version,
+		DeviceName:         deviceName,
+		Since:              since,
+		ClaudeDirs:         claudeDirs,
+		CodexDirs:          codexDirs,
+		StatePath:          statePath,
+		Interval:           time.Duration(intervalSec) * time.Second,
+		RelayListen:        pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
+		RelayToken:         pick("", "OMNITOKEN_RELAY_TOKEN", fc.RelayToken),
+		RelayUpstreamToken: pick("", "OMNITOKEN_RELAY_UPSTREAM_TOKEN", fc.RelayUpstreamToken),
+		ProxyListen:        pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
+		ProxyUpstreams:     fc.ProxyUpstreams,
 	})
 	if err != nil {
 		log.Fatalf("init: %v", err)
@@ -232,6 +235,7 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	configPath := fs.String("config", filepath.Join(server.DataDir(), "agent.json"), "agent config file (JSON)")
 	serverURL := fs.String("server", "", "hub base URL")
 	name := fs.String("name", "", "device display name (default: hostname)")
+	allowInsecureHTTP := fs.Bool("allow-insecure-http", false, "allow plaintext HTTP to a non-loopback hub")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -272,6 +276,9 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	)
 	if err != nil {
 		return err
+	}
+	if *allowInsecureHTTP {
+		candidate.AllowInsecureHTTP = true
 	}
 	if err := agent.Enroll(candidate.Server, admin, candidate, nil); err != nil {
 		return err
