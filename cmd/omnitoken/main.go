@@ -170,10 +170,17 @@ func runAgent(args []string) {
 	if statePath == "" {
 		statePath = filepath.Join(server.DataDir(), "agent-state.json")
 	}
+	// LoadFileConfig already rejected a malformed date, so this cannot fail
+	// here; checking anyway keeps the assumption from going unstated.
+	since, err := fc.SinceTime()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	a, err := agent.New(agent.Config{
 		ServerURL:      strings.TrimSuffix(srvURL, "/"),
 		Token:          pick(*token, "OMNITOKEN_TOKEN", fc.Token),
 		DeviceName:     deviceName,
+		Since:          since,
 		ClaudeDirs:     claudeDirs,
 		CodexDirs:      codexDirs,
 		StatePath:      statePath,

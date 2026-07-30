@@ -268,8 +268,29 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | `interval_seconds` | — | 15 | 扫描周期 |
 | `claude_dirs` / `codex_dirs` | — | 自动探测 | 日志目录 |
 | `state` | — | `~/.omnitoken/agent-state.json` | offset 状态 |
+| `since` | — | 空(不限) | 采集起点 `YYYY-MM-DD`,早于该日零点的事件不上报。日期写错**直接启动失败**,不会静默当成「不限」 |
 | `proxy_listen` | `OMNITOKEN_PROXY` | 空(关闭) | 本地 API 代理监听地址,如 `127.0.0.1:8899` |
 | `proxy_upstreams` | — | anthropic/openai 内置 | `{前缀: 上游 base}`,与内置合并 |
+
+### 什么时候必须设 `since`
+
+**这台机器的日志不完全是它自己干的活时。** 家目录同步(iCloud / Syncthing / 恢复备份)
+会让同一批会话文件出现在多台机器上,而 agent 推送是**自报**,在服务端优先级高于
+SSH 拉取的旁观推断(ADR-0015)。所以给一台家目录是同步副本的机器新装 agent,
+它会理直气壮地把另一台机器的历史认领过去。
+
+实测数据:第二台 Mac 的日志事件里 **92% 已经存在于第一台名下** —— 543 个 Codex
+rollout 文件有 539 个连 UUID 都一模一样。
+
+判断方法:在两台机器上比一下文件名。
+
+```sh
+ssh 另一台 'ls ~/.codex/sessions | sort' > /tmp/b.txt
+ls ~/.codex/sessions | sort | comm -12 - /tmp/b.txt | wc -l   # 非 0 就说明有同步
+```
+
+有重叠就把 `since` 设成你真正希望它开始计入的那天。**只影响归属与上报范围,不影响
+计数** —— 同一次请求无论被几台机器看到都只计一次,这条不变。
 
 ### 本地代理用法(F14)
 
