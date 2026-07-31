@@ -135,6 +135,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings", s.adminAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/v1/stream", s.readAuthStream(s.handleStream))
 	mux.HandleFunc("GET /api/v1/live", s.readAuth(s.handleLive))
+	mux.HandleFunc("GET /api/v1/telemetry", s.readAuth(s.handleTelemetry))
 	// Health stays open on purpose: it carries no usage data, and it is what a
 	// client probes to tell "wrong address" from "wrong token".
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
