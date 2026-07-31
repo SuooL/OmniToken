@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
@@ -118,6 +119,13 @@ type SpeedModelStat struct {
 	Samples      int64   `json:"samples"`  // events carrying a generation interval
 	Streams      int64   `json:"streams"`  // distinct (device, session) streams
 	Coverage     float64 `json:"coverage"` // samples ÷ all events of this model
+	// TTFT is measured, never derived: the proxy times it around the request,
+	// Codex writes it into task_complete. It has its own sample count because
+	// it exists for a different subset than the interval does — a Codex turn
+	// reports one TTFT however many requests it made.
+	TTFTSamples  int64   `json:"ttft_samples"`
+	MedianTTFTMS float64 `json:"median_ttft_ms"`
+	P90TTFTMS    float64 `json:"p90_ttft_ms"`
 }
 
 // No per-response distribution is reported here, and that is a finding rather
@@ -148,7 +156,7 @@ type SpeedModelStat struct {
 // interval. A speed built on 12% of the events is not a fact about the model.
 func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) {
 	rows, err := s.db.Query(
-		`SELECT model, device, session_id, ts, gen_ms, output_tokens
+		`SELECT model, device, session_id, ts, gen_ms, output_tokens, ttft_ms
 		 FROM events
 		 WHERE ts >= ? AND ts < ? AND gen_ms > 0 AND output_tokens > 0`,
 		from.UnixMilli(), to.UnixMilli())
@@ -161,10 +169,11 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 	streams := map[streamKey][]span{}
 	tokens := map[string]int64{}
 	samples := map[string]int64{}
+	ttfts := map[string][]int64{}
 	for rows.Next() {
 		var mdl, device, session string
-		var ts, genMS, outTok int64
-		if err := rows.Scan(&mdl, &device, &session, &ts, &genMS, &outTok); err != nil {
+		var ts, genMS, outTok, ttftMS int64
+		if err := rows.Scan(&mdl, &device, &session, &ts, &genMS, &outTok, &ttftMS); err != nil {
 			return nil, err
 		}
 		// Same folding as every other view: two ids for one model must not
@@ -174,6 +183,9 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 		streams[k] = append(streams[k], span{ts - genMS, ts})
 		tokens[mdl] += outTok
 		samples[mdl]++
+		if ttftMS > 0 {
+			ttfts[mdl] = append(ttfts[mdl], ttftMS)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -205,10 +217,32 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 		if all := totals[mdl]; all > 0 {
 			st.Coverage = float64(st.Samples) / float64(all)
 		}
+		st.TTFTSamples = int64(len(ttfts[mdl]))
+		st.MedianTTFTMS, st.P90TTFTMS = ttftQuantiles(ttfts[mdl])
 		out = append(out, st)
 	}
 	sortModelStats(out)
 	return out, nil
+}
+
+// ttftQuantiles returns the median and the nearest-rank P90 of one model's
+// first-token latencies, matching how the proxy channel ranks its own
+// (speed.go). Unlike speed, these are not merged with anything: a latency is a
+// latency whether it was measured around a request or reported by a turn.
+func ttftQuantiles(values []int64) (median, p90 float64) {
+	n := len(values)
+	if n == 0 {
+		return 0, 0
+	}
+	sorted := append([]int64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	if n%2 == 1 {
+		median = float64(sorted[n/2])
+	} else {
+		median = float64(sorted[n/2-1]+sorted[n/2]) / 2
+	}
+	rank := (9*n + 9) / 10
+	return median, float64(sorted[min(rank, n)-1])
 }
 
 // eventCountByModel counts every event per model, interval or not, so coverage

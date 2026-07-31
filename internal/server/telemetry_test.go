@@ -171,8 +171,12 @@ func TestTelemetryRangeControlsOnlyBoundedSpeedSeries(t *testing.T) {
 				got.Rolling5H.EndMS != now.UnixMilli() {
 				t.Errorf("rolling_5h changed with range %q: %+v", tc.value, got.Rolling5H)
 			}
-			if len(got.Speed.UnmeasuredSources) != 1 || got.Speed.UnmeasuredSources[0] != "codex" {
-				t.Errorf("empty successful range unmeasured_sources = %v, want [codex]", got.Speed.UnmeasuredSources)
+			// An empty range names no unmeasured source: the list is derived
+			// from the events actually in range, so Codex appears there only
+			// when it has events without an interval — never as a fixed rule
+			// (ADR-0009's 2026-07-31 revision made Codex measurable).
+			if len(got.Speed.UnmeasuredSources) != 0 {
+				t.Errorf("empty successful range unmeasured_sources = %v, want none", got.Speed.UnmeasuredSources)
 			}
 		})
 	}

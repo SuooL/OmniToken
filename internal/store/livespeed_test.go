@@ -278,10 +278,15 @@ func TestLiveSpeedFiltersByDeviceAndSkipsUnmeasured(t *testing.T) {
 
 	other := gen("b", "s2", now.Add(-2*time.Second), 4_000, 400)
 	other.Device = "server"
-	// gen_ms 0 means "not measured" (pre-ADR-0009 rows), never "instant".
+	// gen_ms 0 means "not measured" (pre-ADR-0009 rows, or a Codex turn whose
+	// timing Codex itself did not record), never "instant".
 	unmeasured := gen("c", "s3", now.Add(-2*time.Second), 0, 900)
+	// Codex carries a real interval since ADR-0009's 2026-07-31 revision: it
+	// comes from the turn's own task_complete timing, so it counts like any
+	// other measured stream.
 	codex := gen("d", "s4", now.Add(-2*time.Second), 4_000, 1_200)
 	codex.Source = "codex"
+	codex.Model = "gpt-5.6-sol"
 
 	if _, err := st.InsertEvents([]model.Event{
 		gen("a", "s1", now.Add(-2*time.Second), 4_000, 400), other, unmeasured, codex,
@@ -293,11 +298,18 @@ func TestLiveSpeedFiltersByDeviceAndSkipsUnmeasured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LiveSpeedSince: %v", err)
 	}
-	if len(got.Sessions) != 1 || got.Sessions[0].SessionID != "s1" {
-		t.Fatalf("sessions = %+v, want only s1 on mac", got.Sessions)
+	if len(got.Sessions) != 2 {
+		t.Fatalf("sessions = %+v, want s1 and the Codex stream on mac", got.Sessions)
 	}
-	if got.OutputTokens != 400 {
-		t.Errorf("output_tokens = %d, want 400; Codex speed remains unmeasured even with a positive gen_ms-shaped row", got.OutputTokens)
+	if got.OutputTokens != 1_600 {
+		t.Errorf("output_tokens = %d, want 1600 (400 Claude + 1200 Codex); the gen_ms 0 row stays out", got.OutputTokens)
+	}
+	bySource := map[string]int64{}
+	for _, row := range got.Sources {
+		bySource[row.Key] = row.OutputTokens
+	}
+	if bySource["codex"] != 1_200 {
+		t.Errorf("codex contribution = %d, want 1200", bySource["codex"])
 	}
 }
 

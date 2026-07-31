@@ -24,10 +24,13 @@ const (
 //     union basis (ADR-0009), with the coverage each figure rests on;
 //   - exact: the local proxy channel, which measures duration and TTFT directly.
 //
-// Codex appears in none of them. Its rollout files replay history with the
-// flush timestamp rather than the event's own (70% of records), so it has no
-// usable generation interval — stated on the page rather than left as a silent
-// gap (ADR-0009).
+// Codex is in the first two since ADR-0009's 2026-07-31 revision. Its interval
+// is not derived from log line timestamps — those really are the flush time for
+// a replayed thread — but from the turn's own task_complete record
+// (duration_ms - time_to_first_token_ms), which is why it survives the replay.
+// It reads low because that interval still contains the turn's tool calls: a
+// conservative lower bound, labelled as one on the page, alongside the share of
+// turns that carry an interval at all.
 func (s *Server) handleSpeed(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 30)
 	now := time.Now()
