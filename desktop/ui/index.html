@@ -3,88 +3,80 @@
 <head>
 <meta charset="utf-8">
 <title>OmniToken</title>
-<!-- tokens.css is shared verbatim with the nine-page panel (ADR-0014); the
-     `viz-root` class on <body> is the scope those tokens are defined against. -->
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body class="viz-root">
 <div class="panel">
   <header>
-    <span class="mark">OmniToken</span>
-    <!-- Says which channel the numbers arrived on. aria-live because it can
-         change without the user doing anything, and "these figures are 60s old"
-         is the kind of thing a screen reader user must not have to poll for. -->
     <span class="link" id="link" data-mode="" aria-live="polite">连接中…</span>
+    <span class="device-head" id="device-head">—</span>
   </header>
 
-  <div id="main">
-    <!-- The one question a menubar glance is for: will this window run out
-         before it resets. -->
-    <section class="forecast" id="forecast">
-      <div class="eyebrow" id="fc-window">—</div>
-      <div class="fc-read">
-        <span class="fc-now" id="fc-now">—</span>
-        <span class="fc-arrow" id="fc-arrow" aria-hidden="true">→</span>
-        <span class="fc-proj" id="fc-proj"></span>
-        <span class="fc-reset" id="fc-reset"></span>
+  <main id="main" aria-live="polite">
+    <section class="risk" id="risk" hidden>
+      <div class="risk-copy">
+        <div class="eyebrow" id="risk-source">配额风险</div>
+        <div>
+          <span class="risk-now" id="risk-now">—</span>
+          <span class="risk-arrow">→</span>
+          <span class="risk-projected" id="risk-projected">—</span>
+          <span class="risk-reset" id="risk-reset"></span>
+        </div>
       </div>
-
-      <!-- Three line styles, each meaning something: dotted for a path we do
-           not know, a solid dot for the one reading we do, dashed for the
-           forecast. See app.js drawTrack. -->
-      <svg class="track" id="track" viewBox="0 0 314 46" preserveAspectRatio="none"
+      <svg class="track" id="track" viewBox="0 0 354 42" preserveAspectRatio="none"
            role="img" aria-labelledby="track-desc">
         <desc id="track-desc"></desc>
-        <line class="baseline" x1="2" y1="40.5" x2="312" y2="40.5"></line>
-        <!-- The wall, labelled on the line itself: a "100%" caption stranded in
-             the axis row below has nothing to point at. The tag sits at the LEFT
-             end — a breach climbs towards the top right, so a right-hand tag is
-             exactly where the red dashes cross it. -->
-        <g id="track-ceiling" hidden>
-          <text class="ceiling-tag" x="2" y="10.3">100%</text>
-          <line class="ceiling" x1="26" y1="7.3" x2="312" y2="7.3"></line>
+        <line class="baseline" x1="2" y1="37.5" x2="352" y2="37.5"></line>
+        <g id="track-ceiling">
+          <text class="ceiling-tag" x="2" y="9">100%</text>
+          <line class="ceiling" x1="28" y1="6.5" x2="352" y2="6.5"></line>
         </g>
         <path class="past" id="track-past" d=""></path>
         <path class="future" id="track-future" d=""></path>
         <path class="breach" id="track-breach" d=""></path>
-        <line class="nowline" id="track-nowline" x1="0" y1="0" x2="0" y2="0"></line>
         <circle class="nowdot" id="track-nowdot" r="2.6" cx="-9" cy="-9"></circle>
       </svg>
       <div class="axis">
-        <span id="ax-start"></span>
-        <span class="axis-mid" id="ax-ceiling"></span>
-        <span id="ax-end"></span>
+        <span id="axis-start"></span>
+        <span id="axis-hit"></span>
+        <span id="axis-end"></span>
       </div>
     </section>
 
-    <!-- Hairline-divided readouts rather than cards: this is an instrument
-         panel, and three bordered boxes in a row is the dashboard default. -->
+    <section class="activity" id="activity">
+      <h1 id="activity-hero">活动未知</h1>
+      <div class="session-list" id="session-list"></div>
+      <div class="more" id="sessions-more" hidden></div>
+    </section>
+
+    <section class="summary-row quota-row">
+      <span class="eyebrow">配额</span>
+      <span class="summary-value" id="quota-summary">—</span>
+      <span class="summary-tail" id="quota-reset"></span>
+    </section>
+    <div class="more" id="quotas-more" hidden></div>
+
     <section class="readouts">
-      <div class="ro" id="ro-speed">
-        <div class="eyebrow">生成</div>
-        <div class="fig" id="speed-value">—</div>
+      <div>
+        <span class="eyebrow">燃烧</span>
+        <span class="fig" id="burn-value">—</span>
       </div>
-      <div class="ro" id="ro-burn">
-        <div class="eyebrow">燃烧</div>
-        <div class="fig" id="burn-value">—</div>
-      </div>
-      <div class="ro" id="ro-today">
-        <div class="eyebrow">今日</div>
-        <div class="fig" id="today-value">—</div>
+      <div>
+        <span class="eyebrow">今日</span>
+        <span class="fig" id="today-value">—</span>
       </div>
     </section>
 
-    <!-- Union of generation intervals over the burn window. -->
-    <section class="strip" id="strip" hidden>
-      <div class="strip-track" id="strip-track"></div>
-      <span class="strip-note" id="strip-note"></span>
+    <section class="devices">
+      <div class="section-head">
+        <span class="eyebrow">设备</span>
+        <span id="device-summary">无设备数据</span>
+      </div>
+      <div class="device-list" id="device-list"></div>
+      <div class="more" id="devices-more" hidden></div>
     </section>
-
-    <section class="others" id="others"></section>
-
-    <section class="procs" id="procs"></section>
-  </div>
+  </main>
 
   <section id="settings" class="settings" hidden>
     <label class="eyebrow" for="server-input">服务端地址</label>
@@ -94,7 +86,7 @@
     <label class="eyebrow" for="token-input">访问令牌</label>
     <input id="token-input" type="password" placeholder="服务端只监听本机时留空"
            spellcheck="false" autocapitalize="off" autocorrect="off">
-    <div class="hint">服务端监听非 loopback 地址时,读取需要 <code>config.json</code> 里的 <code>token</code>。</div>
+    <div class="hint">服务端监听非 loopback 地址时，读取需要 <code>config.json</code> 里的 <code>token</code>。</div>
     <div class="msg" id="settings-msg" aria-live="polite"></div>
     <div class="actions">
       <button type="button" id="settings-cancel">取消</button>
@@ -103,15 +95,10 @@
   </section>
 
   <footer>
-    <span class="server" id="server"></span>
-    <span class="foot-actions">
-      <button type="button" id="open-full" class="textlink">完整面板 ↗</button>
-      <button type="button" id="open-settings" class="textlink">设置</button>
-    </span>
+    <button type="button" id="open-full" class="textlink">完整面板 ↗</button>
+    <button type="button" id="open-settings" class="textlink">设置</button>
   </footer>
 </div>
-<!-- format-core.js is shared verbatim with the panel, so both surfaces write a
-     number the same way (ADR-0014). -->
 <script src="format-core.js"></script>
 <script src="app.js"></script>
 </body>

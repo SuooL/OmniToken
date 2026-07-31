@@ -97,6 +97,54 @@ func TestHandleLiveReportsBurnOverTheWindow(t *testing.T) {
 	}
 }
 
+func TestLivePayloadUsesHeartbeatReceiptNotFutureClientEventForRegisteredLiveness(t *testing.T) {
+	s := newLiveTestServer(t)
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.Local)
+	if _, err := s.store.RegisterDevice(testV2DeviceA, "Registered", "device-token", []string{"heartbeat"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.TouchDevice(testV2DeviceA, now.Add(-20*time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	seedEventOn(t, s, "future-clock", testV2DeviceA, now.Add(24*time.Hour))
+	if _, err := s.store.RegisterDevice(testV2DeviceB, "No Usage", "device-token-b", nil, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := s.livePayload(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(payload["devices"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var devices []struct {
+		Device          string `json:"device"`
+		ConnectionState string `json:"connection_state"`
+		IdentityStatus  string `json:"identity_status"`
+	}
+	if err := json.Unmarshal(raw, &devices); err != nil {
+		t.Fatal(err)
+	}
+	byDevice := map[string]struct {
+		State    string
+		Identity string
+	}{}
+	for _, device := range devices {
+		byDevice[device.Device] = struct {
+			State    string
+			Identity string
+		}{device.ConnectionState, device.IdentityStatus}
+	}
+	if got := byDevice[testV2DeviceA]; got.State != "offline" || got.Identity != "registered" {
+		t.Fatalf("future client event changed heartbeat liveness: %#v", got)
+	}
+	if got := byDevice[testV2DeviceB]; got.State != "offline" || got.Identity != "registered" {
+		t.Fatalf("registered device without usage missing/offline state: %#v", got)
+	}
+}
+
 // Panel and Live page must never disagree about the same ten minutes, which
 // holds only as long as both render the payload livePayload builds. Compared
 // by shape rather than deep equality: the two are built at different instants,

@@ -140,3 +140,92 @@ func TestWriteSkeletonConfigNeverOverwrites(t *testing.T) {
 		t.Errorf("existing config was modified:\n got %s\nwant %s", got, original)
 	}
 }
+
+func TestFileConfigDefaultsExistingFilesToProtocolV1(t *testing.T) {
+	path := writeAgentConfig(t, `{"server":"http://x:1","token":"legacy"}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fc.EffectiveProtocolVersion(); got != 1 {
+		t.Fatalf("effective protocol = %d, want 1", got)
+	}
+}
+
+func TestLoadFileConfigAcceptsProtocolV2Settings(t *testing.T) {
+	path := writeAgentConfig(t, `{
+		"server":"http://x:1",
+		"allow_insecure_http":true,
+		"protocol_version":2,
+		"device_id":"018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+		"device_token":"device-secret",
+		"outbox":"/tmp/omnitoken-outbox.db",
+		"outbox_max_bytes":12345,
+		"relay_token":"relay-secret",
+		"relay_upstream_token":"next-relay-secret"
+	}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.EffectiveProtocolVersion() != 2 || fc.DeviceToken != "device-secret" ||
+		fc.Outbox != "/tmp/omnitoken-outbox.db" || fc.OutboxMaxBytes != 12345 ||
+		!fc.AllowInsecureHTTP || fc.RelayToken != "relay-secret" ||
+		fc.RelayUpstreamToken != "next-relay-secret" {
+		t.Fatalf("loaded config = %+v", fc)
+	}
+}
+
+func TestLoadFileConfigRejectsUnsupportedProtocol(t *testing.T) {
+	path := writeAgentConfig(t, `{"server":"http://x:1","protocol_version":3}`)
+	if _, err := LoadFileConfig(path); err == nil {
+		t.Fatal("unsupported protocol loaded without error")
+	}
+}
+
+func TestPrepareEnrollmentCreatesStableIdentityAndRenamePreservesIt(t *testing.T) {
+	first, err := PrepareEnrollment(FileConfig{IntervalSeconds: 15}, "https://hub.example", "Before", "fixed-device-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ProtocolVersion != 2 || first.DeviceID == "" || first.DeviceToken != "fixed-device-token" {
+		t.Fatalf("first enrollment config = %+v", first)
+	}
+
+	renamed, err := PrepareEnrollment(first, "https://hub.example", "After", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.DeviceID != first.DeviceID || renamed.DeviceToken != first.DeviceToken {
+		t.Fatalf("rename changed identity: before=%+v after=%+v", first, renamed)
+	}
+	if renamed.Name != "After" {
+		t.Fatalf("renamed display name = %q, want After", renamed.Name)
+	}
+}
+
+func TestSaveFileConfigPersistsEnrollmentWithMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "agent.json")
+	fc, err := PrepareEnrollment(FileConfig{}, "https://hub.example", "Agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveFileConfig(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DeviceID != fc.DeviceID || loaded.DeviceToken != fc.DeviceToken ||
+		loaded.ProtocolVersion != 2 || loaded.Server != "https://hub.example" {
+		t.Fatalf("loaded enrollment = %+v, want %+v", loaded, fc)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config mode = %#o, want 0600", got)
+	}
+}

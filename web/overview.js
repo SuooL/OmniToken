@@ -8,17 +8,51 @@ const SERIES = [
   { key: "cache_creation_tokens",  label: "缓存写入", varName: "--series-4" },
 ];
 
+function overviewIsEmpty(data) {
+  return ["today", "week", "month", "all_time"]
+    .every((key) => !((data[key] && data[key].total_tokens) || 0));
+}
+
 const Overview = {
   lastData: null,
+  _loadGeneration: 0,
+
+  invalidate() {
+    this._loadGeneration += 1;
+  },
 
   async load() {
+    const loadID = ++this._loadGeneration;
+    const root = document.getElementById("view-overview");
+    if (!this.lastData) {
+      renderState(root, { kind: "loading", title: "正在加载总览" });
+    }
     try {
-      this.lastData = await Api.get("/api/v1/overview?days=30");
-      this.render(this.lastData);
+      const data = await Api.get("/api/v1/overview?days=30");
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.render(data);
+      this.lastData = data;
+      if (overviewIsEmpty(data)) {
+        renderState(root, {
+          kind: "empty", title: "暂无用量数据",
+          detail: "尚未采集到 token 用量;采集开始后这里会显示累计与趋势。",
+        });
+      } else {
+        renderState(root, { kind: "ready", title: "" });
+      }
       document.getElementById("refresh-note").textContent =
         "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
-      document.getElementById("refresh-note").textContent = "服务不可达,重试中…";
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      const issue = classifyAPIError(e);
+      renderState(root, {
+        kind: this.lastData ? "stale" : issue.kind,
+        title: this.lastData ? "总览数据可能已过期" : issue.title,
+        detail: issue.detail,
+        action: { label: "重试", run: () => this.load() },
+      });
+      document.getElementById("refresh-note").textContent = this.lastData
+        ? "刷新失败,正在显示上次数据" : issue.title;
     }
   },
 
@@ -77,6 +111,8 @@ const Overview = {
     const chart = echartsFor(el);
     const days = this.fillDays(daily);
     chart.setOption({
+      aria: { enabled: true },
+      animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
       tooltip: {
         trigger: "axis",

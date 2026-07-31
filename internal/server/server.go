@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
@@ -19,11 +20,13 @@ import (
 )
 
 type Server struct {
-	cfg    *Config
-	store  *store.Store
-	state  *collect.State
-	prices *pricing.Table
-	bcast  *broadcaster
+	cfg                   *Config
+	store                 *store.Store
+	state                 *collect.State
+	prices                *pricing.Table
+	bcast                 *broadcaster
+	now                   func() time.Time
+	streamRefreshInterval time.Duration
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -97,8 +100,23 @@ func (s *Server) Run() error {
 	if s.cfg.Token == "" {
 		log.Printf("WARNING: no ingest token configured (\"token\" in config) — anyone who can reach %s can submit data", s.cfg.Listen)
 	}
+	mux := s.routes()
+
+	if s.loopbackOnly() {
+		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
+	} else {
+		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
+	}
+	return newHTTPServer(s.cfg.Listen, mux).ListenAndServe()
+}
+
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", s.auth(s.handleIngest))
+	mux.HandleFunc("POST /api/v2/enroll", s.handleEnrollV2)
+	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
+	mux.HandleFunc("POST /api/v2/heartbeat", s.handleHeartbeatV2)
+	mux.HandleFunc("POST /api/v2/devices/{device_id}/revoke", s.adminAuth(s.handleRevokeDeviceV2))
 	// Every read goes through readAuth. It is a no-op on a loopback-only
 	// server, so wrapping them all costs nothing in the common case and means
 	// adding an endpoint cannot accidentally leave one open.
@@ -114,7 +132,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("GET /api/v1/devices", s.readAuth(s.handleDevices))
 	mux.HandleFunc("GET /api/v1/models", s.readAuth(s.handleModels))
 	mux.HandleFunc("GET /api/v1/settings", s.readAuth(s.handleGetSettings))
-	mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
+	mux.HandleFunc("PUT /api/v1/settings", s.adminAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/v1/stream", s.readAuthStream(s.handleStream))
 	mux.HandleFunc("GET /api/v1/live", s.readAuth(s.handleLive))
 	// Health stays open on purpose: it carries no usage data, and it is what a
@@ -126,13 +144,25 @@ func (s *Server) Run() error {
 	// on the initial navigation — so the shell is served open and every XHR it
 	// makes is authenticated. Nothing in the static files is private.
 	mux.Handle("GET /", http.FileServerFS(web.FS))
+	return mux
+}
 
-	if s.loopbackOnly() {
-		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
-	} else {
-		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
-	return http.ListenAndServe(s.cfg.Listen, mux)
+}
+
+func (s *Server) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // auth guards the write endpoints with the shared token, whenever one is set.
@@ -144,7 +174,7 @@ func (s *Server) Run() error {
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token != "" {
-			if !s.tokenOK(r) {
+			if !credentialOK(r, s.cfg.Token) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -153,9 +183,21 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) tokenOK(r *http.Request) bool {
+// adminAuth guards settings mutation with the independently scoped admin
+// credential. An empty credential retains the legacy loopback/no-auth setup.
+func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminToken != "" && !credentialOK(r, s.cfg.AdminToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func credentialOK(r *http.Request, token string) bool {
 	got := r.Header.Get("Authorization")
-	want := "Bearer " + s.cfg.Token
+	want := "Bearer " + token
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
@@ -170,7 +212,7 @@ func (s *Server) tokenOK(r *http.Request) bool {
 // stream runs through Rust, which can set headers (ADR-0014).
 func (s *Server) queryTokenOK(r *http.Request) bool {
 	got := r.URL.Query().Get("access_token")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.ReadToken)) == 1
 }
 
 // readAuth guards the read endpoints — but only when the server is reachable
@@ -207,7 +249,7 @@ func (s *Server) readAuthWith(next http.HandlerFunc, allowQuery bool) http.Handl
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.tokenOK(r) && !(allowQuery && s.queryTokenOK(r)) {
+		if !credentialOK(r, s.cfg.ReadToken) && !(allowQuery && s.queryTokenOK(r)) {
 			// WWW-Authenticate so a browser hitting the panel directly gets a
 			// prompt rather than a bare 401 with no way forward.
 			w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken"`)
@@ -248,15 +290,52 @@ func (s *Server) loopbackOnly() bool {
 // standing in front of it. Failing loudly at startup, with the two ways to fix
 // it named, is the only version of this that actually protects anybody.
 func (s *Server) requireAuthConsistency() error {
-	if s.loopbackOnly() || s.cfg.Token != "" {
+	if s.loopbackOnly() {
 		return nil
 	}
-	return fmt.Errorf(
-		"listen=%q 可被其它机器访问,但没有配置 token —— 读接口会把全部用量数据对外公开。\n"+
-			"  二选一:\n"+
-			"    1) 配 \"token\": \"<随机串>\"(读写都要它,面板与桌面端在设置里填同一个);\n"+
-			"    2) 改回 \"listen\": \"127.0.0.1:8787\",让其它机器经 SSH 反向隧道或中继上报(ADR-0003)",
-		s.cfg.Listen)
+	if s.cfg.Token == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但 v1 ingest 路由仍启用且没有配置 token",
+			s.cfg.Listen)
+	}
+	if s.cfg.ReadToken == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但没有配置 read_token —— 读接口会把全部用量数据对外公开",
+			s.cfg.Listen)
+	}
+	if s.cfg.AdminToken == "" {
+		return fmt.Errorf(
+			"listen=%q 可被其它机器访问,但没有配置 admin_token —— settings 写接口缺少管理凭据",
+			s.cfg.Listen)
+	}
+	return nil
+}
+
+// authenticateIngestV2 binds the authenticated principal to the device_id in
+// the decoded envelope. A credential issued to one device therefore cannot be
+// used to submit a batch claiming another device's identity.
+func (s *Server) authenticateIngestV2(r *http.Request, envelope model.IngestEnvelopeV2) (store.DeviceRecord, bool, error) {
+	credential, ok := bearerCredential(r)
+	if !ok {
+		return store.DeviceRecord{}, false, nil
+	}
+	return s.store.AuthenticateDevice(envelope.DeviceID, credential)
+}
+
+func bearerCredential(r *http.Request) (string, bool) {
+	authorization := r.Header.Get("Authorization")
+	separator := strings.IndexByte(authorization, ' ')
+	if separator <= 0 || separator == len(authorization)-1 {
+		return "", false
+	}
+	if !strings.EqualFold(authorization[:separator], "Bearer") {
+		return "", false
+	}
+	credential := authorization[separator+1:]
+	if strings.ContainsAny(credential, " \t\r\n") {
+		return "", false
+	}
+	return credential, true
 }
 
 type ingestRequest struct {

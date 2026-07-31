@@ -5,7 +5,7 @@ const Views = {
   overview: {
     el: () => document.getElementById("view-overview"),
     enter() { Overview.load(); this._timer = setInterval(() => Overview.load(), 30000); },
-    leave() { clearInterval(this._timer); },
+    leave() { clearInterval(this._timer); Overview.invalidate(); },
   },
   live: {
     el: () => document.getElementById("view-live"),
@@ -51,16 +51,29 @@ const Views = {
 
 let currentView = null;
 
+function parseRouteHash(hash) {
+  const raw = (hash || "#live").replace(/^#/, "");
+  const split = raw.indexOf("?");
+  return {
+    name: split < 0 ? raw : raw.slice(0, split),
+    params: new URLSearchParams(split < 0 ? "" : raw.slice(split + 1)),
+  };
+}
+
 function route() {
   // Lands on live: the panel's job is now what the machines are doing, with
   // the retrospective views a click away.
-  const name = (location.hash || "#live").slice(1);
-  const next = Views[name] ? name : "live";
-  if (next === currentView) return;
+  const parsed = parseRouteHash(location.hash);
+  const next = Views[parsed.name] ? parsed.name : "live";
+  if (next === currentView) {
+    if (next === "details") Details.applyRoute(parsed.params);
+    return;
+  }
   if (currentView) {
     Views[currentView].leave();
     Views[currentView].el().hidden = true;
   }
+  if (next === "details") Details.applyRoute(parsed.params, false);
   currentView = next;
   Views[next].el().hidden = false;
   Views[next].enter();
@@ -70,15 +83,19 @@ function route() {
   document.querySelectorAll("#nav a").forEach((a) => {
     a.toggleAttribute("aria-current", a.dataset.view === next);
   });
+  const active = document.querySelector(`#nav a[data-view="${next}"]`);
+  if (active && matchMedia("(max-width: 860px)").matches) {
+    active.scrollIntoView({block: "nearest", inline: "center"});
+  }
   // The rail no longer carries the page name, so the head does.
-  const link = document.querySelector(`#nav a[data-view="${next}"]`);
+  const link = active;
   document.getElementById("page-title").textContent = link ? link.textContent : "";
   document.getElementById("page-sub").textContent = PAGE_SUB[next] || "";
 }
 
 // One line each, saying what the page answers rather than what it contains.
 const PAGE_SUB = {
-  live: "这台机器现在在生成什么",
+  live: "全部设备现在在生成什么",
   speed: "现在多快,以及各模型的吐字速度",
   overview: "累计与趋势",
   reports: "按日/周/月/会话聚合,可导出",
@@ -107,8 +124,10 @@ Api.loadToken();
 
 // A server that wants a token we do not have would otherwise show nine pages of
 // identical 401s with no hint about where to fix it. /api/v1/health is
-// unauthenticated precisely so this check is possible.
-(async function checkAuth() {
+// unauthenticated precisely so this check is possible. Token saves call this
+// again so an obsolete warning never survives after credentials change.
+async function refreshAuthState() {
+  document.querySelector(".auth-banner")?.remove();
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
     if (h.auth_required && !Api.token) {
@@ -119,6 +138,8 @@ Api.loadToken();
   } catch (e) {
     // Server down or not ours; the views report that themselves.
   }
-})();
+}
+
+refreshAuthState();
 
 route();

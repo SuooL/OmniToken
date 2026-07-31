@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -39,17 +39,515 @@ pub enum Mode {
     Live,
     /// Stream unavailable, but plain GET works. Figures move, just slowly.
     Polling,
-    /// No reading at all.
+}
+
+/// The transport state for the snapshot currently displayed by the menu bar.
+///
+/// A failed refresh changes this state but does not destroy the last successful
+/// payload. Consumers can therefore dim the old values and show their age
+/// rather than rendering an outage as zero activity.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionKind {
+    Live,
+    Polling,
+    Stale,
+    Unauthorized,
     Offline,
 }
 
-impl Mode {
-    fn as_str(self) -> &'static str {
+impl ConnectionKind {
+    fn as_str(&self) -> &'static str {
         match self {
-            Mode::Live => "live",
-            Mode::Polling => "polling",
-            Mode::Offline => "offline",
+            Self::Live => "live",
+            Self::Polling => "polling",
+            Self::Stale => "stale",
+            Self::Unauthorized => "unauthorized",
+            Self::Offline => "offline",
         }
+    }
+}
+
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct ConnectionState {
+    pub kind: ConnectionKind,
+    pub last_success_at_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self {
+            kind: ConnectionKind::Offline,
+            last_success_at_ms: None,
+            error: None,
+        }
+    }
+}
+
+impl Mode {
+    fn connection_kind(self) -> ConnectionKind {
+        match self {
+            Mode::Live => ConnectionKind::Live,
+            Mode::Polling => ConnectionKind::Polling,
+        }
+    }
+}
+
+/// The last payload plus the state that tells consumers how trustworthy it is.
+#[derive(Default, Clone)]
+struct Snapshot {
+    endpoint: Option<String>,
+    data: Option<Value>,
+    connection: ConnectionState,
+}
+
+impl Snapshot {
+    fn bind_endpoint(&mut self, endpoint: &str) -> bool {
+        let endpoint = normalize_endpoint_identity(endpoint);
+        if self.endpoint.as_deref() == Some(endpoint.as_str()) {
+            return false;
+        }
+        self.endpoint = Some(endpoint);
+        self.data = None;
+        self.connection = ConnectionState::default();
+        true
+    }
+
+    fn accepts_endpoint(&mut self, endpoint: &str) -> bool {
+        let endpoint = normalize_endpoint_identity(endpoint);
+        match self.endpoint.as_deref() {
+            Some(active) => active == endpoint,
+            None => {
+                self.endpoint = Some(endpoint);
+                true
+            }
+        }
+    }
+
+    fn record_success(&mut self, endpoint: &str, payload: Value, now_ms: i64, mode: Mode) -> bool {
+        if !self.accepts_endpoint(endpoint) {
+            return false;
+        }
+        self.data = Some(payload);
+        self.connection.last_success_at_ms = Some(now_ms);
+        self.connection.error = None;
+        self.connection.kind = mode.connection_kind();
+        true
+    }
+
+    fn record_failure(
+        &mut self,
+        endpoint: &str,
+        kind: ConnectionKind,
+        error: impl Into<String>,
+        now_ms: i64,
+    ) -> bool {
+        if !self.accepts_endpoint(endpoint) {
+            return false;
+        }
+        self.connection.kind = if kind == ConnectionKind::Offline
+            && self.data.is_some()
+            && self
+                .age_ms(now_ms)
+                .is_some_and(|age| age >= stale_after_ms())
+        {
+            ConnectionKind::Stale
+        } else {
+            kind
+        };
+        self.connection.error = Some(error.into());
+        true
+    }
+
+    fn data(&self) -> Option<&Value> {
+        self.data.as_ref()
+    }
+
+    fn age_ms(&self, now_ms: i64) -> Option<i64> {
+        self.connection
+            .last_success_at_ms
+            .map(|then| now_ms.saturating_sub(then))
+    }
+}
+
+fn normalize_endpoint_identity(endpoint: &str) -> String {
+    endpoint.trim_end_matches('/').to_string()
+}
+
+const MAX_POPOVER_ITEMS: usize = 3;
+const URGENT_RESET_MINUTES: i64 = 30;
+
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+enum ActivityKind {
+    Active,
+    Idle,
+    Unknown,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct PopoverConnection {
+    kind: ConnectionKind,
+    generated_at_ms: Option<i64>,
+    age_ms: Option<i64>,
+    is_stale: bool,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct ActivityView {
+    kind: ActivityKind,
+    text: String,
+    rate: Option<f64>,
+    session_count: usize,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct SessionView {
+    tool: String,
+    repository: String,
+    model: String,
+    device: String,
+    rate: f64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct RiskView {
+    source: String,
+    used_percent: f64,
+    projected_percent: f64,
+    remaining_minutes: i64,
+    start_ms: i64,
+    end_ms: i64,
+    resets_at: i64,
+    promoted: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct DeviceView {
+    name: String,
+    state: String,
+    has_procs: bool,
+    running: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct PopoverView {
+    connection: PopoverConnection,
+    activity: ActivityView,
+    sessions: Vec<SessionView>,
+    sessions_more: usize,
+    risk: Option<RiskView>,
+    quota_summary: String,
+    quotas_more: usize,
+    quota_reset_minutes: Option<i64>,
+    burn_per_minute: Option<i64>,
+    devices: Vec<DeviceView>,
+    devices_more: usize,
+    device_summary: String,
+}
+
+fn source_label(source: &str) -> String {
+    match source {
+        "claude-code" => "Claude".to_string(),
+        "codex" => "Codex".to_string(),
+        "api" => "API".to_string(),
+        "" => "—".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn short_repository(repository: &str) -> String {
+    repository
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("—")
+        .to_string()
+}
+
+fn compact_rate(rate: f64) -> String {
+    if (rate - rate.round()).abs() < 0.05 {
+        format!("{rate:.0}")
+    } else {
+        format!("{rate:.1}")
+    }
+}
+
+fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i64) -> PopoverView {
+    let generated_at_ms = payload
+        .and_then(|data| data.get("generated_at"))
+        .and_then(Value::as_i64);
+    let age_ms = generated_at_ms.map(|generated| now_ms.saturating_sub(generated));
+    let is_stale = payload.is_some()
+        && matches!(
+            connection.kind,
+            ConnectionKind::Stale | ConnectionKind::Offline | ConnectionKind::Unauthorized
+        );
+
+    let speed = payload.and_then(|data| data.get("speed"));
+    let rate = speed
+        .and_then(|speed| speed.get("tps"))
+        .and_then(Value::as_f64);
+    let speed_sessions = speed
+        .and_then(|speed| speed.get("sessions"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let open_count = payload
+        .and_then(|data| data.get("processes"))
+        .and_then(|processes| processes.get("sessions"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    let activity = if rate.is_some_and(|rate| rate > 0.0) {
+        let rate = rate.unwrap_or_default();
+        ActivityView {
+            kind: ActivityKind::Active,
+            text: format!(
+                "正在生成 {} t/s · {} 个会话",
+                compact_rate(rate),
+                speed_sessions.len()
+            ),
+            rate: Some(rate),
+            session_count: speed_sessions.len(),
+        }
+    } else if open_count > 0 {
+        ActivityView {
+            kind: ActivityKind::Unknown,
+            text: format!("{open_count} 个会话已打开 · 速度未知"),
+            rate,
+            session_count: open_count,
+        }
+    } else if rate.is_some() {
+        ActivityView {
+            kind: ActivityKind::Idle,
+            text: "当前空闲".to_string(),
+            rate,
+            session_count: 0,
+        }
+    } else {
+        ActivityView {
+            kind: ActivityKind::Unknown,
+            text: "活动未知".to_string(),
+            rate: None,
+            session_count: 0,
+        }
+    };
+
+    let mut sessions: Vec<SessionView> = speed_sessions
+        .iter()
+        .map(|session| SessionView {
+            tool: source_label(session.get("source").and_then(Value::as_str).unwrap_or("")),
+            repository: short_repository(session.get("repo").and_then(Value::as_str).unwrap_or("")),
+            model: session
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())
+                .unwrap_or("—")
+                .to_string(),
+            device: session
+                .get("device")
+                .and_then(Value::as_str)
+                .filter(|device| !device.is_empty())
+                .unwrap_or("—")
+                .to_string(),
+            rate: session.get("tps").and_then(Value::as_f64).unwrap_or(0.0),
+        })
+        .collect();
+    sessions.sort_by(|a, b| b.rate.total_cmp(&a.rate));
+    let sessions_more = sessions.len().saturating_sub(MAX_POPOVER_ITEMS);
+    sessions.truncate(MAX_POPOVER_ITEMS);
+
+    let windows = payload
+        .and_then(|data| data.get("windows"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let risk = windows
+        .iter()
+        .filter(|window| {
+            window
+                .get("authoritative")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && window
+                    .get("resets_at")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|resets_at| resets_at > 0)
+                && (window
+                    .get("projected_percent")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|projected| projected > 100.0)
+                    || window
+                        .get("remaining_minutes")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|remaining| (0..=URGENT_RESET_MINUTES).contains(&remaining)))
+        })
+        .max_by(|a, b| {
+            let a_projected = a
+                .get("projected_percent")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let b_projected = b
+                .get("projected_percent")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let a_breach = a_projected > 100.0;
+            let b_breach = b_projected > 100.0;
+            a_breach
+                .cmp(&b_breach)
+                .then_with(|| a_projected.total_cmp(&b_projected))
+        })
+        .map(|window| RiskView {
+            source: window
+                .get("label")
+                .and_then(Value::as_str)
+                .or_else(|| window.get("key").and_then(Value::as_str))
+                .unwrap_or("配额")
+                .to_string(),
+            used_percent: window
+                .get("used_percent")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            projected_percent: window
+                .get("projected_percent")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            remaining_minutes: window
+                .get("remaining_minutes")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            start_ms: window.get("start_ms").and_then(Value::as_i64).unwrap_or(0),
+            end_ms: window.get("end_ms").and_then(Value::as_i64).unwrap_or(0),
+            resets_at: window.get("resets_at").and_then(Value::as_i64).unwrap_or(0),
+            promoted: true,
+        });
+
+    let quotas = payload
+        .and_then(|data| data.get("quotas"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let quota_summary = quotas
+        .iter()
+        .take(MAX_POPOVER_ITEMS)
+        .map(|quota| {
+            let source = source_label(quota.get("source").and_then(Value::as_str).unwrap_or(""));
+            let window = quota
+                .get("window_label")
+                .and_then(Value::as_str)
+                .filter(|label| !label.is_empty())
+                .unwrap_or("窗口");
+            let scope = quota
+                .get("scope")
+                .and_then(Value::as_str)
+                .filter(|scope| !scope.is_empty())
+                .map(|scope| format!(" [{scope}]"))
+                .unwrap_or_default();
+            let device = quota
+                .get("device")
+                .and_then(Value::as_str)
+                .filter(|device| !device.is_empty());
+            let identity = device
+                .map(|device| format!("{source} {window}{scope} · {device}"))
+                .unwrap_or_else(|| format!("{source} {window}{scope}"));
+            let reset = quota
+                .get("resets_at")
+                .and_then(Value::as_i64)
+                .filter(|resets_at| *resets_at > 0)
+                .and_then(|_| quota.get("remaining_minutes").and_then(Value::as_i64))
+                .filter(|remaining| *remaining >= 0)
+                .map(|remaining| format!(" · {remaining} 分钟后重置"))
+                .unwrap_or_default();
+            format!(
+                "{identity} {:.0}%{reset}",
+                quota
+                    .get("used_percent")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let quotas_more = quotas.len().saturating_sub(MAX_POPOVER_ITEMS);
+    // Reset timing is embedded beside the quota it describes. A single tail
+    // would be ambiguous when one provider exposes several windows.
+    let quota_reset_minutes = None;
+
+    let mut devices: Vec<DeviceView> = payload
+        .and_then(|data| data.get("devices"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .map(|device| DeviceView {
+            name: device
+                .get("display_name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .or_else(|| device.get("device").and_then(Value::as_str))
+                .unwrap_or("—")
+                .to_string(),
+            state: device
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            has_procs: device
+                .get("has_procs")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            running: device.get("running").and_then(Value::as_i64).unwrap_or(0),
+        })
+        .collect();
+    devices.sort_by(|a, b| {
+        let rank = |state: &str| match state {
+            "active" => 0,
+            "idle" => 1,
+            "stale" => 2,
+            _ => 3,
+        };
+        rank(&a.state)
+            .cmp(&rank(&b.state))
+            .then_with(|| b.running.cmp(&a.running))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let device_total = devices.len();
+    let observable = devices.iter().filter(|device| device.has_procs).count();
+    let devices_more = device_total.saturating_sub(MAX_POPOVER_ITEMS);
+    devices.truncate(MAX_POPOVER_ITEMS);
+    let device_summary = if device_total == 0 {
+        "无设备数据".to_string()
+    } else {
+        format!("{observable}/{device_total} 台设备可观测")
+    };
+
+    PopoverView {
+        connection: PopoverConnection {
+            kind: connection.kind.clone(),
+            generated_at_ms,
+            age_ms,
+            is_stale,
+            error: connection.error.clone(),
+        },
+        activity,
+        sessions,
+        sessions_more,
+        risk,
+        quota_summary,
+        quotas_more,
+        quota_reset_minutes,
+        burn_per_minute: payload
+            .and_then(|data| data.get("burn"))
+            .and_then(|burn| burn.get("per_minute"))
+            .and_then(Value::as_i64),
+        devices,
+        devices_more,
+        device_summary,
     }
 }
 
@@ -58,6 +556,8 @@ impl Mode {
 #[derive(Serialize, Clone)]
 struct Update<'a> {
     mode: &'a str,
+    connection: &'a ConnectionState,
+    view: PopoverView,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<&'a Value>,
 }
@@ -97,6 +597,10 @@ const POLL_WHILE_DEGRADED: Duration = Duration::from_secs(60);
 /// Observed while building this: a server that abandoned the response without
 /// closing left the bridge blocked forever with no way to notice.
 const IDLE_LIMIT: Duration = Duration::from_secs(90);
+
+fn stale_after_ms() -> i64 {
+    IDLE_LIMIT.as_millis().try_into().unwrap_or(i64::MAX)
+}
 
 // ── alerts ────────────────────────────────────────────────────────────────
 
@@ -192,6 +696,33 @@ pub struct State {
     /// one instead of leaving two streams writing to the same tray.
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     alerts: Mutex<Alerts>,
+    /// Serializes snapshot acceptance and every externally visible publication.
+    ///
+    /// Lock order is `task` (respawn only) → `publication` → `snapshot`.
+    /// No publication path acquires `task`, so the order cannot be reversed.
+    publication: Mutex<()>,
+    snapshot: Mutex<Snapshot>,
+}
+
+impl State {
+    /// Apply a snapshot mutation and publish its accepted result as one ordered
+    /// operation. The snapshot lock is released before calling external APIs,
+    /// but the publication gate remains held through tray painting and emit.
+    fn publish<R>(
+        &self,
+        update: impl FnOnce(&mut Snapshot) -> bool,
+        publish: impl FnOnce(&Snapshot) -> R,
+    ) -> Option<R> {
+        let _publication = self.publication.lock().ok()?;
+        let snapshot = {
+            let mut snapshot = self.snapshot.lock().ok()?;
+            if !update(&mut snapshot) {
+                return None;
+            }
+            snapshot.clone()
+        };
+        Some(publish(&snapshot))
+    }
 }
 
 // ── the bridge ────────────────────────────────────────────────────────────
@@ -209,6 +740,8 @@ pub fn respawn(app: &tauri::AppHandle) {
     if let Some(old) = slot.take() {
         old.abort();
     }
+    let endpoint = settings::load(app).server;
+    publish_endpoint_change(app, &endpoint);
     let handle = app.clone();
     *slot = Some(tauri::async_runtime::spawn(
         async move { run(handle).await },
@@ -234,7 +767,6 @@ async fn run(app: tauri::AppHandle) {
         // Degraded. Keep the figures moving over plain GET, and say which
         // channel they came from.
         let polled = poll_once(&app, &base, &token).await;
-        publish_mode(&app, if polled { Mode::Polling } else { Mode::Offline });
 
         let wait = if polled {
             // Plain GET works, so it is the stream specifically that is
@@ -298,7 +830,7 @@ async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
         let Ok(event) = event else { break };
         if let Some(payload) = snapshot_from(&event.event, &event.data) {
             connected = true;
-            apply(app, &payload, Mode::Live);
+            apply(app, base, &payload, Mode::Live);
         }
     }
     connected
@@ -309,50 +841,125 @@ async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
 async fn poll_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
     match crate::get_json(base, "/api/v1/live", token).await {
         Ok(payload) => {
-            apply(app, &payload, Mode::Polling);
+            apply(app, base, &payload, Mode::Polling);
             true
         }
-        Err(_) => {
-            // Unreachable, or serving something that is not the API. Either way
-            // there is no reading, and the offline glyph says so.
-            let _ = tray::paint(app, None, None);
+        Err(error) => {
+            let kind = connection_kind_for(&error);
+            publish_failure(app, base, kind, error.to_string());
             false
         }
     }
 }
 
 /// One snapshot, four consumers.
-fn apply(app: &tauri::AppHandle, payload: &Value, mode: Mode) {
-    let percent = payload
-        .get("quotas")
-        .and_then(Value::as_array)
-        .and_then(|q| gauge::tightest_percent(q));
-    let tps = payload
-        .get("speed")
-        .and_then(|s| s.get("tps"))
-        .and_then(Value::as_f64);
-
-    let _ = tray::paint(app, percent, tps);
-    let _ = app.emit(
-        EVENT,
-        Update {
-            mode: mode.as_str(),
-            data: Some(payload),
-        },
-    );
+fn apply(app: &tauri::AppHandle, endpoint: &str, payload: &Value, mode: Mode) {
+    let state = app.state::<State>();
+    if state
+        .publish(
+            |snapshot| snapshot.record_success(endpoint, payload.clone(), now_ms(), mode),
+            |snapshot| {
+                paint_snapshot(app, snapshot);
+                let _ = app.emit(
+                    EVENT,
+                    Update {
+                        mode: snapshot.connection.kind.as_str(),
+                        connection: &snapshot.connection,
+                        view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                        data: snapshot.data(),
+                    },
+                );
+            },
+        )
+        .is_none()
+    {
+        return;
+    }
     notify(app, payload);
 }
 
-/// Tell the frontend the channel changed even though there is no new payload —
-/// otherwise a popover opened during an outage would keep claiming "live".
-fn publish_mode(app: &tauri::AppHandle, mode: Mode) {
-    let _ = app.emit(
-        EVENT,
-        Update {
-            mode: mode.as_str(),
-            data: None,
+fn tray_readings(snapshot: &Snapshot) -> (Option<f64>, Option<f64>) {
+    if !matches!(
+        snapshot.connection.kind,
+        ConnectionKind::Live | ConnectionKind::Polling
+    ) {
+        return (None, None);
+    }
+    let percent = snapshot
+        .data()
+        .and_then(|data| data.get("quotas"))
+        .and_then(Value::as_array)
+        .and_then(|q| gauge::tightest_percent(q));
+    let tps = snapshot
+        .data()
+        .and_then(|data| data.get("speed"))
+        .and_then(|s| s.get("tps"))
+        .and_then(Value::as_f64);
+
+    (percent, tps)
+}
+
+fn paint_snapshot(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    let (percent, tps) = tray_readings(snapshot);
+    let _ = tray::paint(app, percent, tps);
+}
+
+/// Publish a transport failure while keeping every consumer on the same
+/// last-good snapshot. The UI receives that payload for an aged/dimmed view,
+/// while the tray deliberately suppresses its figures so stale values cannot
+/// masquerade as live ones.
+fn publish_failure(app: &tauri::AppHandle, endpoint: &str, kind: ConnectionKind, error: String) {
+    let state = app.state::<State>();
+    let _ = state.publish(
+        |snapshot| snapshot.record_failure(endpoint, kind, error, now_ms()),
+        |snapshot| {
+            paint_snapshot(app, snapshot);
+            let _ = app.emit(
+                EVENT,
+                Update {
+                    mode: snapshot.connection.kind.as_str(),
+                    connection: &snapshot.connection,
+                    view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                    data: snapshot.data(),
+                },
+            );
         },
     );
+}
+
+fn publish_endpoint_change(app: &tauri::AppHandle, endpoint: &str) {
+    let state = app.state::<State>();
+    let _ = state.publish(
+        |snapshot| snapshot.bind_endpoint(endpoint),
+        |snapshot| {
+            paint_snapshot(app, snapshot);
+            let _ = app.emit(
+                EVENT,
+                Update {
+                    mode: snapshot.connection.kind.as_str(),
+                    connection: &snapshot.connection,
+                    view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                    data: snapshot.data(),
+                },
+            );
+        },
+    );
+}
+
+fn connection_kind_for(error: &crate::FetchError) -> ConnectionKind {
+    match error {
+        crate::FetchError::Unauthorized(_) => ConnectionKind::Unauthorized,
+        crate::FetchError::Other(_) => ConnectionKind::Offline,
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 fn notify(app: &tauri::AppHandle, payload: &Value) {
@@ -418,6 +1025,8 @@ pub fn title_for(which: TrayTitle, percent: Option<f64>, tps: Option<f64>) -> Op
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
 
     #[test]
     fn takes_both_event_names_the_server_sends() {
@@ -557,5 +1166,438 @@ mod tests {
             title_for(TrayTitle::Speed, None, Some(68.4)).unwrap(),
             "68/s"
         );
+    }
+
+    // Regression: a failed transport refresh used to discard the last payload,
+    // which made an outage indistinguishable from an empty system.
+    #[test]
+    fn failed_refresh_keeps_last_good_payload_and_ages_it() {
+        let payload = json!({"speed": {"tps": 68.0}});
+        let mut snapshot = Snapshot::default();
+
+        snapshot.record_success("http://server-a", payload.clone(), 1_000, Mode::Live);
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "network unavailable",
+            1_250,
+        );
+
+        assert_eq!(snapshot.data(), Some(&payload));
+        assert_eq!(snapshot.connection.last_success_at_ms, Some(1_000));
+        assert_eq!(snapshot.age_ms(1_250), Some(250));
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+        assert_eq!(
+            snapshot.connection.error.as_deref(),
+            Some("network unavailable")
+        );
+    }
+
+    #[test]
+    fn failed_refresh_becomes_stale_at_the_stream_freshness_boundary() {
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a", json!({"quotas": []}), 1_000, Mode::Live);
+
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            90_999,
+        );
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            91_000,
+        );
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Stale);
+        assert!(snapshot.data().is_some());
+    }
+
+    #[test]
+    fn all_connection_states_have_distinct_wire_labels() {
+        assert_eq!(ConnectionKind::Live.as_str(), "live");
+        assert_eq!(ConnectionKind::Polling.as_str(), "polling");
+        assert_eq!(ConnectionKind::Stale.as_str(), "stale");
+        assert_eq!(ConnectionKind::Unauthorized.as_str(), "unauthorized");
+        assert_eq!(ConnectionKind::Offline.as_str(), "offline");
+    }
+
+    #[test]
+    fn fetch_errors_are_classified_as_unauthorized_or_offline() {
+        let unauthorized = crate::FetchError::Unauthorized("401 unauthorized".into());
+        let unavailable = crate::FetchError::Other("connection refused".into());
+
+        assert_eq!(
+            connection_kind_for(&unauthorized),
+            ConnectionKind::Unauthorized
+        );
+        assert_eq!(connection_kind_for(&unavailable), ConnectionKind::Offline);
+    }
+
+    #[test]
+    fn tray_hides_last_good_numbers_when_connection_is_degraded() {
+        let payload = json!({
+            "quotas": [{"used_percent": 42.0}],
+            "speed": {"tps": 68.0}
+        });
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a", payload, 1_000, Mode::Live);
+        assert_eq!(tray_readings(&snapshot), (Some(42.0), Some(68.0)));
+
+        snapshot.connection.kind = ConnectionKind::Polling;
+        assert_eq!(tray_readings(&snapshot), (Some(42.0), Some(68.0)));
+
+        for kind in [
+            ConnectionKind::Stale,
+            ConnectionKind::Offline,
+            ConnectionKind::Unauthorized,
+        ] {
+            snapshot.connection.kind = kind;
+            assert_eq!(tray_readings(&snapshot), (None, None));
+            assert!(snapshot.data().is_some());
+        }
+    }
+
+    #[test]
+    fn normalized_equivalent_endpoint_keeps_last_good_snapshot() {
+        let payload = json!({"speed": {"tps": 68.0}});
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success("http://server-a/", payload.clone(), 1_000, Mode::Live);
+
+        snapshot.record_failure(
+            "http://server-a",
+            ConnectionKind::Offline,
+            "connection refused",
+            1_250,
+        );
+
+        assert_eq!(snapshot.data(), Some(&payload));
+        assert_eq!(snapshot.connection.last_success_at_ms, Some(1_000));
+    }
+
+    #[test]
+    fn changing_endpoint_discards_the_previous_servers_snapshot() {
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 68.0}}),
+            1_000,
+            Mode::Live,
+        );
+
+        snapshot.bind_endpoint("http://server-b");
+        snapshot.record_failure(
+            "http://server-b",
+            ConnectionKind::Offline,
+            "connection refused",
+            1_250,
+        );
+
+        assert_eq!(snapshot.data(), None);
+        assert_eq!(snapshot.connection.last_success_at_ms, None);
+        assert_eq!(snapshot.connection.kind, ConnectionKind::Offline);
+    }
+
+    #[test]
+    fn late_response_from_previous_endpoint_is_ignored() {
+        let mut snapshot = Snapshot::default();
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 68.0}}),
+            1_000,
+            Mode::Live,
+        );
+        snapshot.bind_endpoint("http://server-b");
+
+        snapshot.record_success(
+            "http://server-a",
+            json!({"speed": {"tps": 99.0}}),
+            2_000,
+            Mode::Live,
+        );
+
+        assert_eq!(snapshot.data(), None);
+        assert_eq!(snapshot.connection.last_success_at_ms, None);
+        assert_eq!(snapshot.endpoint.as_deref(), Some("http://server-b"));
+    }
+
+    #[test]
+    fn endpoint_rebind_cannot_overtake_an_accepted_publication() {
+        let state = Arc::new(State::default());
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (rebind_started_tx, rebind_started_rx) = mpsc::channel();
+        let (rebind_done_tx, rebind_done_rx) = mpsc::channel();
+
+        let old_state = Arc::clone(&state);
+        let old_published = Arc::clone(&published);
+        let old = thread::spawn(move || {
+            old_state.publish(
+                |snapshot| {
+                    let accepted = snapshot.record_success(
+                        "http://server-a",
+                        json!({"speed": {"tps": 68.0}}),
+                        1_000,
+                        Mode::Live,
+                    );
+                    accepted_tx.send(()).unwrap();
+                    accepted
+                },
+                |snapshot| {
+                    release_rx.recv().unwrap();
+                    old_published
+                        .lock()
+                        .unwrap()
+                        .push(snapshot.endpoint.clone().unwrap());
+                },
+            );
+        });
+
+        accepted_rx.recv().unwrap();
+        assert!(matches!(
+            state.publication.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+
+        let new_state = Arc::clone(&state);
+        let new_published = Arc::clone(&published);
+        let new = thread::spawn(move || {
+            rebind_started_tx.send(()).unwrap();
+            new_state.publish(
+                |snapshot| snapshot.bind_endpoint("http://server-b"),
+                |snapshot| {
+                    new_published
+                        .lock()
+                        .unwrap()
+                        .push(snapshot.endpoint.clone().unwrap());
+                },
+            );
+            rebind_done_tx.send(()).unwrap();
+        });
+
+        rebind_started_rx.recv().unwrap();
+        assert!(matches!(
+            rebind_done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).unwrap();
+        old.join().unwrap();
+        new.join().unwrap();
+
+        assert_eq!(
+            published.lock().unwrap().as_slice(),
+            ["http://server-a", "http://server-b"]
+        );
+    }
+
+    fn view_for(payload: Option<&Value>, kind: ConnectionKind, now_ms: i64) -> PopoverView {
+        popover_view(
+            payload,
+            &ConnectionState {
+                kind,
+                last_success_at_ms: Some(1_000),
+                error: None,
+            },
+            now_ms,
+        )
+    }
+
+    #[test]
+    fn active_view_prioritizes_fastest_three_sessions_and_truncates_lists() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {
+                "tps": 68.0,
+                "sessions": [
+                    {"source":"codex","repo":"org/research","model":"gpt-5","device":"workstation","tps":20.0},
+                    {"source":"claude-code","repo":"org/omni-api","model":"sonnet","device":"macmini","tps":48.0},
+                    {"source":"api","repo":"org/third","model":"gpt-4.1","device":"server","tps":12.0},
+                    {"source":"codex","repo":"org/fourth","model":"gpt-5-mini","device":"laptop","tps":4.0}
+                ]
+            },
+            "processes": {"sessions":[]},
+            "devices": [
+                {"device":"018f2d5a-7b31-7d98-bf8e-3c2f35a1a001","display_name":"macmini","state":"active","has_procs":true,"running":1},
+                {"device":"workstation","state":"active","has_procs":true,"running":1},
+                {"device":"server","state":"idle","has_procs":false,"running":0},
+                {"device":"laptop","state":"stale","has_procs":true,"running":0}
+            ],
+            "quotas": [
+                {"source":"claude-code","scope":"five_hour","window_label":"5 小时窗口","device":"macmini","used_percent":42.0,"resets_at":99_999,"remaining_minutes":192},
+                {"source":"codex","scope":"weekly","window_label":"7 天窗口","device":"workstation","used_percent":18.0,"resets_at":99_999,"remaining_minutes":192}
+            ],
+            "windows": [],
+            "burn": {"per_minute":3100}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live, 13_000);
+
+        assert_eq!(view.activity.kind, ActivityKind::Active);
+        assert_eq!(view.activity.text, "正在生成 68 t/s · 4 个会话");
+        assert_eq!(view.sessions.len(), 3);
+        assert_eq!(view.sessions[0].tool, "Claude");
+        assert_eq!(view.sessions[0].repository, "omni-api");
+        assert_eq!(view.sessions[0].rate, 48.0);
+        assert_eq!(view.sessions_more, 1);
+        assert_eq!(view.devices_more, 1);
+        assert_eq!(view.devices[0].name, "macmini");
+        assert!(view.risk.is_none());
+        assert!(view
+            .quota_summary
+            .contains("Claude 5 小时窗口 [five_hour] · macmini 42% · 192 分钟后重置"));
+    }
+
+    #[test]
+    fn idle_view_is_a_known_zero_not_unknown() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[],
+            "burn":{"per_minute":0}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Polling, 11_000);
+
+        assert_eq!(view.activity.kind, ActivityKind::Idle);
+        assert_eq!(view.activity.text, "当前空闲");
+        assert_eq!(view.connection.kind, ConnectionKind::Polling);
+    }
+
+    #[test]
+    fn missing_speed_with_no_open_process_is_unknown() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[],
+            "burn":{}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+        assert_eq!(view.activity.kind, ActivityKind::Unknown);
+        assert_eq!(view.activity.text, "活动未知");
+    }
+
+    #[test]
+    fn risk_view_promotes_only_projected_breach_or_urgent_reset() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed":{"tps":10.0,"sessions":[]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[
+                {"key":"safe","label":"Safe","authoritative":true,"used_percent":80.0,"projected_percent":95.0,"remaining_minutes":90},
+                {"key":"breach","label":"Claude","authoritative":true,"used_percent":62.0,"projected_percent":121.0,"remaining_minutes":80,"start_ms":1,"end_ms":2,"resets_at":3},
+                {"key":"urgent","label":"Codex","authoritative":true,"used_percent":20.0,"projected_percent":30.0,"remaining_minutes":20}
+            ],
+            "burn":{"per_minute":10}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+
+        assert_eq!(view.risk.as_ref().unwrap().source, "Claude");
+        assert_eq!(view.risk.as_ref().unwrap().projected_percent, 121.0);
+        assert!(view.risk.as_ref().unwrap().promoted);
+
+        let expired_only = json!({
+            "generated_at": 10_000,
+            "speed":{"tps":0.0,"sessions":[]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[
+                {"key":"expired","authoritative":true,"used_percent":80.0,"projected_percent":95.0,"remaining_minutes":-1}
+            ],
+            "burn":{"per_minute":0}
+        });
+        assert!(view_for(Some(&expired_only), ConnectionKind::Live, 11_000)
+            .risk
+            .is_none());
+
+        let unknown_reset = json!({
+            "generated_at": 10_000,
+            "speed":{"tps":0.0,"sessions":[]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[
+                {
+                    "source":"claude-code","scope":"seven_day_sonnet",
+                    "window_label":"7 天窗口","device":"macmini",
+                    "used_percent":42.0,"resets_at":0,"remaining_minutes":0
+                },
+                {
+                    "source":"claude-code","scope":"seven_day_opus",
+                    "window_label":"7 天窗口","device":"macmini",
+                    "used_percent":18.0,"resets_at":0,"remaining_minutes":0
+                }
+            ],
+            "windows":[{
+                "key":"unknown-reset","authoritative":true,
+                "used_percent":42.0,"projected_percent":121.0,
+                "resets_at":0,"remaining_minutes":0
+            }],
+            "burn":{"per_minute":0}
+        });
+        let view = view_for(Some(&unknown_reset), ConnectionKind::Live, 11_000);
+        assert!(view.risk.is_none());
+        assert!(view
+            .quota_summary
+            .contains("Claude 7 天窗口 [seven_day_sonnet] · macmini 42%"));
+        assert!(view
+            .quota_summary
+            .contains("Claude 7 天窗口 [seven_day_opus] · macmini 18%"));
+        assert!(!view.quota_summary.contains("重置"));
+        assert_eq!(view.quota_reset_minutes, None);
+    }
+
+    #[test]
+    fn stale_view_keeps_payload_but_marks_its_generated_age() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed":{"tps":20.0,"sessions":[{"source":"codex","tps":20.0}]},
+            "processes":{"sessions":[]},
+            "devices":[],
+            "quotas":[],
+            "windows":[],
+            "burn":{"per_minute":10}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Stale, 100_000);
+
+        assert_eq!(view.connection.kind, ConnectionKind::Stale);
+        assert_eq!(view.connection.age_ms, Some(90_000));
+        assert!(view.connection.is_stale);
+        assert_eq!(view.activity.kind, ActivityKind::Active);
+    }
+
+    #[test]
+    fn unknown_view_and_open_process_without_speed_are_not_idle() {
+        let unknown = view_for(None, ConnectionKind::Offline, 100_000);
+        assert_eq!(unknown.activity.kind, ActivityKind::Unknown);
+        assert_eq!(unknown.activity.text, "活动未知");
+        assert_eq!(unknown.connection.age_ms, None);
+
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed":{"sessions":[]},
+            "processes":{"sessions":[{"source":"codex","device":"macmini","pid":42}]},
+            "devices":[],
+            "quotas":[],
+            "windows":[],
+            "burn":{}
+        });
+        let open = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+        assert_eq!(open.activity.kind, ActivityKind::Unknown);
+        assert_eq!(open.activity.text, "1 个会话已打开 · 速度未知");
     }
 }

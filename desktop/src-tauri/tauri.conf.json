@@ -11,8 +11,8 @@
       {
         "label": "panel",
         "title": "OmniToken",
-        "width": 340,
-        "height": 430,
+        "width": 380,
+        "height": 280,
         "resizable": false,
         "decorations": false,
         "transparent": true,

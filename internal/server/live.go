@@ -90,7 +90,13 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 
 	type devView struct {
 		store.DeviceStatus
-		State string `json:"state"` // active | idle | stale
+		State           string `json:"state"` // active | idle | stale (legacy UI compatibility)
+		DeviceID        string `json:"device_id,omitempty"`
+		DisplayName     string `json:"display_name,omitempty"`
+		IdentityStatus  string `json:"identity_status"`
+		ConnectionState string `json:"connection_state"`
+		LastSeenAt      int64  `json:"last_seen_at,omitempty"`
+		LastSeenAgeMS   *int64 `json:"last_seen_age_ms,omitempty"`
 		// Running is meaningless unless HasProcs is true: a device with no
 		// agent (SSH-pulled) reports nothing, which is not the same as zero
 		// sessions and must not be rendered as "closed".
@@ -98,6 +104,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		Running  int  `json:"running"`
 	}
 	devViews := make([]devView, 0, len(devices))
+	viewByDevice := make(map[string]int, len(devices))
 	for _, d := range devices {
 		state := "stale"
 		age := now.UnixMilli() - d.LastTS
@@ -106,7 +113,49 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		} else if age <= deviceStale.Milliseconds() {
 			state = "idle"
 		}
-		devViews = append(devViews, devView{d, state, reports[d.Device], procCount[d.Device]})
+		viewByDevice[d.Device] = len(devViews)
+		devViews = append(devViews, devView{
+			DeviceStatus:    d,
+			State:           state,
+			IdentityStatus:  "legacy_unbound",
+			ConnectionState: "unknown",
+			HasProcs:        reports[d.Device],
+			Running:         procCount[d.Device],
+		})
+	}
+	registered, err := s.store.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range registered {
+		index, exists := viewByDevice[record.DeviceID]
+		if !exists {
+			index = len(devViews)
+			viewByDevice[record.DeviceID] = index
+			devViews = append(devViews, devView{
+				DeviceStatus: store.DeviceStatus{Device: record.DeviceID},
+				HasProcs:     reports[record.DeviceID],
+				Running:      procCount[record.DeviceID],
+			})
+		}
+		view := &devViews[index]
+		view.DeviceID = record.DeviceID
+		view.DisplayName = record.DisplayName
+		view.IdentityStatus = "registered"
+		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
+		view.LastSeenAt = record.LastSeenAt
+		if record.LastSeenAt > 0 {
+			age := max(now.UnixMilli()-record.LastSeenAt, 0)
+			view.LastSeenAgeMS = &age
+		}
+		switch view.ConnectionState {
+		case "online":
+			view.State = "active"
+		case "stale":
+			view.State = "idle"
+		default:
+			view.State = "stale"
+		}
 	}
 	sessions, err := s.store.ActiveSessions(now.Add(-burnWindow))
 	if err != nil {
@@ -181,7 +230,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 // point: burn rate is defined once, so the popover and the Live page cannot
 // drift into reporting different numbers for the same ten minutes.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.livePayload(time.Now())
+	payload, err := s.livePayload(s.currentTime())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -198,13 +247,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	// The server-wide write deadline protects every bounded response from slow
+	// readers. SSE is the one intentional exception: it owns the connection
+	// until the client leaves and emits a bounded state-bearing refresh below.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("X-Accel-Buffering", "no")
 
 	send := func(event string) error {
-		payload, err := s.livePayload(time.Now())
+		payload, err := s.livePayload(s.currentTime())
 		if err != nil {
 			return err
 		}
@@ -218,17 +271,23 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ch, cancel := s.bcast.Subscribe()
 	defer cancel()
-	heartbeat := time.NewTicker(30 * time.Second)
-	defer heartbeat.Stop()
+	refreshInterval := s.streamRefreshInterval
+	if refreshInterval <= 0 {
+		refreshInterval = 30 * time.Second
+	}
+	refresh := time.NewTicker(refreshInterval)
+	defer refresh.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-heartbeat.C:
-			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
+		case <-refresh.C:
+			// A comment proves transport liveness but leaves fleet state frozen.
+			// Recompute the payload so last-seen thresholds age even when no
+			// collector mutation occurs.
+			if err := send("live"); err != nil {
 				return
 			}
-			fl.Flush()
 		case <-ch:
 			time.Sleep(time.Second) // coalesce bursts; pending signals collapse
 			select {

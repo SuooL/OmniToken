@@ -5,6 +5,7 @@ const Live = {
   es: null,
   data: null,
   timer: null,
+  snapshotReceivedAt: 0,
 
   start() {
     if (this.es) return;
@@ -12,6 +13,7 @@ const Live = {
     this.es = Api.stream("/api/v1/stream");
     const onData = (ev) => {
       this.data = JSON.parse(ev.data);
+      this.snapshotReceivedAt = performance.now();
       this.render();
       status.textContent = "实时连接中 · 更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     };
@@ -69,10 +71,14 @@ const Live = {
         <div class="track">${blocks(s.spans)}</div>
         <div class="rate">${(s.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
       </div>`).join("");
+    const hidden = Math.max(0, sessions.length - 8);
+    const more = hidden
+      ? `<p class="subtle lane-more">另有 ${hidden} 个会话</p>`
+      : "";
 
-    el.innerHTML = rows + `
+    el.innerHTML = rows + more + `
       <div class="lane union">
-        <div class="who">本机(并集)</div>
+        <div class="who">全部设备(并集)</div>
         <div class="track">${blocks(sp.spans)}</div>
         <div class="rate">${(sp.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
       </div>`;
@@ -105,10 +111,10 @@ const Live = {
     devEl.innerHTML = devs.length ? devs.map((v) => `
       <div class="row dev-row">
         <div class="row-head">
-          <span class="key"><span class="dot ${v.state}"></span>${esc(v.device)} <span class="extra">${this.stateLabel(v.state)}</span></span>
+          <span class="key"><span class="dot ${this.visualState(v)}"></span>${esc(v.display_name || v.device)} <span class="extra">${this.connectionLabel(v)}</span></span>
           <span class="val">${compact(v.today_tokens)} <span class="extra">今日</span></span>
         </div>
-        <div class="row-head sub2"><span class="key">最后活动 ${relTime(v.last_ts)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
+        <div class="row-head sub2"><span class="key">最后活动 ${this.deviceLastSeen(v)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
       </div>`).join("") : `<span class="empty">暂无设备</span>`;
 
     const sesEl = document.getElementById("live-sessions");
@@ -231,6 +237,39 @@ const Live = {
 
   stateLabel(s) {
     return { active: "活跃", idle: "空闲", stale: "离线" }[s] || s;
+  },
+
+  connectionLabel(v) {
+    if (v.identity_status !== "registered") return this.stateLabel(v.state);
+    return { online: "在线", stale: "延迟", offline: "离线" }[this.effectiveConnectionState(v)] || "未知";
+  },
+
+  effectiveConnectionState(v, elapsedMS = this.snapshotElapsedMS()) {
+    if (v.identity_status !== "registered") return v.connection_state || "unknown";
+    // The Hub's offline state is terminal for this snapshot (notably revoked
+    // credentials). Client-side ageing may only degrade a state, never improve
+    // one the authenticated Hub already classified.
+    if (v.connection_state === "offline") return "offline";
+    if (v.last_seen_age_ms == null) return v.connection_state || "offline";
+    const age = Math.max(0, v.last_seen_age_ms + Math.max(0, elapsedMS));
+    if (age <= 2 * 60 * 1000) return "online";
+    if (age <= 10 * 60 * 1000) return "stale";
+    return "offline";
+  },
+
+  snapshotElapsedMS() {
+    if (!this.snapshotReceivedAt || typeof performance === "undefined") return 0;
+    return Math.max(0, performance.now() - this.snapshotReceivedAt);
+  },
+
+  visualState(v) {
+    if (v.identity_status !== "registered") return v.state;
+    return { online: "active", stale: "idle", offline: "stale" }[this.effectiveConnectionState(v)] || "stale";
+  },
+
+  deviceLastSeen(v) {
+    const timestamp = v.identity_status === "registered" ? v.last_seen_at : v.last_ts;
+    return timestamp ? relTime(timestamp) : "从未连接";
   },
 
   trunc(s, n) {

@@ -61,7 +61,7 @@ func Open(path string) (*Store, error) {
 	}
 	// modernc/sqlite serializes writes; a single conn avoids lock contention.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + quotaSchema + settingsSchema + procSchema); err != nil {
+	if _, err := db.Exec(schema + quotaSchema + settingsSchema + procSchema + deviceRegistrySchema + ingestReceiptSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -163,14 +163,48 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 		return 0, err
 	}
 	defer tx.Rollback()
+	result, err := insertEventsFromTx(tx, events, receivedAt, origin)
+	if err != nil {
+		return result.inserted, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result.inserted, err
+	}
+	logEventApply(result)
+	return result.inserted, nil
+}
+
+type eventApplyResult struct {
+	inserted     int
+	filled       int
+	reattributed int
+}
+
+func (r eventApplyResult) mutated() bool {
+	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0
+}
+
+func logEventApply(result eventApplyResult) {
+	if result.filled > 0 {
+		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", result.filled)
+	}
+	if result.reattributed > 0 {
+		log.Printf("store: %d existing events re-attributed to the machine that reported them itself (ADR-0015)", result.reattributed)
+	}
+}
+
+// insertEventsFromTx preserves InsertEventsFrom's merge and attribution rules
+// while allowing v2 payload application and its receipt to share one commit.
+func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, origin DeviceOrigin) (eventApplyResult, error) {
+	result := eventApplyResult{}
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
 		(event_id, ts, device, device_origin, source, model, provider, account_label,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		 cache_1h_tokens, cache_5m_tokens, duration_ms, gen_ms, ttft_ms,
 		 session_id, cwd, git_branch, repo, app_version, received_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer stmt.Close()
 
@@ -199,22 +233,26 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 		 WHERE event_id = ?3
 		   AND ((gen_ms = 0 AND ?1 > 0) OR (ttft_ms = 0 AND ?2 > 0))`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer numFill.Close()
 
 	// Attribution only the log channel can see. A proxy row starts with these
 	// empty, and the log observation that follows fills them in.
 	textFill, err := tx.Prepare(
-		`UPDATE events SET session_id = CASE WHEN session_id = '' THEN ?1 ELSE session_id END,
-		                   cwd        = CASE WHEN cwd        = '' THEN ?2 ELSE cwd        END,
-		                   repo       = CASE WHEN repo       = '' THEN ?3 ELSE repo       END,
-		                   git_branch = CASE WHEN git_branch = '' THEN ?4 ELSE git_branch END,
-		                   app_version= CASE WHEN app_version= '' THEN ?5 ELSE app_version END
-		 WHERE event_id = ?6
-		   AND (session_id = '' OR cwd = '' OR repo = '' OR git_branch = '' OR app_version = '')`)
+		`UPDATE events SET session_id = CASE WHEN session_id = '' AND ?1 != '' THEN ?1 ELSE session_id END,
+		                   cwd        = CASE WHEN cwd        = '' AND ?2 != '' THEN ?2 ELSE cwd        END,
+		                   repo       = CASE WHEN repo       = '' AND ?3 != '' THEN ?3 ELSE repo       END,
+		                   git_branch = CASE WHEN git_branch = '' AND ?4 != '' THEN ?4 ELSE git_branch END,
+		                   app_version= CASE WHEN app_version= '' AND ?5 != '' THEN ?5 ELSE app_version END
+			 WHERE event_id = ?6
+			   AND ((session_id = '' AND ?1 != '')
+			     OR (cwd = '' AND ?2 != '')
+			     OR (repo = '' AND ?3 != '')
+			     OR (git_branch = '' AND ?4 != '')
+			     OR (app_version = '' AND ?5 != ''))`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer textFill.Close()
 
@@ -226,7 +264,7 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 	durFill, err := tx.Prepare(
 		`UPDATE events SET duration_ms = ? WHERE event_id = ? AND duration_ms = 0 AND ? > 0`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer durFill.Close()
 
@@ -239,7 +277,7 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 	promote, err := tx.Prepare(
 		`UPDATE events SET source = ?1 WHERE event_id = ?2 AND source = 'proxy' AND ?1 != 'proxy'`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer promote.Close()
 
@@ -263,11 +301,10 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 		`UPDATE events SET device = ?1, device_origin = 'self'
 		 WHERE event_id = ?2 AND device_origin = 'observed' AND ?1 != ''`)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer reattribute.Close()
 
-	inserted, filled, reattributed := 0, 0, 0
 	for _, e := range events {
 		if e.EventID == "" {
 			continue
@@ -277,10 +314,10 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
 			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt)
 		if err != nil {
-			return inserted, err
+			return result, err
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
-			inserted++
+			result.inserted++
 			continue
 		}
 		// Already known: contribute whatever this observation adds.
@@ -288,16 +325,16 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 		if origin == OriginSelf && e.Device != "" {
 			r, err := reattribute.Exec(e.Device, e.EventID)
 			if err != nil {
-				return inserted, err
+				return result, err
 			}
 			if n, _ := r.RowsAffected(); n > 0 {
-				reattributed++
+				result.reattributed++
 			}
 		}
 		if e.GenMS > 0 || e.TTFTMS > 0 {
 			r, err := numFill.Exec(e.GenMS, e.TTFTMS, e.EventID)
 			if err != nil {
-				return inserted, err
+				return result, err
 			}
 			if n, _ := r.RowsAffected(); n > 0 {
 				changed = true
@@ -306,20 +343,24 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 		if e.SessionID != "" || e.CWD != "" || e.Repo != "" || e.GitBranch != "" || e.AppVersion != "" {
 			r, err := textFill.Exec(e.SessionID, e.CWD, e.Repo, e.GitBranch, e.AppVersion, e.EventID)
 			if err != nil {
-				return inserted, err
+				return result, err
 			}
 			if n, _ := r.RowsAffected(); n > 0 {
 				changed = true
 			}
 		}
 		if e.Source != "" && e.Source != "proxy" {
-			if _, err := promote.Exec(e.Source, e.EventID); err != nil {
-				return inserted, err
+			r, err := promote.Exec(e.Source, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
 			}
 			if e.DurationMS > 0 {
 				r, err := durFill.Exec(e.DurationMS, e.EventID, e.DurationMS)
 				if err != nil {
-					return inserted, err
+					return result, err
 				}
 				if n, _ := r.RowsAffected(); n > 0 {
 					changed = true
@@ -327,14 +368,8 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 			}
 		}
 		if changed {
-			filled++
+			result.filled++
 		}
 	}
-	if filled > 0 {
-		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", filled)
-	}
-	if reattributed > 0 {
-		log.Printf("store: %d existing events re-attributed to the machine that reported them itself (ADR-0015)", reattributed)
-	}
-	return inserted, tx.Commit()
+	return result, nil
 }

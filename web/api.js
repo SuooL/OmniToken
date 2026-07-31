@@ -10,41 +10,164 @@
 // The desktop build therefore swaps the bodies of get / put / stream for calls
 // into its Rust side, which is not bound by the same-origin policy. Nothing
 // outside this file needs to know which transport is in use.
+class APIError extends Error {
+  constructor(path, status) {
+    const detail = status === 0
+      ? "网络连接失败"
+      : status === 401
+        ? "401 未授权:设置页填写读取 token"
+        : `HTTP ${status}`;
+    super(`${path} → ${detail}`);
+    this.name = "APIError";
+    this.status = status;
+  }
+}
+
+function isCurrentGeneration(current, captured) {
+  return current === captured;
+}
+
+function canCommitRevision(current, sent) {
+  return current === sent;
+}
+
+function classifyAPIError(error) {
+  if (error instanceof APIError && error.status === 401) {
+    return {
+      kind: "unauthorized",
+      title: "需要访问令牌",
+      detail: "请到设置页填写读取 token 后重试。",
+    };
+  }
+  if (error instanceof APIError && error.status === 0) {
+    return {
+      kind: "error",
+      title: "服务不可达",
+      detail: "请检查服务地址与网络连接后重试。",
+    };
+  }
+  return {
+    kind: "error",
+    title: "加载失败",
+    detail: error && error.message ? error.message : "发生未知错误,请稍后重试。",
+  };
+}
+
+function renderState(container, { kind, title, detail = "", action = null }) {
+  let region = container.querySelector(".view-state");
+  if (kind === "ready") {
+    if (region) region.remove();
+    container.removeAttribute("aria-busy");
+    return;
+  }
+  if (!region) {
+    region = document.createElement("section");
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    container.prepend(region);
+  }
+  region.className = `view-state view-state-${kind}`;
+  region.replaceChildren();
+
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  region.appendChild(heading);
+  if (detail) {
+    const copy = document.createElement("span");
+    copy.textContent = detail;
+    region.appendChild(copy);
+  }
+  if (action && action.label && action.run) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost-btn";
+    button.textContent = action.label;
+    button.addEventListener("click", action.run);
+    region.appendChild(button);
+  }
+  container.toggleAttribute("aria-busy", kind === "loading");
+}
+
+async function apiFetch(path, init = {}) {
+  const request = Object.assign({}, init, {
+    headers: Api.headers(init.headers),
+  });
+  let res;
+  try {
+    res = await fetch(Api.url(path), request);
+  } catch (error) {
+    if (error instanceof TypeError) throw new APIError(path, 0);
+    throw error;
+  }
+  if (!res.ok) throw new APIError(path, res.status);
+  return res;
+}
+
+function downloadFilename(filename) {
+  return String(filename || "download")
+    .replace(/[\\/\\:*?"<>|]/g, "-")
+    .trim() || "download";
+}
+
+async function downloadAPI(path, filename) {
+  const res = await apiFetch(path);
+  const objectURL = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = objectURL;
+  link.download = downloadFilename(filename);
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    URL.revokeObjectURL(objectURL);
+  }
+}
+
 const Api = {
   // Empty means same origin, which is what the browser wants. The desktop
   // client sets an absolute base such as "http://192.0.2.1:8787".
   base: "",
 
-  // The bearer token, for a server that is reachable from other machines
-  // (ADR-0016). A loopback-only server needs none and this stays empty — which
-  // is why the single-machine panel keeps working with nothing configured.
-  //
-  // Deliberately the SAME key the settings page already used for writes:
-  // `cfg.Token` is one shared secret, so a second box to fill in with the same
-  // string would only be a way to get them out of step.
-  //
-  // localStorage rather than a cookie: the token belongs to this browser, and
-  // the server is stateless about who is reading.
+  // `token` remains the read credential and retains its legacy storage key so
+  // existing browsers migrate without losing access. Admin writes use a
+  // separate credential. localStorage rather than a cookie keeps both scoped
+  // credentials browser-local and leaves the server stateless.
   token: "",
+  adminToken: "",
   TOKEN_KEY: "omnitoken.token",
+  ADMIN_TOKEN_KEY: "omnitoken.admin_token",
 
   loadToken() {
     try {
       this.token = localStorage.getItem(this.TOKEN_KEY) || "";
+      const storedAdmin = localStorage.getItem(this.ADMIN_TOKEN_KEY);
+      // Missing means an old single-token browser and falls back for migration.
+      // An explicitly stored empty string means "no admin credential".
+      this.adminToken = storedAdmin == null ? this.token : storedAdmin;
     } catch (e) {
       // Private mode or storage disabled; the panel still works against a
       // loopback server.
       this.token = "";
+      this.adminToken = "";
     }
     return this.token;
   },
 
-  saveToken(t) {
-    this.token = t || "";
+  saveTokens(readToken, adminToken) {
+    this.token = readToken || "";
+    this.adminToken = adminToken || "";
     try {
       if (this.token) localStorage.setItem(this.TOKEN_KEY, this.token);
       else localStorage.removeItem(this.TOKEN_KEY);
-    } catch (e) { /* nothing we can do, and nothing that should break a render */ }
+      // Store even the empty value: absence is reserved for legacy fallback.
+      localStorage.setItem(this.ADMIN_TOKEN_KEY, this.adminToken);
+      return true;
+    } catch (e) {
+      // Both in-memory credentials remain useful for this browser session even
+      // when private mode or policy blocks persistence.
+      return false;
+    }
   },
 
   url(path) {
@@ -52,35 +175,32 @@ const Api = {
   },
 
   headers(extra) {
-    const h = Object.assign({}, extra);
-    if (this.token) h["Authorization"] = "Bearer " + this.token;
+    const h = new Headers(extra);
+    if (this.token) h.set("Authorization", "Bearer " + this.token);
     return h;
   },
 
   async get(path) {
-    const res = await fetch(this.url(path), { headers: this.headers() });
+    const res = await apiFetch(path);
     // Every caller sits inside a try/catch that surfaces the message, so
     // failing loudly here beats letting res.json() throw a parse error on
     // whatever the server returned instead of JSON. 401 is named: "wrong
     // token" and "server not running" are different problems with different
     // fixes, and a bare status number does not tell them apart.
-    if (res.status === 401) throw new Error(`${path} → 401 未授权:设置页填写读取 token`);
-    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
     return res.json();
   },
 
   // Returns the raw Response rather than parsed JSON: the settings page
   // distinguishes 401 from other failures and reads the body as text for its
   // error note.
-  put(path, body, token) {
+  put(path, body) {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    if (this.adminToken) {
+      headers.set("Authorization", "Bearer " + this.adminToken);
+    }
     return fetch(this.url(path), {
       method: "PUT",
-      headers: this.headers({
-        "Content-Type": "application/json",
-        // The write token is passed explicitly by the settings page and wins:
-        // it is what the user just typed into the box.
-        ...(token ? { Authorization: "Bearer " + token } : {}),
-      }),
+      headers,
       body: JSON.stringify(body),
     });
   },

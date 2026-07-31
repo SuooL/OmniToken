@@ -32,17 +32,16 @@ make build            # 或 go build -o omnitoken ./cmd/omnitoken
 ```
 
 ```sh
-# 在常开的机器上启动服务端(自动采集本机 + 首次全量导入历史)
+# 在常开的机器上启动 hub(自动采集本机 + 首次全量导入历史)
 ./omnitoken serve
-# 浏览器打开 http://<该机器>:8787
+# 默认只监听 loopback;在该机器上打开 http://127.0.0.1:8787
 ```
 
 服务端配置 `~/.omnitoken/config.json`(全部可省略):
 
 ```json
 {
-  "listen": ":8787",
-  "token": "换成你的随机串",
+  "listen": "127.0.0.1:8787",
   "device_name": "gui-mac",
   "collect": {
     "interval_seconds": 15,
@@ -54,7 +53,11 @@ make build            # 或 go build -o omnitoken ./cmd/omnitoken
 }
 ```
 
-全部配置项见 [docs/configuration.md](docs/configuration.md);接口契约见 [docs/API.md](docs/API.md)。
+OmniToken 采用**一个权威 hub/SQLite 数据库 + 多个出站上报 agent**。多机部署优先使用
+Tailscale/WireGuard 类加密组网或 SSH 隧道;不要把未加密的 `8787`/`8788` 直接暴露到
+公网。拓扑选择、HTTPS 反向代理、v1→v2 迁移、常驻运行与恢复步骤见
+[部署与安全指南](docs/deployment.md)。全部配置项见
+[docs/configuration.md](docs/configuration.md);接口契约见 [docs/API.md](docs/API.md)。
 
 ## 面板
 
@@ -71,24 +74,16 @@ make build            # 或 go build -o omnitoken ./cmd/omnitoken
 
 | 方式 | 适用 | 远端安装 |
 |---|---|---|
-| SSH 拉取 | 你能 ssh 到的机器,零改动 | 无 |
-| Agent 直连 | 与服务端同内网 / 服务端有公网 | omnitoken 二进制 |
-| Agent 走组网 | Tailscale / EasyTier 等虚拟网 | omnitoken 二进制 |
-| Agent 经中继 | 只能访问某台同伴机器的设备(可链式) | omnitoken 二进制 |
+| 加密组网 | 多机默认选择,Tailscale/WireGuard 类 overlay | omnitoken 二进制 |
+| SSH 隧道 | 已有 SSH/ProxyJump,hub 可继续只听 loopback | omnitoken 二进制 |
+| 受信 LAN 直连 | 网络边界明确且已显式接受明文风险 | omnitoken 二进制 |
+| SSH 拉取 | 远端不能安装 agent;实时性与可观测性较低 | 无 |
 
-不需要公网 IP,agent 只出站。配置文件 `~/.omnitoken/agent.json`,配好后每台机器
-只需 `./omnitoken agent` 一条命令:
-
-```jsonc
-// 机器 a、b:直连或组网 —— 区别只是 server 填哪个地址
-{ "server": "http://192.0.2.1:8787", "token": "…", "name": "dev-a" }
-
-// 机器 c:自己上报之余,给不能组网的邻居当中继
-{ "server": "http://192.0.2.1:8787", "token": "…", "name": "dev-c", "relay_listen": ":8788" }
-
-// 机器 d:够不到服务端,但能访问 c —— 指向 c 的中继端口(可继续链式)
-{ "server": "http://c.internal:8788", "token": "…", "name": "dev-d" }
-```
+不需要公网 IP,agent 只需出站。每个 v2 agent 使用独立设备身份和 ingest credential;
+先通过 `OMNITOKEN_ADMIN_TOKEN=... ./omnitoken agent enroll -server <URL> -name <NAME>`
+在目标机器生成受保护配置,再以 `./omnitoken agent` 常驻运行。公网场景只能通过具备 HTTPS、鉴权、
+请求限制与超时的反向代理接入，不能裸露产品端口。完整示例见
+[docs/deployment.md](docs/deployment.md)。
 
 常驻模板见 [deploy/](deploy/)(systemd 与 launchd)。
 

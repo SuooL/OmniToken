@@ -57,6 +57,7 @@ const Heatmap = {
     const H = padT + 7 * STEP - GAP + legendH;
 
     let grid = "", months = "", lastMonth = -1, lastLabelCol = -99;
+    const readableDays = [];
     let active = 0, sum = 0;
     for (let i = 0; i < cells; i++) {
       const d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i);
@@ -66,6 +67,7 @@ const Heatmap = {
       const rec = byDate[key];
       const tokens = rec ? rec.tokens : 0;
       const events = rec ? rec.events : 0;
+      readableDays.push({ key, tokens, events });
       if (tokens > 0) { active++; sum += tokens; }
       const l = level(tokens);
       const x = padL + col * STEP, y = padT + row * STEP;
@@ -103,11 +105,23 @@ const Heatmap = {
       : `近 ${total} 天暂无数据`;
     legend += `<text x="${W - padR}" y="${ly + 8}" text-anchor="end" fill="${muted}">${esc(summary)}</text>`;
 
+    const readableTable = `<details class="heatmap-details">
+      <summary>逐日数据表</summary>
+      <div class="data-table"><table>
+        <thead><tr><th scope="col">日期</th><th scope="col">tokens</th><th scope="col">请求</th></tr></thead>
+        <tbody>${readableDays.slice().reverse().map((day) => `<tr>
+          <th scope="row">${esc(day.key)}</th>
+          <td>${full(day.tokens)}</td>
+          <td>${full(day.events)}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </details>`;
+
     el.innerHTML =
       `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"` +
       ` style="display:block;width:100%;height:auto;max-width:${W}px"` +
       ` aria-label="近 ${total} 天活动日历热力图,${esc(summary)}">` +
-      `${months}${rails}${grid}${legend}</svg>`;
+      `${months}${rails}${grid}${legend}</svg>` + readableTable;
     this.attachTooltip(el);
   },
 

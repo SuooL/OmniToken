@@ -133,6 +133,9 @@ func TestMalformedStdinDoesNotPanic(t *testing.T) {
 }
 
 func TestColorSuppression(t *testing.T) {
+	// This branch verifies the product default, so it must not inherit the
+	// developer shell's ambient opt-out.
+	t.Setenv("NO_COLOR", "")
 	srv := fakeServer(t, 97)
 	defer srv.Close()
 	cache := filepath.Join(t.TempDir(), "c.json")

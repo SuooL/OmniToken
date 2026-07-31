@@ -9,7 +9,7 @@
 </head>
 <body>
 <div class="viz-root">
-  <nav class="rail">
+  <nav class="rail" aria-label="主导航">
     <div class="brand">
       <span class="dot-live" aria-hidden="true"></span>
       <h1>OmniToken</h1>
@@ -56,8 +56,8 @@
       <div id="daily-table" class="data-table" hidden></div>
     </section>
     <section class="card">
-      <h2>活动热力图 · 近 365 天</h2>
-      <div id="heatmap" class="chart"></div>
+      <h2 id="heatmap-title">活动热力图 · 近 365 天</h2>
+      <div id="heatmap" class="chart" aria-labelledby="heatmap-title"></div>
     </section>
     <section class="grid3">
       <div class="card"><h2>按模型</h2><div id="by-model" class="bars"></div></div>

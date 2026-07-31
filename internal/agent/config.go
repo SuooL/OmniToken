@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,14 +13,22 @@ import (
 // FileConfig is the agent's config file (~/.omnitoken/agent.json).
 // Precedence: command-line flags > environment > this file > defaults.
 type FileConfig struct {
-	Server          string   `json:"server"`                     // server or relay-peer base URL
-	Token           string   `json:"token,omitempty"`            // ingest bearer token
-	Name            string   `json:"name,omitempty"`             // device name; default hostname
-	RelayListen     string   `json:"relay_listen,omitempty"`     // e.g. ":8788" to relay for peers
-	IntervalSeconds int      `json:"interval_seconds,omitempty"` // scan interval; default 15
-	ClaudeDirs      []string `json:"claude_dirs,omitempty"`      // default: auto-detect
-	CodexDirs       []string `json:"codex_dirs,omitempty"`       // default: auto-detect
-	State           string   `json:"state,omitempty"`            // offset state file path
+	Server             string   `json:"server"`                        // server or relay-peer base URL
+	AllowInsecureHTTP  bool     `json:"allow_insecure_http,omitempty"` // permit plaintext to a non-loopback target
+	Token              string   `json:"token,omitempty"`               // ingest bearer token
+	ProtocolVersion    int      `json:"protocol_version,omitempty"`    // absent means legacy v1
+	DeviceID           string   `json:"device_id,omitempty"`
+	DeviceToken        string   `json:"device_token,omitempty"`
+	Outbox             string   `json:"outbox,omitempty"`
+	OutboxMaxBytes     int64    `json:"outbox_max_bytes,omitempty"`
+	Name               string   `json:"name,omitempty"`                 // device name; default hostname
+	RelayListen        string   `json:"relay_listen,omitempty"`         // e.g. ":8788" to relay for peers
+	RelayToken         string   `json:"relay_token,omitempty"`          // protects this relay's listener
+	RelayUpstreamToken string   `json:"relay_upstream_token,omitempty"` // credential expected by the next relay hop
+	IntervalSeconds    int      `json:"interval_seconds,omitempty"`     // scan interval; default 15
+	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
+	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
+	State              string   `json:"state,omitempty"`                // offset state file path
 	// Since ("YYYY-MM-DD", local time) is the start of collection: events older
 	// than that midnight are never reported. Empty means no window.
 	//
@@ -59,7 +69,19 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	if _, err := fc.SinceTime(); err != nil {
 		return fc, err
 	}
+	if version := fc.EffectiveProtocolVersion(); version != 1 && version != 2 {
+		return fc, fmt.Errorf("agent config: unsupported protocol_version %d", fc.ProtocolVersion)
+	}
 	return fc, nil
+}
+
+// EffectiveProtocolVersion keeps every pre-v2 config explicitly compatible:
+// an omitted version continues to use the legacy endpoint and token.
+func (fc FileConfig) EffectiveProtocolVersion() int {
+	if fc.ProtocolVersion == 0 {
+		return 1
+	}
+	return fc.ProtocolVersion
 }
 
 // SinceTime resolves Since to the first instant to report; the zero time means
@@ -100,4 +122,69 @@ func WriteSkeletonConfig(path string) error {
 	}
 	// 0600: this file carries the ingest token.
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// PrepareEnrollment fills the v2 identity exactly once. Subsequent enrollment
+// updates may change display metadata and server location without replacing
+// the device principal or its credential.
+func PrepareEnrollment(existing FileConfig, serverURL, displayName, deviceToken string) (FileConfig, error) {
+	if existing.DeviceID == "" {
+		deviceID, err := newUUID()
+		if err != nil {
+			return FileConfig{}, fmt.Errorf("generate device ID: %w", err)
+		}
+		existing.DeviceID = deviceID
+	}
+	if existing.DeviceToken == "" {
+		if deviceToken == "" {
+			var secret [32]byte
+			if _, err := rand.Read(secret[:]); err != nil {
+				return FileConfig{}, fmt.Errorf("generate device token: %w", err)
+			}
+			deviceToken = base64.RawURLEncoding.EncodeToString(secret[:])
+		}
+		existing.DeviceToken = deviceToken
+	} else if deviceToken != "" && deviceToken != existing.DeviceToken {
+		return FileConfig{}, fmt.Errorf("device token already exists; explicit rotation is required")
+	}
+	existing.ProtocolVersion = 2
+	existing.Server = serverURL
+	existing.Name = displayName
+	return existing, nil
+}
+
+// SaveFileConfig atomically persists credentials with owner-only permissions.
+func SaveFileConfig(path string, fc FileConfig) error {
+	data, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".agent-*.json")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(append(data, '\n')); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
