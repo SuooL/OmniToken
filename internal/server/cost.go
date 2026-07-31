@@ -8,16 +8,22 @@ import (
 	"github.com/suool/omnitoken/internal/store"
 )
 
-// PeriodCost splits spend by billing reality (ADR-0005): API-priced channels
-// (bedrock / vertex / relay) are real dollars; subscription-backed channels
-// (anthropic OAuth-undetermined, openai/codex) are "equivalent" value until
-// F9 auth probing can tell API-key usage apart on the first-party endpoint.
+// PeriodCost splits spend by billing reality (ADR-0005), along the channel
+// boundary ADR-0018 draws: metered channels (official API and third-party
+// relays) cost real dollars, a subscription costs "equivalent" value against a
+// flat fee already paid.
+//
+// UnknownUSD is the third bucket and it is not padding. Rolling unclassified
+// spend into either of the other two would make that number a guess wearing a
+// precise label — and since it is `unknown` precisely because the evidence is
+// missing, there is no direction in which the guess would be safe. It is
+// reported separately so the panel can show how much of the total is not yet
+// attributable to a channel.
 type PeriodCost struct {
 	RealUSD       float64 `json:"real_usd"`
 	EquivalentUSD float64 `json:"equivalent_usd"`
+	UnknownUSD    float64 `json:"unknown_usd"`
 }
-
-var realProviders = map[string]bool{"bedrock": true, "vertex": true, "relay": true, "anthropic-api": true}
 
 func (s *Server) costFromUsage(rows []store.ModelUsageRow) (PeriodCost, map[string]float64, []string) {
 	var pc PeriodCost
@@ -36,10 +42,13 @@ func (s *Server) costFromUsage(rows []store.ModelUsageRow) (PeriodCost, map[stri
 		// Priced by the reported id, reported under the display name — two
 		// routing variants of one model are one line of spend, not two.
 		perModel[model.CanonicalModel(r.Model)] += cost
-		if realProviders[r.Provider] {
+		switch model.BillingChannel(r.Provider) {
+		case model.ChannelAPI, model.ChannelRelay:
 			pc.RealUSD += cost
-		} else {
+		case model.ChannelSubscription:
 			pc.EquivalentUSD += cost
+		default:
+			pc.UnknownUSD += cost
 		}
 	}
 	unpriced := make([]string, 0, len(unpricedSet))

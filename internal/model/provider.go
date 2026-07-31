@@ -150,6 +150,24 @@ const (
 	rankNotFirstParty = 4
 )
 
+// RankedProviders lists every label whose rank is not the default. It exists so
+// the store can mirror ProviderRank as one SQL expression instead of keeping a
+// second copy of the ladder that could drift.
+func RankedProviders() []string {
+	return []string{
+		ProviderBedrock, ProviderVertex,
+		ProviderUnknown, "",
+		ProviderAnthropic, ProviderOpenAI,
+		ProviderAnthropicOAuth, ProviderAnthropicAPI,
+		ProviderOpenAIChatGPT, ProviderOpenAIAPI,
+		ProviderRelay,
+	}
+}
+
+// DefaultProviderRank is the rank of any label not in RankedProviders — that
+// is, a relay's self-declared name.
+func DefaultProviderRank() int { return rankNotFirstParty }
+
 // ProviderRank returns the evidence strength of a provider label.
 func ProviderRank(provider string) int {
 	switch provider {

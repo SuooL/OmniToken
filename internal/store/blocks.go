@@ -2,6 +2,8 @@ package store
 
 import (
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 // Claude subscription 5-hour billing windows (F11). Algorithm mirrors
@@ -57,20 +59,25 @@ func identifyBlocks(entries []blockEntry, durMS, nowMS int64) []Block {
 	return blocks
 }
 
-// Blocks returns recent Claude-subscription billing blocks. Only
-// source=claude-code events on the first-party endpoint count toward the
-// subscription window (Bedrock/Vertex/relay traffic does not). "anthropic"
-// is the unrefined channel and "anthropic-oauth" the probe-confirmed
-// subscription (F9/ADR-0007); "anthropic-api" is pay-per-use and therefore
-// NOT bound by the subscription window.
+// Blocks returns recent Claude-subscription billing blocks. Only usage that a
+// subscription window actually constrains belongs in one (ADR-0018 §7): the
+// probe-confirmed `anthropic-oauth` channel and nothing else. `anthropic-api`
+// is pay-per-use, relay traffic bills somewhere else entirely, and the
+// undetermined `anthropic` label is exactly that — undetermined.
+//
+// The undetermined label used to be counted here on the theory that a
+// subscription is the common case. On real data that theory put 5,201 relay
+// events inside the 5h window: the block total then disagreed with the quota
+// percentage sitting next to it, and nothing on the page said which one to
+// believe. A window is a claim about a specific billing relationship, so only
+// events proven to be in that relationship may be counted against it.
 func (s *Store) Blocks(from time.Time, now time.Time) ([]Block, error) {
 	rows, err := s.db.Query(
 		`SELECT ts, input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens, output_tokens
 		 FROM events
-		 WHERE ts >= ? AND source = 'claude-code'
-		   AND provider IN ('anthropic', 'anthropic-oauth')
+		 WHERE ts >= ? AND source = 'claude-code' AND provider = ?
 		 ORDER BY ts`,
-		from.UnixMilli())
+		from.UnixMilli(), model.ProviderAnthropicOAuth)
 	if err != nil {
 		return nil, err
 	}

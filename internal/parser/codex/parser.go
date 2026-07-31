@@ -93,6 +93,9 @@ type rateLimits struct {
 	Primary   *limitState `json:"primary"`
 	Secondary *limitState `json:"secondary"`
 	PlanType  string      `json:"plan_type"`
+	// Credits is only ever populated by the real OpenAI account. Its contents
+	// do not matter here — presence is the signal (see planEvidence).
+	Credits *json.RawMessage `json:"credits"`
 }
 
 type limitState struct {
@@ -114,10 +117,15 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 	var prevTotal *usage
 	var prevMS int64
 	var turn *openTurn
+	// Whether the real OpenAI account ever answered in this file (see
+	// planEvidence). It usually shows up after the first usage event, so the
+	// verdict is applied to the whole file on the way out.
+	var subscriptionSeen bool
 	seq := 0
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
+			applySessionChannel(res.Events, ctx.provider, subscriptionSeen)
 			return res
 		}
 		res.Consumed += int64(len(line))
@@ -165,8 +173,13 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 			default:
 				continue
 			}
-			if q := e.Payload.RateLimits; q != nil && prevMS > 0 {
-				res.Quotas = append(res.Quotas, quotaSnapshots(q, device, prevMS)...)
+			if q := e.Payload.RateLimits; q != nil {
+				if planEvidence(q) {
+					subscriptionSeen = true
+				}
+				if prevMS > 0 {
+					res.Quotas = append(res.Quotas, quotaSnapshots(q, device, prevMS)...)
+				}
 			}
 			info := e.Payload.Info
 			if info == nil {
@@ -388,10 +401,58 @@ func eventID(rolloutID, ts string, seq int, u *usage) string {
 	return "cx:" + hex.EncodeToString(h[:12])
 }
 
+// builtinOpenAIProvider is Codex's own provider id. It is matched exactly,
+// case included, and that is load-bearing rather than pedantic: the machine
+// this was measured on has a `[model_providers.OpenAI]` block in config.toml
+// pointing at a relay, and 137 of its sessions (9,871 usage records) are
+// branded "OpenAI" while never reaching OpenAI. Folding case merges those into
+// the subscription column, which is exactly the error being fixed.
+const builtinOpenAIProvider = "openai"
+
+// providerLabel keeps the rollout's declared model_provider verbatim. It is a
+// name the user chose, not a probe result, so the only thing it establishes is
+// which endpoint the user pointed Codex at — and any name other than Codex's
+// built-in one says "somewhere else" (model.BillingChannel maps it to relay).
 func providerLabel(p string) string {
-	p = strings.ToLower(strings.TrimSpace(p))
+	p = strings.TrimSpace(p)
 	if p == "" {
-		return "unknown"
+		return model.ProviderUnknown
 	}
 	return p
+}
+
+// planEvidence reports whether a rate_limits payload came from a real ChatGPT
+// subscription.
+//
+// ADR-0018 proposed testing for the payload's mere presence and required that
+// to be validated before use. It was, and it failed: on 610 local rollouts,
+// every one of the 523 sessions with any token_count line carries rate_limits —
+// relays synthesise the envelope too, so the test scores 20.8% accuracy, worse
+// than a constant "no". What relays do not synthesise is the account state
+// inside it. Across 22,547 records from custom/sub2api/enjoy/aihub/trellisreview
+// both plan_type and credits are null without exception, while plan_type alone
+// covers 98.2% of genuine subscription sessions and credits covers the
+// remaining pre-0.140 CLI versions — together, 100% recall at 100% precision.
+func planEvidence(q *rateLimits) bool {
+	return q.PlanType != "" || q.Credits != nil
+}
+
+// applySessionChannel resolves the session's billing channel once the whole
+// file has been read, because the plan evidence usually arrives after the first
+// usage event. Rollouts are re-parsed whole on every growth
+// (collect.SourceSpec.FullReparse), so a file-scoped conclusion sees every line.
+//
+// Both signals must agree before anything is called a subscription: Codex's
+// built-in provider id AND account state that only the real account emits. Each
+// alone has a known counterexample on this machine — a relay named "OpenAI",
+// and a relay that forwarded a shared account's plan_type — and requiring both
+// removes every observed false positive. When they disagree the label stays as
+// declared, which BillingChannel reads as "not first-party".
+func applySessionChannel(events []model.Event, provider string, subscription bool) {
+	if !subscription || strings.TrimSpace(provider) != builtinOpenAIProvider {
+		return
+	}
+	for i := range events {
+		events[i].Provider = model.ProviderOpenAIChatGPT
+	}
 }

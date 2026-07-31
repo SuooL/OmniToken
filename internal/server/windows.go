@@ -100,8 +100,8 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 	fiveHourQuota := tightestFiveHourQuota(quotas, now)
 	rollingStart := now.Add(-fiveHours)
 
-	sum := func(from time.Time, keep func(store.ChannelUsage) bool) (tokens, events int64, cost float64, err error) {
-		rows, err := s.store.UsageByChannel(from, now.Add(time.Minute))
+	sum := func(from time.Time, keep func(store.ProviderUsage) bool) (tokens, events int64, cost float64, err error) {
+		rows, err := s.store.UsageByProvider(from, now.Add(time.Minute))
 		if err != nil {
 			return 0, 0, 0, err
 		}
@@ -124,7 +124,7 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 		{"codex", "Codex 订阅"},
 	} {
 		source := src.source
-		keep := func(u store.ChannelUsage) bool {
+		keep := func(u store.ProviderUsage) bool {
 			return u.Source == source && store.IsSubscription(u.Source, u.Provider)
 		}
 		card := windowCard{
@@ -152,7 +152,7 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 
 	// Pay-per-use has no window, so a rolling look-back is the only
 	// meaningful figure; the card appears only when there is actual usage.
-	apiTokens, apiEvents, apiCost, err := sum(rollingStart, func(u store.ChannelUsage) bool {
+	apiTokens, apiEvents, apiCost, err := sum(rollingStart, func(u store.ProviderUsage) bool {
 		return !store.IsSubscription(u.Source, u.Provider)
 	})
 	if err != nil {

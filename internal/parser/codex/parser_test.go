@@ -414,3 +414,117 @@ func TestQuotaSnapshots(t *testing.T) {
 		t.Errorf("usage event must still be parsed alongside quota: %d", len(res.Events))
 	}
 }
+
+// Codex billing channel (ADR-0018 §3, criterion corrected against real data).
+//
+// The ADR proposed "the rollout contains a rate_limits payload" as the
+// subscription test. Measured on 610 local rollouts it is worthless: 523 of 523
+// sessions that have any token_count line carry rate_limits, for every provider
+// alike — accuracy 20.8%, worse than always answering no. What does discriminate
+// is what is INSIDE that payload: plan_type and credits are non-null only when
+// the real OpenAI account answered. Across 22,547 token_count lines from
+// custom/sub2api/enjoy/aihub/trellisreview, both are null every single time.
+//
+// The second half of the rule is the provider name, matched case-sensitively:
+// this machine's config.toml defines a `[model_providers.OpenAI]` pointing at a
+// relay, and 137 sessions are branded "OpenAI" while never touching OpenAI.
+// Only the lowercase `openai` is Codex's built-in id. Requiring both signals is
+// what keeps a relay that forwards someone else's plan_type out of the
+// subscription column.
+func rateLimited(ts, extra string) string {
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"token_count",` +
+		`"info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150},` +
+		`"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}},` +
+		`"rate_limits":{"limit_id":"codex","primary":{"used_percent":5.0,"window_minutes":10080,"resets_at":1785635302}` + extra + `}}}`
+}
+
+func parseWithProvider(t *testing.T, provider, tokenLine string) string {
+	t.Helper()
+	meta := strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"`+provider+`"`, 1)
+	events := Parse(strings.NewReader(meta+"\n"+turnCtx+"\n"+tokenLine+"\n"), "d", 0).Events
+	if len(events) != 1 {
+		t.Fatalf("provider %q: want 1 event, got %d", provider, len(events))
+	}
+	return events[0].Provider
+}
+
+func TestCodexPlanEvidenceMarksSubscription(t *testing.T) {
+	for _, extra := range []string{
+		`,"plan_type":"plus"`,
+		`,"plan_type":"team"`,
+		`,"credits":{"balance":0,"has_credits":false,"unlimited":false}`,
+	} {
+		if got := parseWithProvider(t, "openai", rateLimited("2026-07-26T03:00:05Z", extra)); got != "openai-chatgpt" {
+			t.Errorf("rate_limits%s: provider = %q, want openai-chatgpt", extra, got)
+		}
+	}
+}
+
+// The bare presence of rate_limits proves nothing — every relay emits it too.
+func TestCodexRateLimitsAloneIsNotSubscription(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":null,"credits":null`)
+	if got := parseWithProvider(t, "openai", line); got != "openai" {
+		t.Errorf("provider = %q, want openai (first-party declared, payment unproven)", got)
+	}
+	for _, relay := range []string{"custom", "sub2api", "enjoy", "aihub", "trellisreview"} {
+		if got := parseWithProvider(t, relay, line); got != relay {
+			t.Errorf("%s: provider = %q, want the declared name kept", relay, got)
+		}
+	}
+}
+
+// A relay that names itself "OpenAI" and forwards a shared account's plan_type
+// must not land in the subscription column. Casing is the only thing telling it
+// apart from Codex's built-in provider id, so the match must not fold case.
+func TestCodexProviderNameIsCaseSensitive(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":"plus"`)
+	if got := parseWithProvider(t, "OpenAI", line); got != "OpenAI" {
+		t.Errorf(`provider = %q, want "OpenAI" kept as a relay name`, got)
+	}
+}
+
+// Plan evidence usually arrives after the first token_count line, so the
+// verdict has to be applied to the whole session once the file is read out.
+// Codex rollouts are re-parsed whole on every growth (SourceSpec.FullReparse),
+// which is what makes a file-scoped conclusion sound here.
+func TestCodexPlanEvidenceAppliesToEarlierEventsInTheSession(t *testing.T) {
+	first := tokenCount("2026-07-26T03:00:05Z",
+		`{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}`,
+		`{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}`)
+	second := rateLimited("2026-07-26T03:00:09Z", `,"plan_type":"plus"`)
+	// The second line repeats the same totals, so only the first yields an event.
+	events := Parse(strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+first+"\n"+second+"\n"), "d", 0).Events
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if events[0].Provider != "openai-chatgpt" {
+		t.Errorf("provider = %q, want openai-chatgpt applied retroactively", events[0].Provider)
+	}
+}
+
+func TestCodexMissingProviderIsUnknown(t *testing.T) {
+	line := tokenCount("2026-07-26T03:00:05Z", "",
+		`{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"total_tokens":150}`)
+	meta := strings.Replace(sessionMeta, `,"model_provider":"openai"`, "", 1)
+	events := Parse(strings.NewReader(meta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(events) != 1 || events[0].Provider != "unknown" {
+		t.Fatalf("want one unknown-provider event, got %+v", events)
+	}
+}
+
+// The classification must not move the event id (ADR-0004 / ADR-0018 §5.2).
+func TestCodexEventIDIndependentOfProvider(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":"plus"`)
+	plain := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":null`)
+	withPlan := Parse(strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	without := Parse(strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+plain+"\n"), "d", 0).Events
+	if len(withPlan) != 1 || len(without) != 1 {
+		t.Fatalf("want one event each, got %d and %d", len(withPlan), len(without))
+	}
+	if withPlan[0].Provider == without[0].Provider {
+		t.Fatal("test is vacuous: the two runs must classify differently")
+	}
+	if withPlan[0].EventID != without[0].EventID {
+		t.Errorf("event id moved with the classification: %q vs %q", withPlan[0].EventID, without[0].EventID)
+	}
+}
