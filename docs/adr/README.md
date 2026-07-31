@@ -26,3 +26,4 @@ ADR 标注 supersedes,不改写历史。
 | [0019](0019-device-identity-merge.md) | 设备身份合并:用户显式发起的覆盖,与自动覆盖的边界 | 已采纳 |
 | [0020](0020-codex-resume-duplicate-events.md) | Codex 分叉线程复制历史:加第二把去重键 dedup_key,不改 event_id | 已采纳 |
 | [0021](0021-aggregation-timezone.md) | 聚合时区:日界由配置钉住,启动即校验 | 已采纳 |
+| [0022](0022-card-head-hierarchy.md) | 卡片头部:标题在前、口径作后缀;热力图按容器定格子而非拉伸 | 已采纳 |

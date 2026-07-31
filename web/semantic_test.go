@@ -326,8 +326,13 @@ test('heatmap renders a keyboard-readable per-day table alongside the svg', () =
   assert.match(heat.innerHTML, />3<\/td>/);
 });
 
-test('365-day heatmap uses the full width offered by its card', () => {
-  const heat = {innerHTML: ''};
+// The card is filled by sizing the cells, never by stretching the canvas
+// (ADR-0022). Stretching also scaled the labels inside the viewBox: 11px text
+// drew at ~19px on a 1440px page and ~5.5px at 390px. So the contract is that
+// one viewBox unit stays one CSS pixel — width and height must equal the
+// viewBox extents, and no rule may resize the canvas on its own.
+test('365-day heatmap fills its card by cell size, not by stretching the canvas', () => {
+  const heat = {innerHTML: '', clientWidth: 1330};
   const context = load('heatmap.js', {
     document: {documentElement: {getAttribute: () => null}, getElementById: () => null},
     matchMedia: () => ({matches: false}),
@@ -335,8 +340,39 @@ test('365-day heatmap uses the full width offered by its card', () => {
   });
   context.heat = heat;
   run(context, 'Heatmap.attachTooltip = () => {}; Heatmap.render(heat, [], 365)');
-  assert.match(heat.innerHTML, /<svg[^>]*style="display:block;width:100%;height:auto"/);
-  assert.doesNotMatch(heat.innerHTML, /max-width:/);
+
+  // Not a bare /width:100%/ probe — that substring also occurs inside
+  // max-width:100%, which is the rule we do want (shrink on a narrow card,
+  // never stretch).
+  assert.doesNotMatch(heat.innerHTML, /style="[^"]*width:/);
+  const svg = heat.innerHTML.match(/<svg viewBox="0 0 (\d+) (\d+)" width="(\d+)" height="(\d+)"/);
+  assert.ok(svg, 'svg should declare a viewBox and matching intrinsic size');
+  assert.equal(svg[3], svg[1], 'width must equal the viewBox width: no horizontal scaling');
+  assert.equal(svg[4], svg[2], 'height must equal the viewBox height: no vertical scaling');
+
+  // And it still fills the card it was given, rather than leaving a gutter.
+  const width = Number(svg[1]);
+  assert.ok(width > heat.clientWidth * 0.94 && width <= heat.clientWidth,
+    'grid width ' + width + ' should consume the 1330px card without overflowing it');
+});
+
+// A narrow card gets smaller cells rather than smaller labels; the floor keeps
+// the squares legible and lets the card scroll instead.
+test('narrow card shrinks heatmap cells, and the floor caps how far', () => {
+  const render = (clientWidth) => {
+    const heat = {innerHTML: '', clientWidth};
+    const context = load('heatmap.js', {
+      document: {documentElement: {getAttribute: () => null}, getElementById: () => null},
+      matchMedia: () => ({matches: false}),
+      cssVar: () => '#ddd', compact: String, full: String, esc: String,
+    });
+    context.heat = heat;
+    run(context, 'Heatmap.attachTooltip = () => {}; Heatmap.render(heat, [], 365)');
+    return Number(heat.innerHTML.match(/<rect x="\d+" y="\d+" width="(\d+)"/)[1]);
+  };
+  const wide = render(1330), narrow = render(560), tiny = render(200);
+  assert.ok(narrow < wide, 'cells should shrink with the card: ' + narrow + ' vs ' + wide);
+  assert.ok(tiny >= 7, 'cells must not fall below the legibility floor, got ' + tiny);
 });
 
 test('A4 heatmap keeps the dark ramp on a light OS color scheme', () => {

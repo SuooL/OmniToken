@@ -9,7 +9,17 @@
 const HEAT_LIGHT = ["#cde2fb", "#9ec5f4", "#5598e7", "#2a78d6", "#184f95"];
 const HEAT_DARK = ["#184f95", "#256abf", "#3987e5", "#86b6ef", "#cde2fb"];
 
-const CELL = 11, GAP = 3, STEP = CELL + GAP, RADIUS = 2;
+// Cell geometry is derived from the container, not fixed, so the SVG renders at
+// 1 viewBox unit = 1 CSS pixel (ADR-0022).
+//
+// It used to be a fixed 11px cell in a 775-unit viewBox stretched to whatever
+// width the card had. The grid filled the card — and every label inside scaled
+// with it: 1.72x on a 1440px page, so 11px text drew at ~19px beside 11-12px
+// labels; and 0.5x at 390px, drawing the same text at ~5.5px. Sizing the cell
+// instead of stretching the canvas keeps declared sizes honest at every width.
+const GAP = 3, RADIUS = 2;
+const CELL_MIN = 7, CELL_MAX = 22;
+const PAD_L = 30, PAD_R = 6;
 
 const Heatmap = {
   span: 365,      // trailing days the grid covers
@@ -34,8 +44,19 @@ const Heatmap = {
     }
   },
 
+  // cellFor picks the largest cell that lets the whole year fit the container.
+  // Clamped: below CELL_MIN the squares stop reading as a calendar, above
+  // CELL_MAX a sparse year turns into wall art.
+  cellFor(el, cols) {
+    const avail = (el.clientWidth || 0) - PAD_L - PAD_R;
+    if (avail <= 0) return CELL_MAX;                       // detached / display:none
+    const cell = Math.floor((avail + GAP) / cols) - GAP;
+    return Math.max(CELL_MIN, Math.min(CELL_MAX, cell));
+  },
+
   render(el, days, span) {
     if (!el) return;
+    this.observe(el);
     const total = span || this.span;
     const byDate = Object.fromEntries((days || []).map((d) => [d.bucket, d]));
     const colors = this.isDark() ? HEAT_DARK : HEAT_LIGHT;
@@ -52,7 +73,8 @@ const Heatmap = {
     const cells = Math.round((today - first) / 86400000) + 1;
     const cols = Math.ceil(cells / 7);
 
-    const padL = 30, padT = 17, padR = 6, legendH = 26;
+    const CELL = this.cellFor(el, cols), STEP = CELL + GAP;
+    const padL = PAD_L, padT = 17, padR = PAD_R, legendH = 26;
     const W = padL + cols * STEP - GAP + padR;
     const H = padT + 7 * STEP - GAP + legendH;
 
@@ -119,10 +141,25 @@ const Heatmap = {
 
     el.innerHTML =
       `<div data-chart="calendar-activity"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"` +
-      ` style="display:block;width:100%;height:auto"` +
+      ` style="display:block"` +
       ` aria-label="近 ${total} 天活动日历热力图,${esc(summary)}">` +
       `${months}${rails}${grid}${legend}</svg></div>` + readableTable;
     this.attachTooltip(el);
+  },
+
+  // observe redraws when the card changes width. Without it the cell size would
+  // be frozen at whatever the container measured on first paint — the grid would
+  // stop filling the card after a window resize, or overflow it after a shrink.
+  observe(el) {
+    if (this._ro || typeof ResizeObserver === "undefined") return;
+    let last = el.clientWidth;
+    this._ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      if (!w || w === last) return;
+      last = w;
+      if (this._days) this.render(el, this._days);
+    });
+    this._ro.observe(el);
   },
 
   // scale bins non-zero days into 5 steps by quantile, so a couple of outlier

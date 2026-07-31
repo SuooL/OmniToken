@@ -171,8 +171,17 @@ body::before { content: none; }
   font: 760 clamp(24px, 3.2vw, 38px)/1 var(--font-body);
   font-variant-numeric: tabular-nums; letter-spacing: -0.035em;
 }
-.metric-card .metric-label, .eyebrow {
+.metric-card .metric-label {
   color: var(--text-muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+}
+/* Scope note, rendered as a suffix on the title's own line (ADR-0022). It used
+   to sit above the title at 11px while the title below it was 14px — the eye
+   read the small line first and the large one second, so the hierarchy looked
+   inverted. No uppercase: it trails a Chinese title and often carries an
+   identifier like `contribution_tps`, which uppercasing only damages. */
+.eyebrow {
+  color: var(--text-muted); font-size: 11px; font-weight: 400;
+  letter-spacing: .01em; margin-left: 8px; white-space: normal;
 }
 .composition-strip {
   display: flex; height: 8px; overflow: hidden; border-radius: 999px;
@@ -248,7 +257,10 @@ body::before { content: none; }
 .credential-scope-map strong { color: var(--text-primary); }
 .source-lanes { min-height: 280px; }
 .model-composition { min-height: 300px; }
-h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
+/* 14px is the card-title size. It lives on the base rule, not only on
+   `.card-head h2`, so a title that forgets the wrapper cannot silently
+   render a step smaller — four of them did (ADR-0022). */
+h2 { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 /* Wraps as a whole: a legend wide enough to crowd the title takes its own line
    instead of squeezing it. Without this the flex row shrinks the heading first,
    and "每日模型构成 · 前 4 个模型" broke across two lines while the legend beside
@@ -297,6 +309,15 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bot
 a.ghost-btn { text-decoration: none; }
 
 .chart svg { display: block; width: 100%; height: auto; }
+/* The calendar is the one chart that sizes itself: its cells are computed from
+   the container so one viewBox unit stays one CSS pixel (ADR-0022). The generic
+   `width: 100%` above would stretch it again and take every label with it, so
+   this more specific rule opts it out.
+   Below the cell floor the grid is wider than the card; it scrolls rather than
+   scaling down, because scaling shrinks the labels too — 8px text on a phone is
+   the same defect this change exists to remove. */
+.heatmap-shell { overflow-x: auto; overscroll-behavior-x: contain; }
+.heatmap-shell svg { width: auto; height: auto; max-width: none; }
 .chart text { font-family: inherit; font-size: 11px; fill: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 .data-table { overflow-x: auto; margin-top: 8px; }
