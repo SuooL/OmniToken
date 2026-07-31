@@ -5,6 +5,8 @@ const Live = {
   es: null,
   data: null,
   timer: null,
+  telemetryTimer: null,
+  telemetryData: null,
   snapshotReceivedAt: 0,
 
   start() {
@@ -22,11 +24,91 @@ const Live = {
     this.es.onerror = () => { status.textContent = "连接断开,自动重连中…"; };
     // Re-render periodically so relative times stay fresh between events.
     this.timer = setInterval(() => { if (this.data) this.render(); }, 10000);
+    this.loadTelemetry();
+    this.telemetryTimer = setInterval(() => this.loadTelemetry(), 30000);
   },
 
   stop() {
     if (this.es) { this.es.close(); this.es = null; }
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.telemetryTimer) { clearInterval(this.telemetryTimer); this.telemetryTimer = null; }
+    TelemetryCache.invalidate("1h");
+  },
+
+  async loadTelemetry() {
+    try {
+      const result = await TelemetryCache.load("1h", { force: true });
+      this.telemetryData = result.data;
+      this.renderTelemetry(result);
+    } catch (error) {
+      const cached = TelemetryCache.peek("1h");
+      if (cached.data) this.renderTelemetry(cached);
+      else {
+        const host = document.getElementById("live-telemetry-card");
+        if (host) {
+          const issue = classifyAPIError(error);
+          host.innerHTML = `<section class="state-panel"><strong>${esc(issue.title)}</strong><p class="subtle">${esc(issue.detail)}</p></section>`;
+        }
+      }
+    }
+  },
+
+  renderTelemetry(result) {
+    const host = document.getElementById("live-telemetry-card");
+    if (!host || !result.data) return;
+    const speed = telemetrySpeed(result.data);
+    host.innerHTML = `<article class="chart-card">
+      <div class="card-head">
+        <div><div class="eyebrow">近一小时 · 来源贡献</div><h2>生成速度来源</h2></div>
+        <div class="coverage-note" data-role="measured-coverage">${
+          telemetryCoverageLabel(speed)
+        }${result.stale ? " · 显示上次成功数据" : ""}</div>
+      </div>
+      <div id="live-source-chart" class="chart source-lanes" data-chart="live-source-lanes"></div>
+      ${(speed.unmeasured_sources || []).map((source) =>
+        `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable / not measured</div>`
+      ).join("")}
+    </article>`;
+    const buckets = speed.series || [];
+    const sourceKeys = [...new Set([
+      ...(speed.measured_sources || []),
+      ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
+    ])];
+    const el = document.getElementById("live-source-chart");
+    if (!buckets.length || !sourceKeys.length) {
+      el.innerHTML = `<p class="empty">近一小时没有可测生成区间。</p>`;
+      return;
+    }
+    const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
+    const grids = sourceKeys.map((_, index) => ({
+      left: 58, right: 18, top: 14 + index * (220 / sourceKeys.length),
+      height: Math.max(38, 170 / sourceKeys.length),
+    }));
+    ChartRegistry.set(el, {
+      titleText: "实时页一小时来源贡献",
+      grid: grids,
+      xAxis: sourceKeys.map((_, index) => ({
+        type: "category", gridIndex: index, data: labels,
+        axisLabel: { show: index === sourceKeys.length - 1, color: cssVar("--text-muted") },
+        axisLine: { lineStyle: { color: cssVar("--baseline") } },
+      })),
+      yAxis: sourceKeys.map((key, index) => ({
+        type: "value", gridIndex: index, min: 0, name: sourceLabelA2(key),
+        nameTextStyle: { color: ChartRegistry.sourceColor(key) },
+        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        axisLabel: { color: cssVar("--text-muted") },
+      })),
+      series: sourceKeys.map((key, index) => ({
+        name: sourceLabelA2(key), type: "line", xAxisIndex: index, yAxisIndex: index,
+        symbol: "none", smooth: false,
+        lineStyle: { color: ChartRegistry.sourceColor(key), width: 2 },
+        areaStyle: { color: mixWithSurface(ChartRegistry.sourceColor(key), .12) },
+        data: buckets.map((bucket) => {
+          const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
+          return row ? row.contribution_tps || 0 : 0;
+        }),
+      })),
+    });
   },
 
   // Generation speed (ADR-0009). Divided by the union of generation intervals,
@@ -39,14 +121,15 @@ const Live = {
 
     const n = (sp.sessions || []).length;
     document.getElementById("speed-sub").innerHTML = tps > 0
-      ? `<b>${n}</b> 个会话在生成 · 近 10 分钟输出 <b>${compact(sp.output_tokens || 0)}</b>`
+      ? `<b>${n}</b> 个近 10m 贡献会话 · 输出 <b>${compact(sp.output_tokens || 0)}</b>`
       : "近 10 分钟没有生成";
 
     this.renderLanes(sp);
   },
 
-  // One row per concurrent stream, then the union. Overlap is the point: it
-  // shows why three sessions at 50 tok/s is not 150 unless they took turns.
+  // One row per concurrent stream, then the union. Overlap is the point: three
+  // concurrent 50 tok/s sessions are 150 aggregate, while three sequential
+  // sessions remain 50 aggregate across their shared wall-clock timeline.
   renderLanes(sp) {
     const el = document.getElementById("lanes");
     const t0 = sp.window_start_ms, t1 = sp.window_end_ms;
@@ -59,7 +142,7 @@ const Live = {
 
     const sessions = sp.sessions || [];
     if (!sessions.length) {
-      el.innerHTML = `<p class="subtle">近 10 分钟没有会话在生成。开始使用 Claude,这里会实时出现。</p>`;
+      el.innerHTML = `<p class="subtle">近 10 分钟没有已测贡献会话。开始使用 Claude,这里会实时出现。</p>`;
       document.getElementById("lane-note").textContent = "";
       return;
     }
@@ -67,9 +150,9 @@ const Live = {
     const rows = sessions.slice(0, 8).map((s, i) => `
       <div class="lane lane-${(i % 5) + 1}">
         <div class="who">${esc(s.repo ? repoLabel(s.repo).split("/").pop() : s.session_id.slice(0, 8))}
-          <span class="sub">${esc(s.device)}</span></div>
+          <span class="sub">${esc(s.device)} · 会话自身速度 ${Number(s.tps || 0).toFixed(1)} tok/s</span></div>
         <div class="track">${blocks(s.spans)}</div>
-        <div class="rate">${(s.tps || 0).toFixed(1)}<span class="u"> t/s</span></div>
+        <div class="rate">${Number(s.contribution_tps ?? s.tps ?? 0).toFixed(1)}<span class="u"> 贡献 t/s</span></div>
       </div>`).join("");
     const hidden = Math.max(0, sessions.length - 8);
     const more = hidden
@@ -85,7 +168,7 @@ const Live = {
 
     const busy = Math.round(((sp.active_ms || 0) / Math.max(1, span)) * 100);
     document.getElementById("lane-note").textContent =
-      `窗口内 ${busy}% 的时间在生成`;
+      `窗口内 ${busy}% 的时间在生成 · 总吞吐按全局活跃时间计算；各行贡献使用同一分母，因此可以相加。`;
   },
 
   render() {

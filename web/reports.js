@@ -11,6 +11,7 @@ const Reports = {
   days: 30,
   _rendered: false,
   _loadGeneration: 0,
+  lastData: null,
 
   enter() {
     if (!this._rendered) {
@@ -31,7 +32,7 @@ const Reports = {
   renderShell() {
     const root = document.getElementById("view-reports");
     root.innerHTML = `
-    <section class="card">
+    <section class="instrument-card">
       <div class="card-head">
         <h2>用量报表 · <span id="reports-note"></span></h2>
         <div class="head-tools">
@@ -45,8 +46,14 @@ const Reports = {
           </div>
         </div>
       </div>
-      <div id="reports-table" class="data-table"></div>
-      <p class="subtle" id="reports-status" hidden></p>
+      <p class="subtle" id="reports-export-status" aria-live="polite" hidden></p>
+    </section>
+    <section class="chart-card">
+      <div class="card-head"><h2>区间趋势</h2><span class="subtle">随当前粒度与范围更新</span></div>
+      <div id="reports-trend" style="height:300px" data-chart="report-trend"></div>
+    </section>
+    <section class="instrument-card">
+      <div id="reports-table" class="data-table data-table-shell"></div>
     </section>`;
     root.querySelector("#reports-gran").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-gran]");
@@ -77,7 +84,7 @@ const Reports = {
 
   async download(format, button) {
     if (button.disabled) return;
-    const status = document.getElementById("reports-status");
+    const status = document.getElementById("reports-export-status");
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     status.textContent = "正在导出";
@@ -100,33 +107,49 @@ const Reports = {
     this.syncControls();
     const loadID = ++this._loadGeneration;
     const path = this.apiPath("json");
-    const status = document.getElementById("reports-status");
+    const status = document.getElementById("reports-export-status");
     status.hidden = true;
     try {
       const d = await Api.get(path);
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
+      this.lastData = d;
       if (d.granularity === "session") this.renderSessions(d.rows || []);
       else this.renderPeriods(d.rows || []);
+      renderState(document.getElementById("view-reports"), {kind: "ready", title: ""});
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
-      status.textContent = "加载失败:服务不可达,请稍后重试";
-      status.hidden = false;
+      const issue = classifyAPIError(e);
+      renderState(document.getElementById("view-reports"), {
+        kind: this.lastData ? "stale" : issue.kind,
+        title: this.lastData ? "报表数据可能已过期" : issue.title,
+        detail: this.lastData ? "保留上次成功趋势与表格。" : issue.detail,
+        action: {label: "重试", run: () => this.load()},
+      });
     }
   },
 
   renderPeriods(rows) {
     const el = document.getElementById("reports-table");
-    if (!rows.length) { el.innerHTML = `<p class="subtle">暂无数据</p>`; return; }
+    if (!rows.length) {
+      el.innerHTML = `<p class="subtle">暂无数据</p>`;
+      this.renderTrend([], "时间");
+      return;
+    }
     const label = { daily: "日期", weekly: "周", monthly: "月份" }[this.granularity] || "时间段";
     el.innerHTML = `<table><thead><tr><th>${label}</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>请求</th></tr></thead><tbody>` +
       [...rows].reverse().map((r) =>
         `<tr><td>${esc(r.bucket)}</td><td>${full(r.input_tokens)}</td><td>${full(r.output_tokens)}</td><td>${full(r.cache_read_tokens)}</td><td>${full(r.cache_creation_tokens)}</td><td>${full(r.total_tokens)}</td><td>${full(r.events)}</td></tr>`
       ).join("") + `</tbody></table>`;
+    this.renderTrend([...rows].reverse(), label);
   },
 
   renderSessions(rows) {
     const el = document.getElementById("reports-table");
-    if (!rows.length) { el.innerHTML = `<p class="subtle">暂无数据</p>`; return; }
+    if (!rows.length) {
+      el.innerHTML = `<p class="subtle">暂无数据</p>`;
+      this.renderTrend([], "会话");
+      return;
+    }
     el.innerHTML = `<table><thead><tr><th>会话</th><th>设备</th><th>来源</th><th>项目</th><th>模型</th><th>最后活跃</th><th>合计</th><th>请求</th></tr></thead><tbody>` +
       rows.map((r) => {
         const sid = r.session_id || "(无会话)";
@@ -142,5 +165,26 @@ const Reports = {
           <td>${full(r.events)}</td>
         </tr>`;
       }).join("") + `</tbody></table>`;
+    this.renderTrend(rows.slice(0, 30), "会话", (row) => (row.session_id || "(无会话)").slice(0, 8), "bar");
+  },
+
+  renderTrend(rows, label, labelOf = (row) => row.bucket, type = "line") {
+    const el = document.getElementById("reports-trend");
+    if (!rows.length) {
+      el.innerHTML = `<p class="empty">当前范围暂无趋势数据。</p>`;
+      return;
+    }
+    ChartRegistry.set(el, {
+      titleText: `报表${label}趋势`,
+      grid: {left: 12, right: 18, top: 18, bottom: 42, containLabel: true},
+      xAxis: {type: "category", data: rows.map(labelOf), axisLabel: {color: cssVar("--text-muted"), rotate: rows.length > 14 ? 30 : 0}, axisLine: {lineStyle: {color: cssVar("--baseline")}}},
+      yAxis: {type: "value", splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted"), formatter: compact}},
+      series: [{
+        type, smooth: false, symbol: "circle", symbolSize: 5, barMaxWidth: 20,
+        data: rows.map((row) => row.total_tokens || 0),
+        lineStyle: {color: cssVar("--source-aggregate"), width: 2},
+        areaStyle: {color: mixWithSurface(cssVar("--source-aggregate"), .12)},
+      }],
+    });
   },
 };

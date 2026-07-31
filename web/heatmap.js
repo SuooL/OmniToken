@@ -118,10 +118,10 @@ const Heatmap = {
     </details>`;
 
     el.innerHTML =
-      `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"` +
+      `<div data-chart="calendar-activity"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"` +
       ` style="display:block;width:100%;height:auto;max-width:${W}px"` +
       ` aria-label="近 ${total} 天活动日历热力图,${esc(summary)}">` +
-      `${months}${rails}${grid}${legend}</svg>` + readableTable;
+      `${months}${rails}${grid}${legend}</svg></div>` + readableTable;
     this.attachTooltip(el);
   },
 
@@ -150,11 +150,11 @@ const Heatmap = {
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   },
 
-  // Mirrors the stylesheet's dark rule: prefers-color-scheme, unless the page
-  // is pinned light via data-theme.
+  // A4 is dark-only. The chart ramp follows the product surface rather than
+  // the host OS preference, otherwise a light OS selects a low-contrast ramp
+  // against the fixed navy cards.
   isDark() {
-    return matchMedia("(prefers-color-scheme: dark)").matches &&
-      document.documentElement.getAttribute("data-theme") !== "light";
+    return true;
   },
 
   // One delegated listener rather than ~365 per-cell ones; reuses the shared

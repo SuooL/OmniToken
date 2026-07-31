@@ -302,8 +302,10 @@ mod tests {
     #[test]
     fn tray_title_round_trips_through_json() {
         for t in [TrayTitle::Off, TrayTitle::Quota, TrayTitle::Speed] {
-            let mut s = Settings::default();
-            s.tray_title = t;
+            let s = Settings {
+                tray_title: t,
+                ..Settings::default()
+            };
             let back: Settings = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
             assert_eq!(back.tray_title, t);
         }
@@ -397,9 +399,11 @@ mod tests {
     #[test]
     fn blank_token_keeps_the_existing_credential() {
         let (server, request_rx, handle) = authenticated_server("saved-token");
-        let mut current = Settings::default();
-        current.server = server.clone();
-        current.token = "saved-token".into();
+        let current = Settings {
+            server: server.clone(),
+            token: "saved-token".into(),
+            ..Settings::default()
+        };
 
         let candidate =
             tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ")).unwrap();
@@ -412,8 +416,10 @@ mod tests {
 
     #[test]
     fn serialized_settings_view_redacts_the_token() {
-        let mut settings = Settings::default();
-        settings.token = "never-send-this".into();
+        let settings = Settings {
+            token: "never-send-this".into(),
+            ..Settings::default()
+        };
 
         let json = serde_json::to_value(SettingsView::from(&settings)).unwrap();
 

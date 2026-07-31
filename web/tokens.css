@@ -21,37 +21,35 @@
    Layout-only variables (--rail, --gutter) stay in web/style.css: they size a
    1520px shell and mean nothing in a 340px popover. */
 
-/* An instrument, not a report.
-   Dark is the primary register: this is read at a glance beside an editor
-   while the machines are working. Light is a full variant, not an afterthought.
-
-   The ground is a cool slate rather than black — instrument housing, not a
-   terminal. Deliberately not the near-black + acid-green that every developer
-   tool reaches for. */
+/* Telemetry Studio A4 is deliberately dark-only: Web and the menubar must
+   remain the same instrument regardless of the host appearance setting.
+   The near-black ground, indigo surfaces and source gradients are normative,
+   not a fallback theme. */
 .viz-root {
   color-scheme: dark;
   /* RGB triplets, so borders / glows / fills can be tinted from one hue
      instead of hard-coding a second colour that drifts out of step. */
-  --glass-rgb:   56, 60, 66;
+  --glass-rgb:   24, 26, 54;
   --overlay-rgb: 255, 255, 255;
-  --line-rgb:    232, 238, 244;
+  --line-rgb:    167, 182, 246;
 
-  --page:           #2d2f34;
-  --surface-1:      rgba(var(--glass-rgb), 0.62);
-  --surface-2:      rgba(var(--overlay-rgb), 0.05);
-  --glass:          rgba(var(--glass-rgb), 0.66);
+  --page:           #090b15;
+  --surface-1:      #181a36;
+  --surface-2:      #0d1022;
+  --surface-card:   #14182f;
+  --glass:          rgba(var(--glass-rgb), 0.92);
   --glass-filter:   blur(30px) saturate(118%);
-  --sheen:          rgba(var(--overlay-rgb), 0.08);
-  --lift:           0 14px 38px rgba(0,0,0,0.34);
-  --lift-hi:        0 20px 52px rgba(0,0,0,0.44);
+  --sheen:          rgba(var(--overlay-rgb), 0.05);
+  --lift:           0 30px 90px rgba(0,0,0,0.34);
+  --lift-hi:        0 34px 100px rgba(0,0,0,0.48);
 
-  --text-primary:   #eef5fb;
-  --text-secondary: #b3bdcc;
-  --text-muted:     #9ca6b4;
+  --text-primary:   #f7f8ff;
+  --text-secondary: #9aa5c2;
+  --text-muted:     #7f89a7;
   --grid:           rgba(var(--line-rgb), 0.10);
-  --baseline:       rgba(var(--line-rgb), 0.20);
-  --border:         rgba(var(--line-rgb), 0.14);
-  --border-strong:  rgba(var(--line-rgb), 0.26);
+  --baseline:       #28304c;
+  --border:         #2b3352;
+  --border-strong:  #3a4767;
 
   /* A full spectrum of bright pastels rather than one accent doing everything.
      Concurrent lanes need to stay separable, and a single-hue panel is what
@@ -60,13 +58,13 @@
      Finder icon are one product. The supporting hues are picked for lane
      separability at speed — five streams have to stay distinct in a glance,
      which is what drives the spacing around the wheel. */
-  --accent:     #71aef4;
-  --cyan:       #77daee;
-  --accent-rgb: 113, 174, 244;
-  --violet:     #a386f3;
-  --rose:       #f382b1;
-  --amber:      #f4bb71;
-  --teal:       #a0e3d0;
+  --accent:     #67c9ff;
+  --cyan:       #67c9ff;
+  --accent-rgb: 103, 201, 255;
+  --violet:     #a982ee;
+  --rose:       #ff72a7;
+  --amber:      #f2a16c;
+  --teal:       #67e4b9;
   --red:        #f47687;
   --accent-dim: rgba(var(--accent-rgb), 0.16);
 
@@ -83,6 +81,15 @@
   --union:  var(--accent);
   --warn:   var(--amber);
   --critical: var(--red);
+  --source-claude: #f2a16c;
+  --source-claude-deep: #8d4d35;
+  --source-codex: #67c9ff;
+  --source-codex-deep: #315b8e;
+  --source-api: #a982ee;
+  --source-api-deep: #5f458f;
+  --source-aggregate: #ff72a7;
+  --status-healthy: #67e4b9;
+  --peak: #ff72a7;
   --series-1: var(--accent);
   --series-2: var(--teal);
   --series-3: var(--rose);
@@ -106,36 +113,5 @@
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
                "Noto Sans SC", sans-serif;
 
-  --radius: 14px;
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) .viz-root { --meter-track: #184f95; }
-}
-@media (prefers-color-scheme: light) {
-  :root:where(:not([data-theme="dark"])) .viz-root {
-    color-scheme: light;
-    --glass-rgb:   255, 255, 255;
-    --overlay-rgb: 255, 255, 255;
-    --line-rgb:    16, 23, 32;
-    --page:           #f3f4f7;
-    --glass:          rgba(var(--glass-rgb), 0.72);
-    --sheen:          rgba(255,255,255,0.75);
-    --lift:           0 10px 28px rgba(16,23,32,0.10);
-    --lift-hi:        0 16px 40px rgba(16,23,32,0.16);
-    --surface-2:      rgba(16,23,32,0.045);
-    --text-primary:   #1e2733;
-    --text-secondary: #4d5a6a;
-    --text-muted:     #637083;
-    --border:         rgba(var(--line-rgb), 0.12);
-    --border-strong:  rgba(var(--line-rgb), 0.24);
-    --accent:     #1e6dcc;
-    --cyan:       #1395ae;
-    --accent-rgb: 30, 109, 204;
-    --violet:     #542ed1;
-    --rose:       #d42b7d;
-    --amber:      #c57a11;
-    --teal:       #18957c;
-    --red:        #d9263e;
-    --union:      var(--accent);
-  }
+  --radius: 16px;
 }

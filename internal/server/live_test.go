@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -191,6 +192,60 @@ func TestHandleLiveServesTheStreamSnapshotShape(t *testing.T) {
 	wantBurn, _ := json.Marshal(fromStream["burn"])
 	if string(gotBurn) != string(wantBurn) {
 		t.Errorf("burn = %s, want %s", gotBurn, wantBurn)
+	}
+}
+
+func TestLivePayloadExposesAdditiveContributionBreakdowns(t *testing.T) {
+	s := newLiveTestServer(t)
+	now := time.Now()
+	events := []model.Event{
+		{
+			EventID: "speed-a", TS: now.Add(-10 * time.Second).UnixMilli(),
+			Device: "mac", Source: "claude-code", Model: "anthropic.claude-opus-4-8",
+			SessionID: "s1", OutputTokens: 1_000, GenMS: 10_000,
+		},
+		{
+			EventID: "speed-b", TS: now.UnixMilli(),
+			Device: "server", Source: "proxy", Model: "claude-opus-4-8",
+			SessionID: "s2", OutputTokens: 1_000, GenMS: 10_000,
+		},
+	}
+	if _, err := s.store.InsertEvents(events, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	payload, err := s.livePayload(now)
+	if err != nil {
+		t.Fatalf("livePayload: %v", err)
+	}
+	raw, err := json.Marshal(payload["speed"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var speed store.LiveSpeed
+	if err := json.Unmarshal(raw, &speed); err != nil {
+		t.Fatalf("decode speed: %v", err)
+	}
+	if speed.TPS != 100 {
+		t.Fatalf("aggregate tps = %v, want 100", speed.TPS)
+	}
+	for _, session := range speed.Sessions {
+		if session.TPS != 100 || session.ContributionTPS != 50 {
+			t.Errorf("session speed = %+v, want native=100 contribution=50", session)
+		}
+	}
+	for name, rows := range map[string][]store.SpeedContribution{
+		"sources": speed.Sources,
+		"devices": speed.Devices,
+		"models":  speed.Models,
+	} {
+		var sum float64
+		for _, row := range rows {
+			sum += row.ContributionTPS
+		}
+		if math.Abs(sum-speed.TPS) > 1e-9 {
+			t.Errorf("%s contribution sum = %v, aggregate = %v", name, sum, speed.TPS)
+		}
 	}
 }
 

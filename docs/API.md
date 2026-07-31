@@ -179,6 +179,35 @@ Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-
 **Codex 三块都不在**:其 rollout 文件成批回放历史,70% 的记录时间戳是刷盘时刻,
 没有可用的生成区间(ADR-0009)。
 
+### GET /api/v1/telemetry?range=5h|1h|24h
+
+menu bar 与 Web 可视化共用的有界遥测快照(ADR-0017)，包含：
+
+- `today`：本地零点至今的总 tokens，以及所有非零模型的完整构成；
+- `rolling_5h`：当前与前一个五小时区间的来源用量；Claude/Codex 行始终
+  存在，其他来源归一为 `api` 行并在非零时返回，所有来源行之和等于总量；
+- `speed`：按所选范围分桶的已测生成吞吐、来源贡献与覆盖状态；
+- `generated_at`、`timezone`：服务端生成时间与日界线时区。
+
+速度字段使用三种明确命名：
+
+```text
+aggregate_tps = measured_output_tokens(all)
+              / union_ms(all measured generation intervals) * 1000
+contribution_tps(group) = measured_output_tokens(group)
+                        / union_ms(all measured generation intervals) * 1000
+native_tps(group) = measured_output_tokens(group)
+                  / union_ms(group generation intervals) * 1000
+```
+
+每个 bucket 的未舍入值必须满足
+`aggregate_tps = Σ sources[].contribution_tps`。`native_tps` 使用各来源自身分母，
+只供下钻比较，不能组成总计。
+
+`measured_sources` 和 `unmeasured_sources` 互斥，区分“至少有一个可靠速度区间”与“完全没有可靠速度区间”。部分覆盖由 `coverage[].measured_events < coverage[].total_events` 表示，不得把来源整体标成 unavailable。
+当前 Codex 在后者；它仍出现在 `today` 与 `rolling_5h` 用量中，但不会被伪造成
+0 tok/s，也不会静默进入 `aggregate_tps`。
+
 ### GET /api/v1/quota
 
 权威配额(ADR-0007):每 (设备, 来源, 限额, 窗口) 的最新快照。
@@ -218,6 +247,11 @@ query 令牌一律 401(ADR-0016);桌面端的流走 Rust,能设头,不用它。
 idle / stale >10min,以及 `has_procs` / `running`)、`sessions`(近 10 分钟活跃会话:
 设备/repo/模型/增量 tokens)、`processes`(进程地面真值)、`burn`(近 10 分钟
 tokens/min)、`block`(当前 5h 窗口摘要)。
+
+`speed.tps` 保留 ADR-0009 的整机并集吞吐。`speed.sessions[].tps` 是会话自身
+`native_tps`，分母各不相同；用于贡献列表时必须读取
+`speed.sessions[].contribution_tps`。来源、设备和模型贡献同样使用全局并集分母，
+所以各自未舍入之和均等于 `speed.tps`。
 
 `sessions` 与 `processes` 回答的是两个问题,不可互相替代:前者由事件推断
 (「谁最近花了 token」),后者读进程表(「谁开着」)。一个会话开着但在思考时只出现在

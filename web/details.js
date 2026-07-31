@@ -22,7 +22,9 @@ const Details = {
     this.load();
   },
 
-  leave() {},
+  leave() {
+    this.seq += 1;
+  },
 
   applyRoute(params, shouldLoad = true) {
     const session = params.get("session") || "";
@@ -35,7 +37,7 @@ const Details = {
 
   build() {
     document.getElementById("view-details").innerHTML = `
-    <section class="card">
+    <section class="instrument-card">
       <div class="card-head">
         <h2>事件明细</h2>
         <div class="head-tools"><span class="subtle" id="d-note"></span></div>
@@ -50,9 +52,15 @@ const Details = {
           <option value="30">近 30 天</option>
           <option value="90">近 90 天</option>
         </select>
-        <span class="chip-row" id="d-chips"></span>
+        <span class="chip-row" id="d-chips" data-role="filter-summary"></span>
       </div>
-      <div id="d-table" class="data-table"></div>
+    </section>
+    <section class="chart-card">
+      <div class="card-head"><h2>当前页事件分布</h2><span class="subtle">用于理解筛选结果，不替代表格</span></div>
+      <div id="d-distribution" style="height:260px" data-chart="event-distribution"></div>
+    </section>
+    <section class="instrument-card">
+      <div id="d-table" class="data-table data-table-shell"></div>
       <div class="pager">
         <span class="subtle" id="d-page"></span>
         <button id="d-prev" class="ghost-btn">上一页</button>
@@ -120,6 +128,7 @@ const Details = {
 
   render(events) {
     this.renderChips();
+    this.renderDistribution(events);
     const el = document.getElementById("d-table");
     el.innerHTML = events.length
       ? `<table><thead><tr>
@@ -133,6 +142,35 @@ const Details = {
       `第 ${from}–${this.offset + events.length} 条 / 共 ${full(this.total)} 条`;
     document.getElementById("d-prev").disabled = this.offset <= 0;
     document.getElementById("d-next").disabled = this.offset + this.limit >= this.total;
+  },
+
+  renderDistribution(events) {
+    const el = document.getElementById("d-distribution");
+    if (!events.length) {
+      el.innerHTML = `<p class="empty">当前页没有可绘制事件。</p>`;
+      return;
+    }
+    const byModel = new Map();
+    events.forEach((event) => {
+      const key = event.model || "(未知模型)";
+      const row = byModel.get(key) || {model: key, input: 0, output: 0, events: 0};
+      row.input += (event.input_tokens || 0) + (event.cache_read_tokens || 0) + (event.cache_creation_tokens || 0);
+      row.output += event.output_tokens || 0;
+      row.events += 1;
+      byModel.set(key, row);
+    });
+    const rows = [...byModel.values()].sort((a, b) => b.input + b.output - a.input - a.output).slice(0, 12);
+    ChartRegistry.set(el, {
+      titleText: "筛选事件按模型的 token 分布",
+      grid: {left: 12, right: 16, top: 28, bottom: 42, containLabel: true},
+      legend: {top: 0, textStyle: {color: cssVar("--text-secondary")}},
+      xAxis: {type: "category", data: rows.map((row) => row.model), axisLabel: {color: cssVar("--text-muted"), rotate: rows.length > 6 ? 25 : 0}},
+      yAxis: {type: "value", splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted"), formatter: compact}},
+      series: [
+        {name: "输入与缓存", type: "bar", stack: "tokens", data: rows.map((row) => row.input), itemStyle: {color: cssVar("--source-codex")}},
+        {name: "输出", type: "bar", stack: "tokens", data: rows.map((row) => row.output), itemStyle: {color: cssVar("--source-claude")}},
+      ],
+    });
   },
 
   rowHTML(e) {
@@ -157,10 +195,17 @@ const Details = {
   },
 
   renderChips() {
-    document.getElementById("d-chips").innerHTML = this.filters.session
-      ? `<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
-          <a id="d-clear-session" class="chip-x" href="#details" aria-label="清除会话过滤">×</a></span>`
-      : "";
+    const labels = {
+      device: "设备", source: "来源", model: "模型", repo: "项目", days: "范围",
+    };
+    const chips = Object.entries(this.filters)
+      .filter(([key, value]) => key !== "session" && value && !(key === "days" && value === "7"))
+      .map(([key, value]) => `<span class="chip">${labels[key]} ${esc(value)}</span>`);
+    if (this.filters.session) {
+      chips.push(`<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
+        <a id="d-clear-session" class="chip-x" href="#details" aria-label="清除会话过滤">×</a></span>`);
+    }
+    document.getElementById("d-chips").innerHTML = chips.join("");
   },
 
   trunc(s, n) {

@@ -11,6 +11,7 @@ mod gauge;
 mod live;
 mod notify;
 mod settings;
+mod telemetry;
 mod tray;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,6 +85,15 @@ async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
     get_json(&s.server, &path, &s.token)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn telemetry_get(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, telemetry::State>,
+    range: String,
+) -> Result<telemetry::TelemetryView, String> {
+    telemetry::get(app, state, range).await
 }
 
 #[tauri::command]
@@ -302,9 +312,11 @@ pub fn run() {
                 .build(),
         )
         .manage(live::State::default())
+        .manage(telemetry::State::default())
         .manage(tray::State::default())
         .invoke_handler(tauri::generate_handler![
             api_get,
+            telemetry_get,
             settings_get,
             settings_set,
             refresh_now,
@@ -396,5 +408,59 @@ fn event_rect(event: &TrayIconEvent) -> Option<tauri::Rect> {
         | TrayIconEvent::Move { rect, .. }
         | TrayIconEvent::Leave { rect, .. } => Some(*rect),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod ui_contract_tests {
+    const HTML: &str = include_str!("../../ui/index.html");
+    const APP: &str = include_str!("../../ui/app.js");
+    const CONFIG: &str = include_str!("../tauri.conf.json");
+
+    #[test]
+    fn ui_contract_contains_the_a2_glance_surface_once() {
+        for hook in [
+            r#"id="freshness""#,
+            r#"id="current-speed""#,
+            "近 10m 已测总吞吐",
+            r#"id="claude-5h""#,
+            r#"id="codex-5h""#,
+            r#"id="speed-lanes""#,
+            r#"id="peak-1h""#,
+            r#"id="active-ratio""#,
+            r#"id="measured-source-count""#,
+            r#"id="today-total""#,
+            r#"id="model-list""#,
+            r#"id="contributor-list""#,
+            r#"id="device-list""#,
+            r#"id="open-full""#,
+            r#"id="open-settings""#,
+        ] {
+            assert!(HTML.contains(hook), "missing A2 UI hook {hook}");
+        }
+        assert_eq!(HTML.matches(r#"id="current-speed""#).count(), 1);
+    }
+
+    #[test]
+    fn ui_contract_removes_risk_forecast_and_polls_typed_hourly_telemetry() {
+        for obsolete in ["risk-source", "track-future", "track-breach", "drawRisk("] {
+            assert!(
+                !HTML.contains(obsolete) && !APP.contains(obsolete),
+                "obsolete risk forecast remains: {obsolete}"
+            );
+        }
+        assert!(APP.contains(r#"invoke("telemetry_get", { range: "1h" })"#));
+        assert!(APP.contains("TELEMETRY_MS = 30000"));
+        assert!(APP.contains("generation !== telemetryGeneration"));
+        assert!(APP.contains("contribution_rate"));
+    }
+
+    #[test]
+    fn ui_contract_targets_a_wider_taller_popover() {
+        let config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+        let panel = &config["app"]["windows"][0];
+        assert_eq!(panel["width"], 420);
+        assert!(panel["height"].as_u64().unwrap_or_default() >= 680);
+        assert!(APP.contains("availableMonitor"));
     }
 }

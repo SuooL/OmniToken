@@ -43,7 +43,11 @@ const ModelsView = {
     }
     try {
       // top=4:每日图最多 4 个模型 + 「其他」,正好用满调色板,不新造色相。
-      const data = await Api.get(`/api/v1/models?days=${this.DAYS}&top=4`);
+      const [data, live] = await Promise.all([
+        Api.get(`/api/v1/models?days=${this.DAYS}&top=100`),
+        Api.get("/api/v1/live").catch(() => ({ speed: {} })),
+      ]);
+      data.live = live;
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
@@ -85,18 +89,26 @@ const ModelsView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="models-tiles"></section>
-        <section class="card">
+        <section class="chart-card">
           <div class="card-head"><h2 id="models-source-title">模型 × 来源</h2></div>
-          <div id="models-source-chart"></div>
+          <div id="models-source-chart" data-chart="model-distribution"></div>
           <p class="subtle" id="models-source-note"></p>
         </section>
-        <section class="card">
+        <section class="chart-card">
+          <div class="card-head"><h2>成本 / token 关系</h2></div>
+          <div id="models-cost-token-chart" style="height:280px" data-chart="model-cost-token"></div>
+        </section>
+        <section class="instrument-card" data-role="active-model-contribution">
+          <div class="card-head"><h2>当前模型贡献</h2><span class="subtle">contribution_tps</span></div>
+          <div id="models-active-contribution" class="bars"></div>
+        </section>
+        <section class="chart-card">
           <div class="card-head"><h2 id="models-daily-title">每日模型构成</h2></div>
           <div id="models-daily-chart" style="height:300px"></div>
         </section>
-        <section class="card">
+        <section class="instrument-card">
           <h2>模型明细 · 按来源拆分</h2>
-          <div class="data-table" id="models-table"></div>
+          <div class="data-table data-table-shell" id="models-table"></div>
         </section>`;
       root.dataset.built = "1";
     }
@@ -107,7 +119,44 @@ const ModelsView = {
     document.getElementById("models-tiles").innerHTML = this.tiles(models, srcSeries, unpriced);
     document.getElementById("models-table").innerHTML = this.table(rows, unpriced);
     this.sourceChart(models, srcSeries);
+    this.costTokenChart(models);
+    this.activeContributions((((d.live || {}).speed || {}).models) || []);
     this.dailyChart(daily, dailySeries, d.days || this.DAYS);
+  },
+
+  costTokenChart(models) {
+    const el = document.getElementById("models-cost-token-chart");
+    const rows = models.filter((model) => model.total > 0 && !model.unpriced);
+    if (!rows.length) {
+      el.innerHTML = `<p class="empty">暂无同时具备用量与定价的模型。</p>`;
+      return;
+    }
+    ChartRegistry.set(el, {
+      titleText: "模型 token 与成本关系",
+      grid: {left: 48, right: 24, top: 16, bottom: 40, containLabel: true},
+      xAxis: {type: "log", name: "tokens", axisLabel: {color: cssVar("--text-muted"), formatter: compact}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
+      yAxis: {type: "value", name: "USD", axisLabel: {color: cssVar("--text-muted"), formatter: usd}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
+      series: [{
+        type: "scatter", symbolSize: 12, itemStyle: {color: cssVar("--source-aggregate")},
+        data: rows.map((model) => ({name: this.modelLabel(model.model), value: [model.total, model.cost]})),
+        label: {show: true, position: "right", color: cssVar("--text-secondary"), formatter: ({name}) => name},
+      }],
+    });
+  },
+
+  activeContributions(rows) {
+    const el = document.getElementById("models-active-contribution");
+    rows = [...rows].filter((row) => row.contribution_tps > 0)
+      .sort((a, b) => b.contribution_tps - a.contribution_tps);
+    if (!rows.length) {
+      el.innerHTML = `<span class="empty">当前没有可测模型贡献。</span>`;
+      return;
+    }
+    const max = rows[0].contribution_tps;
+    el.innerHTML = rows.map((row) => `<div class="row"><div class="row-head">` +
+      `<span class="key">${esc(row.key || row.model || "(未知模型)")}</span>` +
+      `<span class="val">${Number(row.contribution_tps).toFixed(1)} tok/s</span></div>` +
+      `<div class="track"><div class="fill" style="width:${100 * row.contribution_tps / max}%"></div></div></div>`).join("");
   },
 
   // ---- 序列与配色 ---------------------------------------------------

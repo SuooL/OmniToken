@@ -42,7 +42,11 @@ const DevicesView = {
       renderState(root, { kind: "loading", title: "正在加载设备数据" });
     }
     try {
-      const data = await Api.get("/api/v1/devices?days=30");
+      const [data, live] = await Promise.all([
+        Api.get("/api/v1/devices?days=30"),
+        Api.get("/api/v1/live").catch(() => ({ speed: {} })),
+      ]);
+      data.live = live;
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
@@ -82,13 +86,17 @@ const DevicesView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="devices-tiles"></section>
-        <section class="card">
+        <section class="chart-card">
+          <div class="card-head"><h2>当前设备吞吐贡献</h2><span class="subtle">共享分母</span></div>
+          <div id="devices-throughput-chart" style="height:260px" data-chart="device-throughput-trend"></div>
+        </section>
+        <section class="chart-card">
           <div class="card-head"><h2 id="devices-chart-title">每日用量 · 按设备堆叠</h2></div>
           <div id="devices-chart" style="height:300px"></div>
         </section>
-        <section class="card">
+        <section class="instrument-card">
           <h2 id="devices-table-title">设备明细</h2>
-          <div class="data-table" id="devices-table"></div>
+          <div class="data-table data-table-shell" id="devices-table"></div>
         </section>`;
       root.dataset.built = "1";
     }
@@ -97,7 +105,29 @@ const DevicesView = {
     document.getElementById("devices-table-title").textContent = `设备明细 · 近 ${days} 天`;
     document.getElementById("devices-tiles").innerHTML = this.tiles(summary, days);
     document.getElementById("devices-table").innerHTML = this.table(summary);
+    this.throughputChart(((((d.live || {}).speed) || {}).devices) || []);
     this.chart(matrix, series);
+  },
+
+  throughputChart(rows) {
+    const el = document.getElementById("devices-throughput-chart");
+    rows = [...rows].filter((row) => row.contribution_tps > 0)
+      .sort((a, b) => b.contribution_tps - a.contribution_tps);
+    if (!rows.length) {
+      el.innerHTML = `<p class="empty">当前没有可测设备吞吐。</p>`;
+      return;
+    }
+    ChartRegistry.set(el, {
+      titleText: "当前设备吞吐贡献",
+      grid: {left: 12, right: 48, top: 8, bottom: 8, containLabel: true},
+      xAxis: {type: "value", min: 0, splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted")}},
+      yAxis: {type: "category", inverse: true, data: rows.map((row) => row.key || row.device), axisLabel: {color: cssVar("--text-secondary")}},
+      series: [{
+        type: "bar", barMaxWidth: 18, data: rows.map((row) => row.contribution_tps),
+        itemStyle: {color: cssVar("--status-healthy"), borderRadius: [0, 4, 4, 0]},
+        label: {show: true, position: "right", color: cssVar("--text-secondary"), formatter: ({value}) => `${Number(value).toFixed(1)} tok/s`},
+      }],
+    });
   },
 
   label(device) {

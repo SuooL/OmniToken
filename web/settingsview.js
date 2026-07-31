@@ -113,7 +113,8 @@ const SettingsView = {
   render() {
     const root = document.getElementById("view-settings");
     root.innerHTML =
-      this.pricingCard() + this.deviceCard() + this.tokenCard();
+      this.tokenCard() + this.pricingCard() + this.deviceCard() +
+      this.preferencesCard() + this.dangerCard();
     this.bind(root);
   },
 
@@ -136,7 +137,8 @@ const SettingsView = {
         </tr></thead><tbody>${rows}</tbody></table>`
       : `<span class="empty">暂无覆盖,使用内置 LiteLLM 价格表</span>`;
     return `
-      <section class="card" id="card-pricing">
+      <section class="instrument-card" id="card-pricing"
+               data-settings-group="pricing" data-settings-scope="section">
         <div class="card-head">
           <h2>定价覆盖 · 美元 / 百万 token</h2>
           <div class="head-tools">
@@ -169,7 +171,8 @@ const SettingsView = {
         </tr>`).join("") + `</tbody></table>`
       : `<span class="empty">暂无设备数据</span>`;
     return `
-      <section class="card" id="card-devices">
+      <section class="instrument-card" id="card-devices"
+               data-settings-group="device-identities" data-settings-scope="section">
         <div class="card-head">
           <h2>设备重命名</h2>
           <div class="head-tools"><button class="ghost-btn" data-act="save-devices">保存</button></div>
@@ -190,7 +193,8 @@ const SettingsView = {
       ? Api.adminToken
       : this._draft.adminToken;
     return `
-      <section class="card" id="card-token">
+      <section class="instrument-card" id="card-token"
+               data-settings-group="connection-auth" data-settings-scope="section">
         <div class="card-head">
           <h2>访问凭据</h2>
           <div class="head-tools"><button class="ghost-btn" data-act="save-tokens">记住</button></div>
@@ -208,7 +212,30 @@ const SettingsView = {
         <p class="subtle">读取 token 用于 GET 与实时流;管理 token 只用于保存设置。
           旧浏览器没有管理 token 记录时会临时沿用读取 token,保存后两者独立。
           凭据只存在本浏览器的 localStorage,不会作为设置内容上报。</p>
+        <div class="credential-scope-map" role="img"
+             aria-label="读取 token 仅授权查询和实时流；管理 token 授权设置写入和设备撤销">
+          <div><strong>读取 token</strong><span aria-hidden="true">→</span><span>GET · SSE · 下载</span></div>
+          <div><strong>管理 token</strong><span aria-hidden="true">→</span><span>PUT · 身份撤销</span></div>
+        </div>
         <div class="save-note" data-note="token">&nbsp;</div>
+      </section>`;
+  },
+
+  preferencesCard() {
+    return `
+      <section class="instrument-card" data-settings-group="preferences" data-settings-scope="section">
+        <div class="card-head"><h2>显示偏好</h2><span class="subtle">跟随当前浏览器</span></div>
+        <p class="subtle">主题跟随系统；减少动态效果由 <code>prefers-reduced-motion</code> 控制。
+          这些偏好只影响当前浏览器，不会写入 Hub，也不会改变遥测计算。</p>
+      </section>`;
+  },
+
+  dangerCard() {
+    return `
+      <section class="state-panel settings-danger" data-settings-danger="true">
+        <div class="card-head"><h2>危险操作</h2><span class="chip">管理凭据</span></div>
+        <p class="subtle">撤销设备身份会立即使其凭据失效，必须通过独立确认流程执行。
+          定价删除和设备改名不属于身份撤销；每个上方“保存”按钮也只提交所在分组。</p>
       </section>`;
   },
 

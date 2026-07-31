@@ -8,22 +8,31 @@
 .viz-root {
   --rail: 208px;
   --gutter: clamp(16px, 2vw, 32px);
+  --source-claude-gradient: linear-gradient(180deg, var(--source-claude), var(--source-claude-deep));
+  --source-codex-gradient: linear-gradient(180deg, var(--source-codex), var(--source-codex-deep));
+  --source-api-gradient: linear-gradient(180deg, var(--source-api), var(--source-api-deep));
 }
 
-body { background: var(--page); }
-
-/* Ambient depth. Two very low-opacity washes behind everything, so surfaces
-   have something to float above — a flat fill is what made the old panel read
-   as a printed sheet. Fixed, so it does not travel with scroll. */
-body::before {
-  content: "";
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+html { background: #090b15; }
+body {
+  min-height: 100vh;
+  padding: 28px;
   background:
-    radial-gradient(58% 48% at 8% -8%,  rgba(77,157,250,0.20), transparent 70%),
-    radial-gradient(52% 44% at 62% -6%, rgba(155,123,245,0.17), transparent 68%),
-    radial-gradient(46% 42% at 100% 8%, rgba(63,208,168,0.14), transparent 66%),
-    radial-gradient(60% 50% at 78% 100%, rgba(255,180,84,0.10), transparent 70%);
+    radial-gradient(circle at 12% 0, #262258 0, transparent 25%),
+    radial-gradient(circle at 90% 0, #0c354e 0, transparent 30%),
+    #090b15;
 }
+.skip-link {
+  position: fixed; left: 12px; top: 8px; z-index: 100;
+  transform: translateY(-150%);
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--surface-1); color: var(--text-primary);
+}
+.skip-link:focus { transform: none; }
+
+/* Keep the page ground quiet. Magnitude and grouping belong inside charts;
+   a decorative wash behind every card would compete with those encodings. */
+body::before { content: none; }
 .viz-root { position: relative; z-index: 1; }
 
 /* Full-bleed shell: a rail for navigation, the rest for content. The old
@@ -32,16 +41,24 @@ body::before {
    .grid-auto, which adds columns rather than stretching them. */
 .viz-root {
   font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
   color: var(--text-primary);
-  background: var(--page);
-  min-height: 100vh;
+  width: min(1440px, 100%);
+  min-height: calc(100vh - 56px);
+  margin: 0 auto;
   display: grid;
   grid-template-columns: var(--rail) minmax(0, 1fr);
+  overflow: clip;
+  background: linear-gradient(155deg, var(--surface-1), var(--surface-2));
+  border: 1px solid rgba(var(--line-rgb), 0.19);
+  border-radius: 24px;
+  box-shadow: 0 30px 90px rgba(0,0,0,0.48), inset 0 1px rgba(var(--overlay-rgb), 0.05);
 }
 
 .rail {
   border-right: 1px solid var(--border);
-  background: var(--surface-1);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
   padding: 20px 12px;
   display: flex;
   flex-direction: column;
@@ -53,8 +70,8 @@ body::before {
 }
 .brand { display: flex; align-items: baseline; gap: 8px; padding: 0 8px; }
 .brand h1 {
-  font-family: var(--font-display);
-  font-size: 15px; font-weight: 600; letter-spacing: -0.02em;
+  font-family: var(--font-body);
+  font-size: 15px; font-weight: 800; letter-spacing: -0.02em;
 }
 .brand .dot-live {
   width: 7px; height: 7px; border-radius: 50%;
@@ -88,7 +105,7 @@ body::before {
   box-shadow: -1px 0 10px -2px rgba(var(--accent-rgb), 0.55);
 }
 
-.content { padding: 22px var(--gutter) 56px; min-width: 0; }
+.content { padding: 22px var(--gutter) 40px; min-width: 0; }
 .page-head {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 20px; flex-wrap: wrap; margin-bottom: 18px;
@@ -96,6 +113,14 @@ body::before {
 .page-head h2 { font-size: 15px; font-weight: 620; color: var(--text-primary); margin: 0; }
 .subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
 .refresh { color: var(--text-muted); font-size: 12px; font-family: var(--font-display); }
+.page-utilities { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.hub-health { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.hub-health.healthy .health-dot {
+  background: var(--status-healthy);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--status-healthy) 55%, transparent);
+}
+.hub-health.unavailable .health-dot { background: var(--critical); }
 
 /* Gains columns with width instead of stretching them. */
 .grid-auto {
@@ -115,25 +140,75 @@ body::before {
   .tabs .tab-group { display: none; }
   .tabs a { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
   .tabs a[aria-current] { border-left: 0; border-bottom-color: var(--accent); }
+  .content { width: 100%; overflow-x: clip; }
 }
 
 /* Glass, not paper. A translucent panel over the ambient wash, lifted by an
    inset highlight along the top edge and a soft shadow beneath — the layering
    is what separates content from ground without drawing a box around it. */
 .card {
-  background:
-    linear-gradient(180deg, rgba(var(--overlay-rgb), 0.075), rgba(var(--overlay-rgb), 0.02)),
-    var(--glass);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 18px;
-  margin-bottom: 14px;
-  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+  padding: 13px;
+  margin-bottom: 11px;
+  box-shadow: none;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
-.card:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
+.card:hover { border-color: var(--border-strong); box-shadow: none; }
+.instrument-card,
+.metric-card,
+.chart-card,
+.state-panel {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+.instrument-card, .chart-card, .state-panel { padding: 13px; margin-bottom: 11px; }
+.metric-card { padding: 13px; min-width: 0; }
+.metric-card .metric-value {
+  font: 760 clamp(24px, 3.2vw, 38px)/1 var(--font-body);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.035em;
+}
+.metric-card .metric-label, .eyebrow {
+  color: var(--text-muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+}
+.composition-strip {
+  display: flex; height: 8px; overflow: hidden; border-radius: 999px;
+  background: var(--grid); margin-top: 10px;
+}
+.composition-strip > span { min-width: 2px; height: 100%; }
+.data-table-shell { overflow-x: auto; overscroll-behavior-inline: contain; }
+.data-table-shell table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+.data-table-shell th, .data-table-shell td {
+  padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap;
+}
+.data-table-shell th:first-child, .data-table-shell td:first-child { text-align: left; }
+.chart-fallback { margin-top: 10px; color: var(--text-muted); }
+.chart-fallback summary { cursor: pointer; font-size: 12px; }
+.telemetry-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.coverage-note { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--text-muted); font-size: 12px; }
+.unavailable-lane {
+  padding: 10px 12px; border: 1px dashed var(--border-strong);
+  border-radius: 8px; color: var(--text-muted); font-size: 12px;
+}
+.settings-danger { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
+.settings-danger h2 { color: var(--critical); }
+.credential-scope-map {
+  display: grid; gap: 8px; margin: 14px 0; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+}
+.credential-scope-map > div {
+  display: grid; grid-template-columns: minmax(96px, .7fr) auto minmax(150px, 1.4fr);
+  align-items: center; gap: 12px; color: var(--text-secondary); font-size: 12px;
+}
+.credential-scope-map strong { color: var(--text-primary); }
+.source-lanes { min-height: 280px; }
+.model-composition { min-height: 300px; }
 h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 /* Wraps as a whole: a legend wide enough to crowd the title takes its own line
    instead of squeezing it. Without this the flex row shrinks the heading first,
@@ -154,21 +229,17 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bot
    is a sign the page needs another tile, not a narrower grid. */
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-tile {
-  background:
-    linear-gradient(180deg, rgba(var(--overlay-rgb), 0.075), rgba(var(--overlay-rgb), 0.02)),
-    var(--glass);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 14px 16px;
-  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+  padding: 13px;
+  box-shadow: none;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
-.stat-tile:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
+.stat-tile:hover { border-color: var(--border-strong); box-shadow: none; }
 .stat-tile.plain { background: none; border: 0; box-shadow: none; padding: 0; backdrop-filter: none; }
 .stat-tile .label { font-size: 12px; color: var(--text-secondary); }
-.stat-tile .value { font-family: var(--font-display); font-size: 28px; font-weight: 600; margin: 4px 0 2px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.stat-tile .value { font-family: var(--font-body); font-size: 28px; font-weight: 760; margin: 4px 0 2px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
 .stat-tile .sub { font-size: 12px; color: var(--text-muted); }
 .stat-tile .sub.cost { color: var(--text-secondary); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .bars .val .extra { color: var(--text-muted); font-weight: 400; }
@@ -206,7 +277,17 @@ a.ghost-btn { text-decoration: none; }
 .bars .key { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bars .val { color: var(--text-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .bars .track { height: 8px; border-radius: 0 4px 4px 0; background: none; }
-.bars .fill { height: 100%; border-radius: 0 4px 4px 0; background: var(--series-1); min-width: 2px; }
+.bars .track {
+  overflow: hidden;
+  border-radius: 9px;
+  background: #28304c;
+}
+.bars .fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 9px;
+  background: linear-gradient(90deg, var(--status-healthy), var(--source-codex));
+}
 .bars .empty { color: var(--text-muted); font-size: 12px; }
 
 .chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -352,11 +433,11 @@ a.ghost-btn { text-decoration: none; }
   padding: 4px 0 16px;
 }
 .now .figure {
-  font-family: var(--font-display);
+  font-family: var(--font-body);
   color: var(--text-primary);
-  text-shadow: 0 0 28px rgba(var(--accent-rgb), 0.32);
+  text-shadow: none;
   font-size: clamp(44px, 6vw, 76px);
-  font-weight: 600; line-height: 0.92; letter-spacing: -0.045em;
+  font-weight: 790; line-height: 0.92; letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
 }
 .now .unit { font-size: 0.34em; font-weight: 500; color: var(--text-secondary); letter-spacing: 0; }
@@ -364,9 +445,9 @@ a.ghost-btn { text-decoration: none; }
 .now .caption b { color: var(--text-primary); font-weight: 600; }
 .now.idle .figure { color: var(--text-muted); }
 
-/* Lanes. One row per concurrent stream, then the union beneath — the whole
-   argument of ADR-0009 in one picture: three sessions at 50 tok/s are not
-   150 unless they took turns. */
+/* Lanes. One row per stream, then the union beneath — the whole argument of
+   ADR-0009 in one picture: concurrent 50 tok/s sessions add on the shared
+   timeline, while sequential sessions do not inflate the aggregate. */
 .lanes { display: flex; flex-direction: column; gap: 2px; }
 .lane {
   display: grid;
@@ -390,7 +471,7 @@ a.ghost-btn { text-decoration: none; }
 .lane .blk {
   position: absolute; top: 2px; bottom: 2px;
   border-radius: 3px; min-width: 2px;
-  background: linear-gradient(180deg, rgba(var(--overlay-rgb), 0.28), transparent 60%), var(--c);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 100%, white), color-mix(in srgb, var(--c) 52%, #090b15));
   box-shadow: 0 0 12px -2px var(--c), inset 0 1px 0 rgba(var(--overlay-rgb), 0.3);
   animation: blk-in 0.35s ease-out both;
 }
@@ -456,63 +537,12 @@ a.ghost-btn { text-decoration: none; }
 .card-head h2 { display: flex; align-items: center; gap: 8px; }
 .card-head h2 .ico { width: 14px; height: 14px; color: var(--accent); }
 
-/* ── Light mode is its own design, not the dark one inverted ──────────────
-   Three things behave differently on a light ground and need saying so
-   explicitly, because the dark rules quietly stop working rather than
-   visibly breaking. */
-@media (prefers-color-scheme: light) {
-  :root:where(:not([data-theme="dark"])) {
-    /* The ambient washes carry depth on a dark ground. At the same alpha over
-       white they just tint the page dirty, so they drop to a hint. */
-    body::before {
-      background:
-        radial-gradient(58% 46% at 6% -10%,  rgba(30,109,204,0.10), transparent 70%),
-        radial-gradient(50% 42% at 66% -8%,  rgba(84,46,209,0.07), transparent 68%),
-        radial-gradient(46% 40% at 100% 6%,  rgba(24,149,124,0.06), transparent 66%);
-    }
-    /* Surfaces are lifted by shadow, not by being lighter than their
-       surroundings — on white there is no "lighter" left. Hence white cards on
-       an off-white page, and a real shadow instead of an inset sheen. */
-    .card, .stat-tile {
-      background: #ffffff;
-      box-shadow: 0 1px 2px rgba(16,23,32,0.06), 0 8px 24px rgba(16,23,32,0.07);
-    }
-    .card:hover, .stat-tile:hover {
-      box-shadow: 0 1px 2px rgba(16,23,32,0.07), 0 14px 34px rgba(16,23,32,0.11);
-    }
-    /* Glow reads as smudge on light. Lane blocks get a crisp edge instead, so
-       concurrent activity stays as legible as it is in the dark theme. */
-    .lane .blk {
-      box-shadow: inset 0 0 0 1px rgba(16,23,32,0.10);
-    }
-    .lane .track {
-      background: rgba(16,23,32,0.05);
-      box-shadow: inset 0 1px 2px rgba(16,23,32,0.07);
-    }
-    .now .figure { text-shadow: none; }
-    .tabs a[aria-current] { box-shadow: none; }
-    .tabs a[aria-current] .ico { filter: none; }
-    .brand .dot-live { box-shadow: 0 0 0 3px rgba(24,149,124,0.18); }
-  }
-}
-
-@media (prefers-color-scheme: light) {
-  :root:where(:not([data-theme="dark"])) .viz-root
-    main:not(#view-live):not(#view-speed) .card,
-  :root:where(:not([data-theme="dark"])) .viz-root
-    main:not(#view-live):not(#view-speed) .stat-tile {
-    background: var(--surface-1);
-    box-shadow: none;
-  }
-}
-
-/* ── Quiet Instrument hierarchy ─────────────────────────────────────────
-   Retrospective pages are dense analytical surfaces. Live and Speed retain
-   the elevated glass treatment because motion and concurrency benefit from a
-   stronger foreground register. */
+/* ── A4 instrument hierarchy ─────────────────────────────────────────────
+   Every route uses the same recessed navy card surface. Motion and source
+   gradients carry emphasis; route changes must not switch visual systems. */
 .card,
 .stat-tile {
-  background: var(--surface-1);
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   box-shadow: none;
@@ -524,16 +554,12 @@ a.ghost-btn { text-decoration: none; }
   box-shadow: none;
   transform: none;
 }
+/* Keep the route groups explicit for the established visual-contract check,
+   while assigning all of them the same A4 surface instead of theme islands. */
 #view-live .card,
-#view-live .stat-tile:not(.plain),
 #view-speed .card,
-#view-speed .stat-tile:not(.plain) {
-  background:
-    linear-gradient(180deg, rgba(var(--overlay-rgb), 0.075), rgba(var(--overlay-rgb), 0.02)),
-    var(--glass);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+main:not(#view-live):not(#view-speed) .card {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
 }
 
 .page-head h2 {
@@ -577,13 +603,18 @@ button:focus-visible {
 }
 
 @media (max-width: 860px) {
+  body { padding: 10px; }
+  .viz-root {
+    min-height: calc(100vh - 20px);
+    grid-template-columns: minmax(0, 1fr);
+  }
   .rail {
     position: sticky;
     top: 0;
     z-index: 20;
     width: 100%;
     max-width: 100vw;
-    background: color-mix(in srgb, var(--page) 92%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 94%, transparent);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
   }
@@ -600,12 +631,20 @@ button:focus-visible {
 }
 
 @media (max-width: 420px) {
+  body { padding: 0; }
+  .viz-root {
+    min-height: 100vh;
+    border-inline: 0;
+    border-radius: 0;
+  }
   .content { padding: 16px 12px 36px; }
   .page-head { gap: 8px; margin-bottom: 14px; }
   .card { padding: 13px 12px; margin-bottom: 10px; }
   .stat-row { gap: 8px; margin-bottom: 10px; }
   .data-table { max-width: calc(100vw - 24px); }
+  .data-table-shell { max-width: calc(100vw - 24px); }
   .filter-row select { max-width: 100%; min-height: 40px; }
+  .credential-scope-map > div { grid-template-columns: 1fr; gap: 4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,6 +63,155 @@ func TestLiveSpeedDividesByUnionNotSum(t *testing.T) {
 	}
 }
 
+func TestLiveSpeedSequentialSessionsReconcileContributions(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	// Each session generates at 100 tok/s, but they run one after the other.
+	// The machine therefore sustains 100 tok/s across the 20s global active
+	// timeline, not the meaningless 200 obtained by summing native rates.
+	evs := []model.Event{
+		gen("a", "s1", now.Add(-10*time.Second), 10_000, 1_000),
+		gen("b", "s2", now, 10_000, 1_000),
+	}
+	if _, err := st.InsertEvents(evs, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.LiveSpeedSince(now.Add(-20*time.Second), now, "")
+	if err != nil {
+		t.Fatalf("LiveSpeedSince: %v", err)
+	}
+	if got.TPS != 100 {
+		t.Fatalf("aggregate tps = %v, want 100", got.TPS)
+	}
+	var contributionSum float64
+	for _, session := range got.Sessions {
+		if session.TPS != 100 {
+			t.Errorf("session %s native tps = %v, want 100", session.SessionID, session.TPS)
+		}
+		if session.ContributionTPS != 50 {
+			t.Errorf("session %s contribution tps = %v, want 50", session.SessionID, session.ContributionTPS)
+		}
+		contributionSum += session.ContributionTPS
+	}
+	if contributionSum != got.TPS {
+		t.Errorf("session contribution sum = %v, aggregate = %v", contributionSum, got.TPS)
+	}
+}
+
+func TestLiveSpeedFullyConcurrentSessionsReconcileContributions(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	evs := []model.Event{
+		gen("a", "s1", now, 10_000, 1_000),
+		gen("b", "s2", now, 10_000, 1_000),
+	}
+	if _, err := st.InsertEvents(evs, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.LiveSpeedSince(now.Add(-20*time.Second), now, "")
+	if err != nil {
+		t.Fatalf("LiveSpeedSince: %v", err)
+	}
+	if got.TPS != 200 {
+		t.Fatalf("aggregate tps = %v, want 200", got.TPS)
+	}
+	var contributionSum float64
+	for _, session := range got.Sessions {
+		if session.TPS != 100 {
+			t.Errorf("session %s native tps = %v, want 100", session.SessionID, session.TPS)
+		}
+		if session.ContributionTPS != 100 {
+			t.Errorf("session %s contribution tps = %v, want 100", session.SessionID, session.ContributionTPS)
+		}
+		contributionSum += session.ContributionTPS
+	}
+	if contributionSum != got.TPS {
+		t.Errorf("session contribution sum = %v, aggregate = %v", contributionSum, got.TPS)
+	}
+}
+
+func TestLiveSpeedPartiallyOverlappingSessionsReconcileContributions(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	evs := []model.Event{
+		gen("a", "s1", now.Add(-5*time.Second), 10_000, 1_000),
+		gen("b", "s2", now, 10_000, 1_000),
+	}
+	if _, err := st.InsertEvents(evs, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.LiveSpeedSince(now.Add(-20*time.Second), now, "")
+	if err != nil {
+		t.Fatalf("LiveSpeedSince: %v", err)
+	}
+	const wantAggregate = 2000.0 / 15.0
+	if math.Abs(got.TPS-wantAggregate) > 1e-9 {
+		t.Fatalf("aggregate tps = %v, want %v", got.TPS, wantAggregate)
+	}
+	var contributionSum float64
+	for _, session := range got.Sessions {
+		if session.TPS != 100 {
+			t.Errorf("session %s native tps = %v, want 100", session.SessionID, session.TPS)
+		}
+		contributionSum += session.ContributionTPS
+	}
+	if math.Abs(contributionSum-got.TPS) > 1e-9 {
+		t.Errorf("session contribution sum = %v, aggregate = %v", contributionSum, got.TPS)
+	}
+}
+
+func TestLiveSpeedSourceDeviceAndModelGroupsReconcileContributions(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	first := gen("a", "s1", now.Add(-5*time.Second), 10_000, 1_000)
+	first.Model = "anthropic.claude-opus-4-8"
+	second := gen("b", "s2", now, 10_000, 500)
+	second.Device = "server"
+	second.Source = "proxy"
+	second.Model = "claude-opus-4-8"
+	third := gen("c", "s3", now, 5_000, 500)
+	third.Device = "server"
+	third.Source = "claude-code"
+	third.Model = "claude-sonnet-4-5"
+	if _, err := st.InsertEvents([]model.Event{first, second, third}, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.LiveSpeedSince(now.Add(-20*time.Second), now, "")
+	if err != nil {
+		t.Fatalf("LiveSpeedSince: %v", err)
+	}
+	for name, rows := range map[string][]SpeedContribution{
+		"sources": got.Sources,
+		"devices": got.Devices,
+		"models":  got.Models,
+	} {
+		var sum float64
+		for _, row := range rows {
+			sum += row.ContributionTPS
+			if row.ActiveMS <= 0 || row.NativeTPS <= 0 {
+				t.Errorf("%s row %+v lacks native active-time metrics", name, row)
+			}
+		}
+		if math.Abs(sum-got.TPS) > 1e-9 {
+			t.Errorf("%s contribution sum = %v, aggregate = %v", name, sum, got.TPS)
+		}
+	}
+	if len(got.Models) != 2 {
+		t.Fatalf("models = %+v, want canonicalized opus plus sonnet", got.Models)
+	}
+	if len(got.Sources) != 2 || got.Sources[0].Key != "claude-code" || got.Sources[1].Key != "api" {
+		t.Fatalf("sources = %+v, want contribution-ranked claude-code then api", got.Sources)
+	}
+}
+
 // Subagents share the parent's session_id, so one session really can hold
 // overlapping streams. Within a session the duration must be a union too.
 func TestLiveSpeedUnionsOverlapWithinOneSession(t *testing.T) {
@@ -111,6 +261,12 @@ func TestLiveSpeedClipsToWindow(t *testing.T) {
 	if got.ActiveMS != 10_000 {
 		t.Errorf("active_ms = %d, want 10000 (clipped to the window)", got.ActiveMS)
 	}
+	if got.OutputTokens != 166 {
+		t.Errorf("output_tokens = %d, want 166 allocated to the clipped overlap", got.OutputTokens)
+	}
+	if math.Abs(got.TPS-16.6) > 1e-9 {
+		t.Errorf("tps = %v, want 16.6 from allocated overlap tokens", got.TPS)
+	}
 	if got.ActiveMS > int64(got.WindowSeconds)*1000 {
 		t.Errorf("active_ms %d exceeds the %ds window", got.ActiveMS, got.WindowSeconds)
 	}
@@ -124,9 +280,11 @@ func TestLiveSpeedFiltersByDeviceAndSkipsUnmeasured(t *testing.T) {
 	other.Device = "server"
 	// gen_ms 0 means "not measured" (pre-ADR-0009 rows), never "instant".
 	unmeasured := gen("c", "s3", now.Add(-2*time.Second), 0, 900)
+	codex := gen("d", "s4", now.Add(-2*time.Second), 4_000, 1_200)
+	codex.Source = "codex"
 
 	if _, err := st.InsertEvents([]model.Event{
-		gen("a", "s1", now.Add(-2*time.Second), 4_000, 400), other, unmeasured,
+		gen("a", "s1", now.Add(-2*time.Second), 4_000, 400), other, unmeasured, codex,
 	}, now.UnixMilli()); err != nil {
 		t.Fatalf("InsertEvents: %v", err)
 	}
@@ -139,7 +297,7 @@ func TestLiveSpeedFiltersByDeviceAndSkipsUnmeasured(t *testing.T) {
 		t.Fatalf("sessions = %+v, want only s1 on mac", got.Sessions)
 	}
 	if got.OutputTokens != 400 {
-		t.Errorf("output_tokens = %d, want 400", got.OutputTokens)
+		t.Errorf("output_tokens = %d, want 400; Codex speed remains unmeasured even with a positive gen_ms-shaped row", got.OutputTokens)
 	}
 }
 

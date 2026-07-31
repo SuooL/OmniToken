@@ -201,6 +201,7 @@ struct ActivityView {
     text: String,
     rate: Option<f64>,
     session_count: usize,
+    contributing_devices: usize,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -209,7 +210,8 @@ struct SessionView {
     repository: String,
     model: String,
     device: String,
-    rate: f64,
+    contribution_rate: Option<f64>,
+    native_rate: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -245,6 +247,8 @@ struct PopoverView {
     burn_per_minute: Option<i64>,
     devices: Vec<DeviceView>,
     devices_more: usize,
+    device_online: usize,
+    device_total: usize,
     device_summary: String,
 }
 
@@ -252,7 +256,7 @@ fn source_label(source: &str) -> String {
     match source {
         "claude-code" => "Claude".to_string(),
         "codex" => "Codex".to_string(),
-        "api" => "API".to_string(),
+        "api" | "proxy" | "openai-api" | "anthropic-api" => "Other/API".to_string(),
         "" => "—".to_string(),
         other => other.to_string(),
     }
@@ -302,18 +306,31 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
+    let contributing_devices = speed_sessions
+        .iter()
+        .filter(|session| {
+            session
+                .get("contribution_tps")
+                .and_then(Value::as_f64)
+                .is_some_and(|rate| rate > 0.0)
+        })
+        .filter_map(|session| session.get("device").and_then(Value::as_str))
+        .filter(|device| !device.is_empty())
+        .collect::<HashSet<_>>()
+        .len();
 
     let activity = if rate.is_some_and(|rate| rate > 0.0) {
         let rate = rate.unwrap_or_default();
         ActivityView {
             kind: ActivityKind::Active,
             text: format!(
-                "正在生成 {} t/s · {} 个会话",
+                "近 10m {} t/s · {} 个贡献会话",
                 compact_rate(rate),
                 speed_sessions.len()
             ),
             rate: Some(rate),
             session_count: speed_sessions.len(),
+            contributing_devices,
         }
     } else if open_count > 0 {
         ActivityView {
@@ -321,13 +338,15 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             text: format!("{open_count} 个会话已打开 · 速度未知"),
             rate,
             session_count: open_count,
+            contributing_devices,
         }
     } else if rate.is_some() {
         ActivityView {
             kind: ActivityKind::Idle,
-            text: "当前空闲".to_string(),
+            text: "近 10m 无已测生成".to_string(),
             rate,
             session_count: 0,
+            contributing_devices,
         }
     } else {
         ActivityView {
@@ -335,6 +354,7 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             text: "活动未知".to_string(),
             rate: None,
             session_count: 0,
+            contributing_devices,
         }
     };
 
@@ -355,10 +375,15 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
                 .filter(|device| !device.is_empty())
                 .unwrap_or("—")
                 .to_string(),
-            rate: session.get("tps").and_then(Value::as_f64).unwrap_or(0.0),
+            contribution_rate: session.get("contribution_tps").and_then(Value::as_f64),
+            native_rate: session.get("tps").and_then(Value::as_f64),
         })
         .collect();
-    sessions.sort_by(|a, b| b.rate.total_cmp(&a.rate));
+    sessions.sort_by(|a, b| {
+        b.contribution_rate
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&a.contribution_rate.unwrap_or(f64::NEG_INFINITY))
+    });
     let sessions_more = sessions.len().saturating_sub(MAX_POPOVER_ITEMS);
     sessions.truncate(MAX_POPOVER_ITEMS);
 
@@ -517,6 +542,10 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             .then_with(|| a.name.cmp(&b.name))
     });
     let device_total = devices.len();
+    let device_online = devices
+        .iter()
+        .filter(|device| matches!(device.state.as_str(), "active" | "idle"))
+        .count();
     let observable = devices.iter().filter(|device| device.has_procs).count();
     let devices_more = device_total.saturating_sub(MAX_POPOVER_ITEMS);
     devices.truncate(MAX_POPOVER_ITEMS);
@@ -547,6 +576,8 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             .and_then(Value::as_i64),
         devices,
         devices_more,
+        device_online,
+        device_total,
         device_summary,
     }
 }
@@ -1414,10 +1445,10 @@ mod tests {
             "speed": {
                 "tps": 68.0,
                 "sessions": [
-                    {"source":"codex","repo":"org/research","model":"gpt-5","device":"workstation","tps":20.0},
-                    {"source":"claude-code","repo":"org/omni-api","model":"sonnet","device":"macmini","tps":48.0},
-                    {"source":"api","repo":"org/third","model":"gpt-4.1","device":"server","tps":12.0},
-                    {"source":"codex","repo":"org/fourth","model":"gpt-5-mini","device":"laptop","tps":4.0}
+                    {"source":"codex","repo":"org/research","model":"gpt-5","device":"workstation","tps":20.0,"contribution_tps":8.0},
+                    {"source":"claude-code","repo":"org/omni-api","model":"sonnet","device":"macmini","tps":48.0,"contribution_tps":32.0},
+                    {"source":"api","repo":"org/third","model":"gpt-4.1","device":"server","tps":12.0,"contribution_tps":18.0},
+                    {"source":"codex","repo":"org/fourth","model":"gpt-5-mini","device":"laptop","tps":4.0,"contribution_tps":10.0}
                 ]
             },
             "processes": {"sessions":[]},
@@ -1438,13 +1469,17 @@ mod tests {
         let view = view_for(Some(&payload), ConnectionKind::Live, 13_000);
 
         assert_eq!(view.activity.kind, ActivityKind::Active);
-        assert_eq!(view.activity.text, "正在生成 68 t/s · 4 个会话");
+        assert_eq!(view.activity.text, "近 10m 68 t/s · 4 个贡献会话");
+        assert_eq!(view.activity.contributing_devices, 4);
         assert_eq!(view.sessions.len(), 3);
         assert_eq!(view.sessions[0].tool, "Claude");
         assert_eq!(view.sessions[0].repository, "omni-api");
-        assert_eq!(view.sessions[0].rate, 48.0);
+        assert_eq!(view.sessions[0].contribution_rate, Some(32.0));
+        assert_eq!(view.sessions[0].native_rate, Some(48.0));
         assert_eq!(view.sessions_more, 1);
         assert_eq!(view.devices_more, 1);
+        assert_eq!(view.device_online, 3);
+        assert_eq!(view.device_total, 4);
         assert_eq!(view.devices[0].name, "macmini");
         assert!(view.risk.is_none());
         assert!(view
@@ -1467,7 +1502,7 @@ mod tests {
         let view = view_for(Some(&payload), ConnectionKind::Polling, 11_000);
 
         assert_eq!(view.activity.kind, ActivityKind::Idle);
-        assert_eq!(view.activity.text, "当前空闲");
+        assert_eq!(view.activity.text, "近 10m 无已测生成");
         assert_eq!(view.connection.kind, ConnectionKind::Polling);
     }
 
