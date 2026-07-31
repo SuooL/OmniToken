@@ -17,6 +17,7 @@ let HAS_TOKEN = false;
 let latestLive = null;
 let latestTelemetry = null;
 let telemetryError = "";
+let telemetryGeneration = 0;
 let lastHeight = 0;
 
 const CONNECTION_LABEL = {
@@ -292,10 +293,14 @@ function onLive(update) {
 }
 
 async function pullTelemetry() {
+  const generation = ++telemetryGeneration;
   try {
-    latestTelemetry = await invoke("telemetry_get", { range: "1h" });
+    const telemetry = await invoke("telemetry_get", { range: "1h" });
+    if (generation !== telemetryGeneration) return;
+    latestTelemetry = telemetry;
     telemetryError = latestTelemetry.error || "";
   } catch (error) {
+    if (generation !== telemetryGeneration) return;
     telemetryError = String(error);
     if (telemetryError.includes("401") || telemetryError.includes("未授权")) {
       latestTelemetry = null;

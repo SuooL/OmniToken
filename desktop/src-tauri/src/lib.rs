@@ -451,6 +451,7 @@ mod ui_contract_tests {
         }
         assert!(APP.contains(r#"invoke("telemetry_get", { range: "1h" })"#));
         assert!(APP.contains("TELEMETRY_MS = 30000"));
+        assert!(APP.contains("generation !== telemetryGeneration"));
         assert!(APP.contains("contribution_rate"));
     }
 

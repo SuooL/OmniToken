@@ -129,7 +129,8 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		if err := rows.Scan(&sess, &dev, &repo, &mdl, &src, &outTok, &genMS, &ts); err != nil {
 			return out, err
 		}
-		start, end := ts-genMS, ts
+		eventStart, eventEnd := ts-genMS, ts
+		start, end := eventStart, eventEnd
 		if start < startMS {
 			start = startMS
 		}
@@ -139,6 +140,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		if end <= start {
 			continue
 		}
+		allocatedTokens := outTok * (end - start) / (eventEnd - eventStart)
 
 		key := dev + "\x00" + sess
 		a := bySession[key]
@@ -146,7 +148,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 			a = &acc{SessionSpeed: SessionSpeed{SessionID: sess, Device: dev, Repo: repo, Source: src}}
 			bySession[key] = a
 		}
-		a.OutputTokens += outTok
+		a.OutputTokens += allocatedTokens
 		a.spans = append(a.spans, span{start, end})
 		// Last model wins: a session can switch models, and what it is running
 		// now is more useful on a live view than what it started with.
@@ -154,11 +156,11 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 			a.LastTS, a.Model = ts, mdl
 		}
 
-		addSpeedContribution(bySource, speedSourceKey(src), outTok, span{start, end})
-		addSpeedContribution(byDevice, dev, outTok, span{start, end})
-		addSpeedContribution(byModel, model.CanonicalModel(mdl), outTok, span{start, end})
+		addSpeedContribution(bySource, speedSourceKey(src), allocatedTokens, span{start, end})
+		addSpeedContribution(byDevice, dev, allocatedTokens, span{start, end})
+		addSpeedContribution(byModel, model.CanonicalModel(mdl), allocatedTokens, span{start, end})
 
-		out.OutputTokens += outTok
+		out.OutputTokens += allocatedTokens
 		all = append(all, span{start, end})
 	}
 	if err := rows.Err(); err != nil {

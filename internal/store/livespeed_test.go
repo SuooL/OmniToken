@@ -261,6 +261,12 @@ func TestLiveSpeedClipsToWindow(t *testing.T) {
 	if got.ActiveMS != 10_000 {
 		t.Errorf("active_ms = %d, want 10000 (clipped to the window)", got.ActiveMS)
 	}
+	if got.OutputTokens != 166 {
+		t.Errorf("output_tokens = %d, want 166 allocated to the clipped overlap", got.OutputTokens)
+	}
+	if math.Abs(got.TPS-16.6) > 1e-9 {
+		t.Errorf("tps = %v, want 16.6 from allocated overlap tokens", got.TPS)
+	}
 	if got.ActiveMS > int64(got.WindowSeconds)*1000 {
 		t.Errorf("active_ms %d exceeds the %ds window", got.ActiveMS, got.WindowSeconds)
 	}

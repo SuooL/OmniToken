@@ -235,6 +235,13 @@ impl Cache {
         if self.endpoint.as_deref() != Some(endpoint.as_str()) {
             return false;
         }
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|current| current.generated_at_ms > view.generated_at_ms)
+        {
+            return false;
+        }
         view.fetched_at_ms = fetched_at_ms;
         view.age_ms = fetched_at_ms.saturating_sub(view.generated_at_ms);
         view.is_stale = false;
@@ -435,6 +442,18 @@ mod tests {
             .last_good_for("http://server-a", 1_785_460_000_850, "old endpoint failed")
             .is_none());
         assert!(!cache.current().unwrap().is_stale);
+    }
+
+    #[test]
+    fn older_same_endpoint_success_cannot_replace_a_newer_snapshot() {
+        let mut cache = Cache::default();
+        let older = parse_payload(complete_payload()).unwrap();
+        let mut newer = older.clone();
+        newer.generated_at_ms += 1_000;
+
+        assert!(cache.record_success("http://server-a", newer, 1_785_460_001_100));
+        assert!(!cache.record_success("http://server-a", older, 1_785_460_001_200));
+        assert_eq!(cache.current().unwrap().generated_at_ms, 1_785_460_001_000);
     }
 
     #[test]
