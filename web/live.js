@@ -61,7 +61,7 @@ const Live = {
       <div class="card-head">
         <div><div class="eyebrow">近一小时 · 来源贡献</div><h2>生成速度来源</h2></div>
         <div class="coverage-note" data-role="measured-coverage">${
-          (speed.measured_sources || []).map(sourceLabelA2).join(" · ") || "无已测来源"
+          telemetryCoverageLabel(speed)
         }${result.stale ? " · 显示上次成功数据" : ""}</div>
       </div>
       <div id="live-source-chart" class="chart source-lanes" data-chart="live-source-lanes"></div>

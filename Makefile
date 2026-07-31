@@ -59,6 +59,8 @@ desktop:
 	cd desktop/src-tauri && cargo build
 
 desktop-check: desktop-sync-check
+	node --check desktop/ui/app.js
+	node --test desktop/ui/app.test.js
 	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
 
 # Copy the shared design tokens and formatters into the popover.

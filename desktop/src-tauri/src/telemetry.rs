@@ -57,10 +57,21 @@ pub struct SpeedBucket {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct SourceCoverage {
+    #[serde(rename(deserialize = "key", serialize = "source"))]
+    pub source: String,
+    pub total_events: u64,
+    pub measured_events: u64,
+    pub total_output_tokens: u64,
+    pub measured_output_tokens: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct SpeedTelemetry {
     pub bucket_ms: i64,
     pub measured_sources: Vec<String>,
     pub unmeasured_sources: Vec<String>,
+    pub coverage: Vec<SourceCoverage>,
     pub series: Vec<SpeedBucket>,
     pub aggregate_10m_tps: Option<f64>,
     pub peak_tps: Option<f64>,
@@ -211,6 +222,7 @@ fn endpoint_identity(endpoint: &str) -> String {
 struct Cache {
     endpoint: Option<String>,
     view: Option<TelemetryView>,
+    request_generation: u64,
 }
 
 impl Cache {
@@ -222,17 +234,28 @@ impl Cache {
         }
     }
 
+    fn begin_request(&mut self, endpoint: &str) -> u64 {
+        self.bind_endpoint(endpoint);
+        self.request_generation = self.request_generation.wrapping_add(1);
+        if self.request_generation == 0 {
+            self.request_generation = 1;
+        }
+        self.request_generation
+    }
+
+    fn request_is_current(&self, endpoint: &str, generation: u64) -> bool {
+        self.endpoint.as_deref() == Some(endpoint_identity(endpoint).as_str())
+            && self.request_generation == generation
+    }
+
     fn record_success(
         &mut self,
         endpoint: &str,
+        generation: u64,
         mut view: TelemetryView,
         fetched_at_ms: i64,
     ) -> bool {
-        let endpoint = endpoint_identity(endpoint);
-        if self.endpoint.is_none() {
-            self.endpoint = Some(endpoint.clone());
-        }
-        if self.endpoint.as_deref() != Some(endpoint.as_str()) {
+        if !self.request_is_current(endpoint, generation) {
             return false;
         }
         if self
@@ -269,10 +292,12 @@ impl Cache {
             .flatten()
     }
 
-    fn clear_for_unauthorized(&mut self, endpoint: &str) {
-        if self.endpoint.as_deref() == Some(endpoint_identity(endpoint).as_str()) {
+    fn clear_for_unauthorized(&mut self, endpoint: &str, generation: u64) -> bool {
+        if self.request_is_current(endpoint, generation) {
             self.view = None;
+            return true;
         }
+        false
     }
 }
 
@@ -296,7 +321,7 @@ pub async fn get(
     }
     let settings = crate::settings::load(&app);
     let endpoint = endpoint_identity(&settings.server);
-    state.0.lock().unwrap().bind_endpoint(&endpoint);
+    let request_generation = state.0.lock().unwrap().begin_request(&endpoint);
 
     let path = format!("/api/v1/telemetry?range={range}");
     let fetched = crate::get_json(&endpoint, &path, &settings.token).await;
@@ -304,7 +329,7 @@ pub async fn get(
     match fetched.and_then(|payload| parse_payload(payload).map_err(crate::FetchError::Other)) {
         Ok(view) => {
             let mut cache = state.0.lock().unwrap();
-            if cache.record_success(&endpoint, view, now) {
+            if cache.record_success(&endpoint, request_generation, view, now) {
                 cache
                     .current()
                     .ok_or_else(|| "telemetry cache publication failed".to_string())
@@ -313,7 +338,11 @@ pub async fn get(
             }
         }
         Err(crate::FetchError::Unauthorized(message)) => {
-            state.0.lock().unwrap().clear_for_unauthorized(&endpoint);
+            state
+                .0
+                .lock()
+                .unwrap()
+                .clear_for_unauthorized(&endpoint, request_generation);
             Err(message)
         }
         Err(error) => state
@@ -358,6 +387,29 @@ mod tests {
                 "bucket_ms": 60_000,
                 "measured_sources": ["claude-code", "api"],
                 "unmeasured_sources": ["codex"],
+                "coverage": [
+                    {
+                        "key": "api",
+                        "total_events": 3,
+                        "measured_events": 3,
+                        "total_output_tokens": 504,
+                        "measured_output_tokens": 504
+                    },
+                    {
+                        "key": "claude-code",
+                        "total_events": 10,
+                        "measured_events": 8,
+                        "total_output_tokens": 2500,
+                        "measured_output_tokens": 2024
+                    },
+                    {
+                        "key": "codex",
+                        "total_events": 4,
+                        "measured_events": 0,
+                        "total_output_tokens": 1370,
+                        "measured_output_tokens": 0
+                    }
+                ],
                 "series": [{
                     "start_ms": 1_785_456_400_000_i64,
                     "aggregate_tps": 60.2,
@@ -388,6 +440,25 @@ mod tests {
             .iter()
             .flat_map(|bucket| &bucket.sources)
             .all(|source| source.source != "codex"));
+    }
+
+    #[test]
+    fn telemetry_preserves_partial_source_coverage_for_the_webview() {
+        let view = parse_payload(complete_payload()).expect("valid telemetry");
+
+        assert_eq!(view.speed.coverage.len(), 3);
+        assert_eq!(view.speed.coverage[1].source, "claude-code");
+        assert_eq!(view.speed.coverage[1].measured_events, 8);
+        assert_eq!(view.speed.coverage[1].total_events, 10);
+        assert_eq!(view.speed.coverage[1].measured_output_tokens, 2024);
+        assert_eq!(view.speed.coverage[1].total_output_tokens, 2500);
+
+        let webview = serde_json::to_value(view).expect("serialize telemetry view");
+        assert_eq!(
+            webview["speed"]["coverage"][1]["source"],
+            json!("claude-code")
+        );
+        assert!(webview["speed"]["coverage"][1].get("key").is_none());
     }
 
     #[test]
@@ -423,7 +494,8 @@ mod tests {
     fn endpoint_change_discards_last_good_telemetry() {
         let mut cache = Cache::default();
         let accepted = parse_payload(complete_payload()).unwrap();
-        cache.record_success("http://server-a/", accepted, 2_000);
+        let request = cache.begin_request("http://server-a/");
+        cache.record_success("http://server-a/", request, accepted, 2_000);
 
         cache.bind_endpoint("http://server-b");
 
@@ -433,10 +505,10 @@ mod tests {
     #[test]
     fn late_failure_from_previous_endpoint_cannot_stale_new_telemetry() {
         let mut cache = Cache::default();
-        cache.bind_endpoint("http://server-a");
-        cache.bind_endpoint("http://server-b");
+        cache.begin_request("http://server-a");
+        let request = cache.begin_request("http://server-b");
         let accepted = parse_payload(complete_payload()).unwrap();
-        cache.record_success("http://server-b", accepted, 1_785_460_000_100);
+        cache.record_success("http://server-b", request, accepted, 1_785_460_000_100);
 
         assert!(cache
             .last_good_for("http://server-a", 1_785_460_000_850, "old endpoint failed")
@@ -450,9 +522,11 @@ mod tests {
         let older = parse_payload(complete_payload()).unwrap();
         let mut newer = older.clone();
         newer.generated_at_ms += 1_000;
+        let older_request = cache.begin_request("http://server-a");
+        let newer_request = cache.begin_request("http://server-a");
 
-        assert!(cache.record_success("http://server-a", newer, 1_785_460_001_100));
-        assert!(!cache.record_success("http://server-a", older, 1_785_460_001_200));
+        assert!(cache.record_success("http://server-a", newer_request, newer, 1_785_460_001_100));
+        assert!(!cache.record_success("http://server-a", older_request, older, 1_785_460_001_200));
         assert_eq!(cache.current().unwrap().generated_at_ms, 1_785_460_001_000);
     }
 
@@ -460,7 +534,8 @@ mod tests {
     fn failed_refresh_returns_same_endpoint_last_good_with_freshness() {
         let mut cache = Cache::default();
         let accepted = parse_payload(complete_payload()).unwrap();
-        cache.record_success("http://server-a", accepted, 1_785_460_000_100);
+        let request = cache.begin_request("http://server-a");
+        cache.record_success("http://server-a", request, accepted, 1_785_460_000_100);
 
         let stale = cache
             .last_good(1_785_460_000_850, "connection refused")
@@ -476,13 +551,32 @@ mod tests {
     fn unauthorized_refresh_discards_sensitive_last_good_values() {
         let mut cache = Cache::default();
         let accepted = parse_payload(complete_payload()).unwrap();
-        cache.record_success("http://server-a", accepted, 1_785_460_000_100);
+        let success_request = cache.begin_request("http://server-a");
+        cache.record_success(
+            "http://server-a",
+            success_request,
+            accepted,
+            1_785_460_000_100,
+        );
+        let unauthorized_request = cache.begin_request("http://server-a");
 
-        cache.clear_for_unauthorized("http://server-a");
+        assert!(cache.clear_for_unauthorized("http://server-a", unauthorized_request));
 
         assert!(cache.current().is_none());
         assert!(cache
             .last_good_for("http://server-a", 1_785_460_000_850, "401")
             .is_none());
+    }
+
+    #[test]
+    fn old_same_endpoint_unauthorized_cannot_clear_new_credential_success() {
+        let mut cache = Cache::default();
+        let old_request = cache.begin_request("http://server-a");
+        let new_request = cache.begin_request("http://server-a");
+        let accepted = parse_payload(complete_payload()).unwrap();
+        assert!(cache.record_success("http://server-a", new_request, accepted, 1_785_460_000_100));
+
+        assert!(!cache.clear_for_unauthorized("http://server-a", old_request));
+        assert!(cache.current().is_some());
     }
 }

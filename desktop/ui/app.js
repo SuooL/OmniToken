@@ -161,6 +161,14 @@ function sourceRows(bucket) {
   return bucket && Array.isArray(bucket.sources) ? bucket.sources : [];
 }
 
+function coverageLabel(speed) {
+  const coverage = speed && Array.isArray(speed.coverage) ? speed.coverage : [];
+  if (!coverage.length) return "";
+  return `覆盖 ${coverage.map((row) =>
+    `${sourceName(row.source)} ${row.measured_events}/${row.total_events}`
+  ).join(" · ")}`;
+}
+
 function renderSpeedLanes() {
   const speed = latestTelemetry && latestTelemetry.speed;
   const root = $("speed-lanes");
@@ -202,11 +210,12 @@ function renderSpeedLanes() {
       <span class="lane-bars">${bars}</span>
     </div>`;
   }).join("");
+  const exactCoverage = coverageLabel(speed);
   const measuredLabel = [...measured].map(sourceName).join("、") || "无";
   const unavailableLabel = [...unmeasured].map(sourceName).join("、");
-  $("speed-coverage").textContent = unavailableLabel
+  $("speed-coverage").textContent = exactCoverage || (unavailableLabel
     ? `已测 ${measuredLabel} · ${unavailableLabel} 不可用`
-    : `已测 ${measuredLabel}`;
+    : `已测 ${measuredLabel}`);
 }
 
 function renderStats() {
@@ -405,4 +414,8 @@ if (!invoke || !listen) {
     telemetryError = String(error);
     renderAll();
   });
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { coverageLabel };
 }

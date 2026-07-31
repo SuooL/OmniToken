@@ -250,6 +250,14 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 		first := int((max(eventStart, startMS) - startMS) / bucketMS)
 		last := int((min(eventEnd, endMS) - startMS) / bucketMS)
 		key := speedSourceKey(source)
+		type bucketAllocation struct {
+			index     int
+			interval  span
+			tokens    int64
+			remainder int64
+		}
+		var allocations []bucketAllocation
+		var coveredDuration, allocatedTokens int64
 		for i := max(first, 0); i <= min(last, n-1); i++ {
 			bucketStart := out.Series[i].StartMS
 			bucketEnd := min(bucketStart+bucketMS, endMS)
@@ -257,9 +265,35 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 			if hi <= lo {
 				continue
 			}
-			allocated := outputTokens * (hi - lo) / eventDuration
-			addSpeedContribution(grouped[i], key, allocated, span{lo, hi})
-			globalSpans[i] = append(globalSpans[i], span{lo, hi})
+			overlap := hi - lo
+			numerator := outputTokens * overlap
+			allocation := bucketAllocation{
+				index:     i,
+				interval:  span{lo, hi},
+				tokens:    numerator / eventDuration,
+				remainder: numerator % eventDuration,
+			}
+			allocations = append(allocations, allocation)
+			coveredDuration += overlap
+			allocatedTokens += allocation.tokens
+		}
+		targetTokens := outputTokens * coveredDuration / eventDuration
+		sort.SliceStable(allocations, func(i, j int) bool {
+			if allocations[i].remainder == allocations[j].remainder {
+				return allocations[i].index < allocations[j].index
+			}
+			return allocations[i].remainder > allocations[j].remainder
+		})
+		for i := int64(0); i < targetTokens-allocatedTokens; i++ {
+			allocations[i].tokens++
+		}
+		for _, allocation := range allocations {
+			addSpeedContribution(
+				grouped[allocation.index], key, allocation.tokens, allocation.interval,
+			)
+			globalSpans[allocation.index] = append(
+				globalSpans[allocation.index], allocation.interval,
+			)
 		}
 	}
 	if err := rows.Err(); err != nil {

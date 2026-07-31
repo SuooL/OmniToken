@@ -83,6 +83,22 @@ function currentAggregateTPS(liveSpeed) {
   return null;
 }
 
+function telemetryCoverageLabel(speed) {
+  const rows = speed && Array.isArray(speed.coverage) ? speed.coverage : [];
+  if (!rows.length) return "事件级覆盖计数不可用";
+  return rows.map((row) => {
+    const total = Math.max(0, Number(row.total_events) || 0);
+    const measured = Math.max(0, Number(row.measured_events) || 0);
+    const status = total === 0 ? "无事件"
+      : measured === 0 ? "未测"
+      : measured < total ? "部分可测"
+      : measured === total ? "完整可测"
+      : "覆盖计数异常";
+    const percent = total > 0 ? Math.round(100 * measured / total) : 0;
+    return `${sourceLabelA2(row.key)} ${status} ${measured}/${total} events (${percent}%)`;
+  }).join(" · ");
+}
+
 function sourceLabelA2(source) {
   return {
     "claude-code": "Claude",

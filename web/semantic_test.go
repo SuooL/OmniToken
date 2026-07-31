@@ -101,6 +101,40 @@ func TestTelemetryStudioOverviewAndLiveContracts(t *testing.T) {
 	}
 }
 
+func TestTelemetryCoverageCountsAreUserVisible(t *testing.T) {
+	telemetry := semanticAsset(t, "telemetry.js")
+	for _, contract := range []string{
+		"function telemetryCoverageLabel(",
+		"measured_events",
+		"total_events",
+		"部分可测",
+	} {
+		if !strings.Contains(telemetry, contract) {
+			t.Errorf("telemetry coverage disclosure missing %q", contract)
+		}
+	}
+
+	for _, name := range []string{"overview.js", "live.js", "speedview.js"} {
+		source := semanticAsset(t, name)
+		if !strings.Contains(source, "telemetryCoverageLabel(speed)") {
+			t.Errorf("%s must render event-level coverage[] counts", name)
+		}
+	}
+}
+
+func TestOverviewRestoresReachableHistoricalHeatmap(t *testing.T) {
+	overview := semanticAsset(t, "overview.js")
+	for _, contract := range []string{
+		`id="overview-heatmap"`,
+		`aria-labelledby="overview-heatmap-title"`,
+		"Heatmap.load(",
+	} {
+		if !strings.Contains(overview, contract) {
+			t.Errorf("overview historical heatmap entry/load contract missing %q", contract)
+		}
+	}
+}
+
 func TestTelemetryStudioAnalyticalPageContracts(t *testing.T) {
 	contracts := map[string][]string{
 		"speedview.js": {
@@ -227,6 +261,25 @@ test('heatmap renders a keyboard-readable per-day table alongside the svg', () =
   assert.match(heat.innerHTML, /<th scope="col">日期<\/th>/);
   assert.match(heat.innerHTML, />12<\/td>/);
   assert.match(heat.innerHTML, />3<\/td>/);
+});
+
+test('A4 heatmap keeps the dark ramp on a light OS color scheme', () => {
+  const context = load('heatmap.js', {
+    document: {documentElement: {getAttribute: () => null}, getElementById: () => null},
+    matchMedia: () => ({matches: false}),
+    cssVar: () => '#ddd', compact: String, full: String, esc: String,
+  });
+  assert.equal(run(context, 'Heatmap.isDark()'), true);
+});
+
+test('telemetry coverage label discloses partial measured event counts', () => {
+  const context = load('telemetry.js');
+  const label = run(context, 'telemetryCoverageLabel({coverage:[' +
+    '{key:"claude-code",measured_events:7,total_events:10},' +
+    '{key:"codex",measured_events:0,total_events:4}' +
+  ']})');
+  assert.match(label, /Claude 部分可测 7\/10 events \(70%\)/);
+  assert.match(label, /Codex 未测 0\/4 events \(0%\)/);
 });
 
 test('telemetry cache rejects obsolete completions and keeps last-good data stale', async () => {

@@ -150,11 +150,11 @@ const Heatmap = {
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   },
 
-  // Mirrors the stylesheet's dark rule: prefers-color-scheme, unless the page
-  // is pinned light via data-theme.
+  // A4 is dark-only. The chart ramp follows the product surface rather than
+  // the host OS preference, otherwise a light OS selects a low-contrast ramp
+  // against the fixed navy cards.
   isDark() {
-    return matchMedia("(prefers-color-scheme: dark)").matches &&
-      document.documentElement.getAttribute("data-theme") !== "light";
+    return true;
   },
 
   // One delegated listener rather than ~365 per-cell ones; reuses the shared

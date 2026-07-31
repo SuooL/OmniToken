@@ -174,7 +174,7 @@ const SpeedView = {
       ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
     ])];
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
-      `已测 ${(speed.measured_sources || []).map(sourceLabelA2).join(" · ") || "无"} · 未测 ${(speed.unmeasured_sources || []).map(sourceLabelA2).join(" · ") || "无"}`;
+      telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
       `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable；用量不受影响</div>`
     ).join("");

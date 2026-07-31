@@ -120,6 +120,14 @@ const Overview = {
         <div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div>
       </section>
 
+      <section class="chart-card" aria-labelledby="overview-heatmap-title">
+        <div class="card-head">
+          <div><div class="eyebrow">历史活动 · 最近 365 天</div><h2 id="overview-heatmap-title">每日用量热力图</h2></div>
+          <span class="subtle">颜色表示当日 token 量</span>
+        </div>
+        <div id="overview-heatmap" class="chart heatmap-shell"></div>
+      </section>
+
       <section class="instrument-card" data-role="model-throughput">
         <div class="card-head"><h2>近 10m 模型吞吐</h2><span class="subtle">共享分母贡献</span></div>
         <div id="overview-model-throughput" class="bars"></div>
@@ -127,6 +135,7 @@ const Overview = {
 
     this.renderSpeed(telemetry, liveSpeed);
     this.renderModels(today.models || []);
+    Heatmap.load(document.getElementById("overview-heatmap"), 365);
     this.renderContributors(liveSpeed.sessions || []);
     this.renderBars(
       "overview-devices",
@@ -181,7 +190,7 @@ const Overview = {
     document.getElementById("overview-current-speed").textContent =
       aggregate == null ? "近 10m — tok/s" : `近 10m ${aggregate.toFixed(1)} tok/s`;
     document.querySelector("#view-overview [data-role='measured-coverage']").textContent =
-      `${(speed.measured_sources || []).map(sourceLabelA2).join(" · ") || "无已测来源"} · ` +
+      `${telemetryCoverageLabel(speed)} · ` +
       `可见贡献合计 ${visibleSum.toFixed(1)} tok/s`;
     document.getElementById("overview-unmeasured").innerHTML =
       (speed.unmeasured_sources || []).map((source) =>

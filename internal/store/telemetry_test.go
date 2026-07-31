@@ -159,6 +159,66 @@ func TestTelemetrySpeedSeriesAllocatesTokensAndReportsCoverage(t *testing.T) {
 	}
 }
 
+func TestTelemetrySpeedSeriesConservesIndivisibleTokensAcrossBuckets(t *testing.T) {
+	tests := []struct {
+		name       string
+		tokens     int64
+		eventStart time.Duration
+		eventEnd   time.Duration
+		wantActive []int64
+	}{
+		{
+			name:       "five tokens across three unequal bucket overlaps",
+			tokens:     5,
+			eventStart: 30 * time.Second,
+			eventEnd:   150 * time.Second,
+			wantActive: []int64{30_000, 60_000, 30_000},
+		},
+		{
+			name:       "one token across two buckets",
+			tokens:     1,
+			eventStart: 30 * time.Second,
+			eventEnd:   90 * time.Second,
+			wantActive: []int64{30_000, 30_000},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := speedStore(t)
+			from := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+			to := from.Add(time.Duration(len(tc.wantActive)) * time.Minute)
+			event := telemetryEvent("indivisible", from.Add(tc.eventEnd), "claude-code", "claude", 0)
+			event.OutputTokens = tc.tokens
+			event.GenMS = (tc.eventEnd - tc.eventStart).Milliseconds()
+			if _, err := st.InsertEvents([]model.Event{event}, to.UnixMilli()); err != nil {
+				t.Fatalf("InsertEvents: %v", err)
+			}
+
+			got, err := st.TelemetrySpeedSeries(from, to, time.Minute)
+			if err != nil {
+				t.Fatalf("TelemetrySpeedSeries: %v", err)
+			}
+			if len(got.Series) != len(tc.wantActive) {
+				t.Fatalf("series buckets = %d, want %d", len(got.Series), len(tc.wantActive))
+			}
+
+			var allocated int64
+			for i, bucket := range got.Series {
+				if bucket.ActiveMS != tc.wantActive[i] {
+					t.Errorf("bucket %d active_ms = %d, want %d", i, bucket.ActiveMS, tc.wantActive[i])
+				}
+				for _, source := range bucket.Sources {
+					allocated += source.OutputTokens
+				}
+			}
+			if allocated != tc.tokens {
+				t.Errorf("allocated output tokens = %d, want conserved total %d", allocated, tc.tokens)
+			}
+		})
+	}
+}
+
 func TestTelemetrySpeedSeriesSortsBucketSourcesByKey(t *testing.T) {
 	st := speedStore(t)
 	from := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
