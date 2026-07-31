@@ -100,13 +100,13 @@ async function fitWindow() {
 function renderFreshness() {
   const connection = latestLive && latestLive.connection;
   const kind = connection && connection.kind || "offline";
-  const generatedAt = connection && connection.generated_at_ms
-    || latestTelemetry && latestTelemetry.generated_at_ms;
   $("connection-state").dataset.mode = kind;
   const telemetryStale = !!(latestTelemetry && latestTelemetry.is_stale);
+  // Channel only. While the stream is healthy the age is always "1s 前", so
+  // spelling it out here is a number that never moves; when it stops being
+  // healthy the footer says the age, where it actually carries information.
   $("connection-state").textContent =
-    `${CONNECTION_LABEL[kind] || kind}${telemetryStale ? " · 历史数据陈旧" : ""} · ` +
-    `${generatedAt ? relTime(generatedAt) : "年龄未知"}`;
+    `${CONNECTION_LABEL[kind] || kind}${telemetryStale ? " · 历史数据陈旧" : ""}`;
 
   const online = latestLive && latestLive.device_online;
   const total = latestLive && latestLive.device_total;
@@ -131,7 +131,7 @@ function renderHero() {
     ? "会话未知"
     : activity.kind === "unknown"
       ? `${activity.session_count} 个打开会话 · 活跃未知`
-      : `${activity.session_count} 个近 10m 贡献会话`;
+      : `${activity.session_count} 个贡献会话`;
   $("contributing-devices").textContent = activity
     ? `${activity.contributing_devices} 台贡献设备`
     : "设备未知";
@@ -155,6 +155,55 @@ function renderUsageCard(source, prefix) {
   const sign = row.change_percent > 0 ? "+" : "";
   delta.textContent = `较前 5h ${sign}${row.change_percent.toFixed(1)}%`;
   delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
+}
+
+// Which window a quota card is leading with, and how that window is named on
+// screen. The server decides the basis; the popover only has to say it out loud,
+// because "24% of the 5 hours" and "24% of the week" are not the same warning.
+const QUOTA_BASIS = {
+  five_hour: { percent: "five_hour_percent", label: "官方 5h 用量" },
+  weekly: { percent: "weekly_percent", label: "官方周用量" },
+};
+
+const SOURCE_TONE = { "claude-code": "claude", codex: "codex" };
+
+// Whole percent, matching how the Live page writes the same authoritative
+// numbers. A quota moves in points, not in tenths.
+const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "—";
+
+function quotaDetail(quota) {
+  if (quota.basis === "five_hour") {
+    // The projection is absent until the window has enough elapsed time to
+    // extrapolate from — an em dash, not 0%, because nothing has been ruled out.
+    return `预估 5h ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
+  }
+  // Not a fault: Codex's `primary` limit became a weekly window, so it has no
+  // 5-hour figure to report at all, and Claude's is captured opportunistically.
+  if (quota.basis === "weekly") return "无官方 5h 数据";
+  return "官方端点未报配额";
+}
+
+function renderQuotas() {
+  const quotas = latestLive && latestLive.quotas;
+  const root = $("quota-grid");
+  if (!quotas || !quotas.length) {
+    root.innerHTML = `<div class="empty">官方配额不可用</div>`;
+    return;
+  }
+  root.innerHTML = quotas.map((quota) => {
+    const basis = QUOTA_BASIS[quota.basis];
+    const percent = basis ? quota[basis.percent] : null;
+    const reset = basis && finite(quota.resets_in_minutes) ? untilReset(quota.resets_in_minutes) : "";
+    return `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}"
+      data-basis="${esc(quota.basis)}">
+      <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
+      <strong class="fig" data-severity="${finite(percent) ? severity(percent) : ""}">${
+        finite(percent) ? percentLabel(percent) : "暂无"}</strong>
+      <span class="quota-basis">${basis ? esc(basis.label) : "无官方配额"}${
+        reset ? ` · ${esc(reset)}` : ""}</span>
+      <span class="delta">${esc(quotaDetail(quota))}</span>
+    </article>`;
+  }).join("");
 }
 
 function sourceRows(bucket) {
@@ -288,6 +337,7 @@ function renderAll() {
   renderHero();
   renderUsageCard("claude-code", "claude");
   renderUsageCard("codex", "codex");
+  renderQuotas();
   renderSpeedLanes();
   renderStats();
   renderModels();
@@ -417,5 +467,5 @@ if (!invoke || !listen) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { coverageLabel };
+  module.exports = { coverageLabel, onLive };
 }

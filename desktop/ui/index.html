@@ -17,7 +17,7 @@
   <main id="main">
     <section class="hero instrument-card" aria-labelledby="speed-label">
       <div>
-        <div class="eyebrow" id="speed-label" title="近 10m 已测总吞吐">当前生成总速度</div>
+        <div class="eyebrow" id="speed-label" title="已测总吞吐">当前生成总速度</div>
         <div class="hero-value">
           <span class="fig" id="current-speed">—</span>
           <span class="unit">tok/s</span>
@@ -41,6 +41,8 @@
         <span class="delta" id="codex-5h-change">比较未知</span>
       </article>
     </section>
+
+    <section class="usage-grid quota-grid" id="quota-grid" aria-label="官方配额"></section>
 
     <section class="instrument-card speed-history" aria-labelledby="history-title">
       <div class="section-head">
@@ -73,7 +75,7 @@
 
     <section class="instrument-card contributors" aria-labelledby="contributors-title">
       <div class="section-head">
-        <div><div class="eyebrow" id="contributors-title">当前速度贡献</div><span class="coverage">近 10m · 共享分母 · 可加和</span></div>
+        <div><div class="eyebrow" id="contributors-title">当前速度贡献</div><span class="coverage">共享分母 · 可加和</span></div>
         <span id="contributors-more"></span>
       </div>
       <div class="contributor-list" id="contributor-list"></div>

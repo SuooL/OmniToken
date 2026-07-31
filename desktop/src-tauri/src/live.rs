@@ -221,10 +221,42 @@ struct DeviceView {
     running: i64,
 }
 
+/// Which official window the card's leading percentage comes from.
+///
+/// Three states, not two, because "the provider reports no 5-hour window" and
+/// "the provider reports nothing at all" are different facts and only one of
+/// them means the user is flying blind. Neither may be drawn as 0%.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+enum QuotaBasis {
+    FiveHour,
+    Weekly,
+    None,
+}
+
+/// One subscription source's official quota, in the shape the popover renders.
+///
+/// Every figure here comes from the provider. Our own rolling counts stay out:
+/// side by side on a 420px card an inferred percentage is indistinguishable from
+/// an authoritative one, which is exactly what "authoritative first, inferred
+/// labelled" forbids.
+#[derive(Serialize, Clone, Debug)]
+struct QuotaView {
+    source: String,
+    label: String,
+    basis: QuotaBasis,
+    five_hour_percent: Option<f64>,
+    projected_percent: Option<f64>,
+    weekly_percent: Option<f64>,
+    /// Minutes left on whichever window `basis` names.
+    resets_in_minutes: Option<i64>,
+}
+
 #[derive(Serialize, Clone, Debug)]
 struct PopoverView {
     connection: PopoverConnection,
     activity: ActivityView,
+    quotas: Vec<QuotaView>,
     sessions: Vec<SessionView>,
     sessions_more: usize,
     devices: Vec<DeviceView>,
@@ -260,6 +292,126 @@ fn compact_rate(rate: f64) -> String {
     } else {
         format!("{rate:.1}")
     }
+}
+
+/// The sources that get a quota card, in display order. The same two
+/// subscription channels `buildWindowCards` emits — pay-per-use has no quota to
+/// report, so it has no card.
+const QUOTA_SOURCES: [&str; 2] = ["claude-code", "codex"];
+
+const WEEKLY_WINDOW_MINUTES: i64 = 10080;
+
+/// The provider's live 5-hour window for one source, read off `windows[]`.
+///
+/// `windows[]` rather than `quotas[]` because the projection has to come from
+/// the same card as the percentage it projects: the server scales it by that
+/// card's own `used_percent` (`internal/server/windows.go`), so pairing the
+/// projection with a percentage picked elsewhere would put the two figures in
+/// different units.
+///
+/// Presence is decided by `authoritative`, never by `used_percent`: the latter
+/// is `omitempty` on the wire, so a genuine, untouched 0% arrives as an absent
+/// key and must not be mistaken for an absent window.
+fn five_hour_window<'a>(windows: &'a [Value], source: &str) -> Option<&'a Value> {
+    windows.iter().find(|window| {
+        window.get("key").and_then(Value::as_str) == Some(source)
+            && window
+                .get("authoritative")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    })
+}
+
+/// The tightest live weekly window for one source, and the minutes left on it.
+///
+/// Tightest rather than first: Claude reports `seven_day`, `seven_day_opus` and
+/// `seven_day_sonnet` as separate limits and every device reports its own copy,
+/// so the wall that actually stops the user is the highest of them. Same rule as
+/// `gauge::tightest_percent`, which is what keeps this card and the tray glyph
+/// from showing different numbers for the same account.
+///
+/// Windows that have already rolled over are dropped by the server before they
+/// reach us (`internal/server/live.go`), so there is no expiry check here.
+fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
+    quotas
+        .iter()
+        .filter(|quota| quota.get("source").and_then(Value::as_str) == Some(source))
+        .filter(|quota| {
+            quota.get("window_minutes").and_then(Value::as_i64) == Some(WEEKLY_WINDOW_MINUTES)
+        })
+        .filter_map(|quota| {
+            Some((
+                quota.get("used_percent").and_then(Value::as_f64)?,
+                quota.get("remaining_minutes").and_then(Value::as_i64),
+            ))
+        })
+        .fold(
+            None,
+            |tightest: Option<(f64, Option<i64>)>, current| match tightest {
+                Some(best) if best.0 >= current.0 => Some(best),
+                _ => Some(current),
+            },
+        )
+}
+
+/// One card per subscription source, leading with the shortest window the
+/// provider actually reports.
+///
+/// The 5-hour window wins when it exists because it is the one that bites within
+/// the working day — but it is opportunistic on Claude (captured only while
+/// Claude Code renders a status line, and dropped the moment it resets) and gone
+/// entirely on Codex since `primary` became a weekly window on 2026-07-09. So
+/// the weekly window is not an error path, it is where Codex lives.
+fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
+    let Some(payload) = payload else {
+        // Nothing was ever received. Two cards reading 暂无 would claim the
+        // provider said nothing, when the truth is that nobody asked yet.
+        return Vec::new();
+    };
+    let array = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    };
+    let (quotas, windows) = (array("quotas"), array("windows"));
+
+    QUOTA_SOURCES
+        .iter()
+        .map(|&source| {
+            let five_hour = five_hour_window(windows, source);
+            let five_hour_percent = five_hour.map(|window| {
+                window
+                    .get("used_percent")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+            });
+            let weekly = weekly_quota(quotas, source);
+            let basis = if five_hour_percent.is_some() {
+                QuotaBasis::FiveHour
+            } else if weekly.is_some() {
+                QuotaBasis::Weekly
+            } else {
+                QuotaBasis::None
+            };
+            QuotaView {
+                source: source.to_string(),
+                label: source_label(source),
+                basis,
+                five_hour_percent,
+                projected_percent: five_hour
+                    .and_then(|window| window.get("projected_percent").and_then(Value::as_f64)),
+                weekly_percent: weekly.map(|(percent, _)| percent),
+                resets_in_minutes: match basis {
+                    QuotaBasis::FiveHour => five_hour
+                        .and_then(|window| window.get("remaining_minutes").and_then(Value::as_i64)),
+                    QuotaBasis::Weekly => weekly.and_then(|(_, minutes)| minutes),
+                    QuotaBasis::None => None,
+                },
+            }
+        })
+        .collect()
 }
 
 fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i64) -> PopoverView {
@@ -430,6 +582,7 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
             error: connection.error.clone(),
         },
         activity,
+        quotas: quota_views(payload),
         sessions,
         sessions_more,
         devices,
@@ -1341,12 +1494,16 @@ mod tests {
         assert_eq!(view.devices[0].name, "macmini");
     }
 
-    /// The A2 popover renders speed, 5h usage, today's models, contributors and
-    /// devices. Quota kept its consumers elsewhere — the tray glyph and title go
-    /// through `tray_readings`, the warnings through `Alerts` — so none of it has
-    /// to ride along here. A serialized field no reader consumes is worse than
-    /// absent: it reads like a supported contract and the next person wires a
-    /// view to it.
+    /// The A2 popover renders speed, 5h usage, today's models, contributors,
+    /// devices and — since the official-quota card — one quota row per
+    /// subscription source. Everything else quota-shaped keeps its consumers
+    /// elsewhere: the tray glyph and title go through `tray_readings`, the
+    /// warnings through `Alerts`, and neither touches this view.
+    ///
+    /// A serialized field no reader consumes is worse than absent: it reads like
+    /// a supported contract and the next person wires a view to it. So the key
+    /// set is pinned rather than spot-checked — adding a field here has to come
+    /// with the reader in `desktop/ui/app.js` that justifies it.
     #[test]
     fn popover_payload_carries_no_field_the_webview_cannot_read() {
         let payload = json!({
@@ -1367,6 +1524,44 @@ mod tests {
         let encoded = serde_json::to_value(&view).expect("popover view serializes");
         let fields = encoded.as_object().expect("popover view is an object");
 
+        let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "activity",
+                "connection",
+                "device_online",
+                "device_summary",
+                "device_total",
+                "devices",
+                "devices_more",
+                "quotas",
+                "sessions",
+                "sessions_more",
+            ]
+        );
+
+        let quota = encoded["quotas"][0]
+            .as_object()
+            .expect("quota row is an object");
+        let mut quota_keys: Vec<&str> = quota.keys().map(String::as_str).collect();
+        quota_keys.sort_unstable();
+        assert_eq!(
+            quota_keys,
+            [
+                "basis",
+                "five_hour_percent",
+                "label",
+                "projected_percent",
+                "resets_in_minutes",
+                "source",
+                "weekly_percent",
+            ]
+        );
+
+        // The fields #64 removed. Named explicitly so re-adding one fails with a
+        // message rather than a diff of ten sorted strings.
         for dead in [
             "risk",
             "quota_summary",
@@ -1379,6 +1574,187 @@ mod tests {
                 "popover payload still carries `{dead}`, which desktop/ui/app.js never reads"
             );
         }
+    }
+
+    // ── official quota card ───────────────────────────────────────────────
+
+    fn quotas_of(payload: &Value) -> Vec<QuotaView> {
+        view_for(Some(payload), ConnectionKind::Live, 13_000).quotas
+    }
+
+    /// Claude's 5-hour window is opportunistic — it exists only while Claude Code
+    /// happens to be rendering a status line — so when it IS there it is the
+    /// tightest thing the user has and leads the card.
+    #[test]
+    fn five_hour_window_leads_when_the_provider_reports_one() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [
+                {"source":"claude-code","scope":"five_hour","window_minutes":300,"used_percent":24.0,"resets_at":99_999,"remaining_minutes":102},
+                {"source":"claude-code","scope":"seven_day","window_minutes":10080,"used_percent":12.0,"resets_at":99_999,"remaining_minutes":8403}
+            ],
+            "windows": [
+                {"key":"claude-code","authoritative":true,"placeholder":false,"used_percent":24.0,"projected_percent":36.5,"remaining_minutes":102},
+                {"key":"codex","authoritative":false,"placeholder":true}
+            ],
+            "burn": {"per_minute":0}
+        });
+
+        let claude = &quotas_of(&payload)[0];
+
+        assert_eq!(claude.source, "claude-code");
+        assert_eq!(claude.label, "Claude");
+        assert_eq!(claude.basis, QuotaBasis::FiveHour);
+        assert_eq!(claude.five_hour_percent, Some(24.0));
+        assert_eq!(claude.projected_percent, Some(36.5));
+        // The weekly figure rides along: the card shows all three numbers, the
+        // basis only decides which one leads.
+        assert_eq!(claude.weekly_percent, Some(12.0));
+        assert_eq!(claude.resets_in_minutes, Some(102));
+    }
+
+    /// Codex's `primary` window became 10080 minutes on 2026-07-09 and
+    /// `secondary` stopped being reported the same day, so Codex has no 5-hour
+    /// quota at all any more. That is the steady state, not a fault: the card
+    /// falls back to the weekly window and says which window it is showing.
+    #[test]
+    fn weekly_window_carries_the_card_when_there_is_no_five_hour_one() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [
+                {"source":"codex","scope":"primary","window_minutes":10080,"used_percent":72.0,"resets_at":99_999,"remaining_minutes":9575}
+            ],
+            "windows": [
+                {"key":"claude-code","authoritative":false,"placeholder":true},
+                {"key":"codex","authoritative":false,"placeholder":true,"note":"该来源当前未提供 5 小时配额数据"}
+            ],
+            "burn": {"per_minute":0}
+        });
+
+        let codex = &quotas_of(&payload)[1];
+
+        assert_eq!(codex.source, "codex");
+        assert_eq!(codex.basis, QuotaBasis::Weekly);
+        assert_eq!(codex.five_hour_percent, None);
+        assert_eq!(codex.projected_percent, None);
+        assert_eq!(codex.weekly_percent, Some(72.0));
+        assert_eq!(codex.resets_in_minutes, Some(9575));
+    }
+
+    /// A rolling look-back is our own counting, not the provider's, and this card
+    /// is the authoritative one. `placeholder` therefore means "no official
+    /// 5-hour window", never "0%".
+    #[test]
+    fn a_rolling_placeholder_window_is_not_an_authoritative_reading() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [],
+            "windows": [
+                {"key":"claude-code","authoritative":false,"placeholder":true,"tokens":61_953_203,"projected_percent":36.5},
+                {"key":"codex","authoritative":false,"placeholder":true,"tokens":107_729_683}
+            ],
+            "burn": {"per_minute":0}
+        });
+
+        for quota in quotas_of(&payload) {
+            assert_eq!(quota.basis, QuotaBasis::None);
+            assert_eq!(quota.five_hour_percent, None);
+            assert_eq!(quota.projected_percent, None);
+            assert_eq!(quota.weekly_percent, None);
+            assert_eq!(quota.resets_in_minutes, None);
+        }
+    }
+
+    /// `used_percent` is `omitempty` on the wire, so an untouched authoritative
+    /// window arrives with the key missing. Reading that as "no window" would
+    /// downgrade a real reading of 0% into "暂无".
+    #[test]
+    fn an_untouched_authoritative_window_reads_as_zero_not_as_absent() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [],
+            "windows": [
+                {"key":"claude-code","authoritative":true,"placeholder":false,"remaining_minutes":300},
+                {"key":"codex","authoritative":false,"placeholder":true}
+            ],
+            "burn": {"per_minute":0}
+        });
+
+        let claude = &quotas_of(&payload)[0];
+
+        assert_eq!(claude.basis, QuotaBasis::FiveHour);
+        assert_eq!(claude.five_hour_percent, Some(0.0));
+    }
+
+    /// Claude reports `seven_day`, `seven_day_opus` and `seven_day_sonnet`
+    /// separately and every device reports its own copy. The wall the user hits
+    /// first is the highest of them — the same "tightest" rule the tray glyph
+    /// uses, so the popover and the menubar cannot show different numbers.
+    #[test]
+    fn the_weekly_figure_is_the_tightest_window_across_scopes_and_devices() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [
+                {"source":"claude-code","scope":"seven_day","window_minutes":10080,"used_percent":7.0,"remaining_minutes":8403},
+                {"source":"claude-code","scope":"seven_day_opus","window_minutes":10080,"used_percent":31.0,"remaining_minutes":8402},
+                {"source":"claude-code","scope":"seven_day_sonnet","window_minutes":10080,"used_percent":12.0,"remaining_minutes":8403},
+                {"source":"codex","scope":"primary","window_minutes":10080,"used_percent":99.0,"remaining_minutes":9575}
+            ],
+            "windows": [],
+            "burn": {"per_minute":0}
+        });
+
+        let quotas = quotas_of(&payload);
+
+        assert_eq!(quotas[0].weekly_percent, Some(31.0));
+        assert_eq!(quotas[0].resets_in_minutes, Some(8402));
+        assert_eq!(quotas[1].weekly_percent, Some(99.0));
+    }
+
+    /// Both cards always exist so the grid does not reflow, and a source with no
+    /// official numbers at all says so instead of borrowing the other's.
+    #[test]
+    fn every_subscription_source_gets_a_card_even_with_no_quota_at_all() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":0.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [],
+            "windows": [],
+            "burn": {"per_minute":0}
+        });
+
+        let quotas = quotas_of(&payload);
+
+        assert_eq!(quotas.len(), 2);
+        assert_eq!(quotas[0].label, "Claude");
+        assert_eq!(quotas[1].label, "Codex");
+        assert!(quotas.iter().all(|q| q.basis == QuotaBasis::None));
+    }
+
+    /// No payload is not an empty payload: with nothing to read the popover must
+    /// not draw two cards claiming the provider reported nothing.
+    #[test]
+    fn no_payload_produces_no_quota_cards() {
+        assert!(view_for(None, ConnectionKind::Offline, 13_000)
+            .quotas
+            .is_empty());
     }
 
     #[test]
