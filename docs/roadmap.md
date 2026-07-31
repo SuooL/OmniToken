@@ -216,6 +216,7 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 项 | 状态 | 备注 |
 |---|---|---|
 | 设计定稿(ADR-0018/0019 + ADR-0009 修订) | ✅ 完成 | 三份 ADR 并行起草后调和:0018 与 0019 都自称「第三处覆盖」,CLAUDE.md 的铁律据此重构为「自动(判据在系统内)三处 + 人工发起(判据在系统外)一处」 |
+| 设备身份合并(ADR-0019 / F23) | ✅ 完成 | 设置页常规能力:`POST /api/v1/devices/merge[/preview]` 走 adminAuth,单事务、手工输入 source 全名确认、审计记入 `app_settings.device_merges`。不变量测试断言全库计数逐字相等;库副本实测 `JasonHudeMacBook-Pro.local → suool-mac`:事件 64,838 条与六项 token SUM 一字未动,`quota_snapshots` 按决策丢弃 1,296 条同键重复观测。同时统一 serve/agent 的身份解析链(flag > env > 本角色配置 > `config.json` 的 `device_name` > hostname),兜底时启动日志明说 |
 
 ## 工程事项(持续)
 
