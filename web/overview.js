@@ -88,10 +88,7 @@ const Overview = {
 
       <section class="chart-card" aria-labelledby="overview-speed-title">
         <div class="card-head">
-          <div>
-            <div class="eyebrow">共享时间轴 · 独立零基线</div>
-            <h2 id="overview-speed-title">五小时来源速度贡献</h2>
-          </div>
+          <h2 id="overview-speed-title">五小时来源速度贡献<span class="eyebrow">共享时间轴 · 独立零基线</span></h2>
           <div class="head-tools">
             <strong id="overview-current-speed">近 10m — tok/s</strong>
             <span class="coverage-note" data-role="measured-coverage"></span>
@@ -116,7 +113,7 @@ const Overview = {
 
       <section class="chart-card" aria-labelledby="today-model-title">
         <div class="card-head">
-          <div><div class="eyebrow">本地午夜至今 · 完整列表</div><h2 id="today-model-title">今日模型构成</h2></div>
+          <h2 id="today-model-title">今日模型构成<span class="eyebrow">本地午夜至今 · 完整列表</span></h2>
           <span>${compact(today.total_tokens || 0)} tokens</span>
         </div>
         <div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div>
@@ -124,7 +121,7 @@ const Overview = {
 
       <section class="chart-card" aria-labelledby="overview-heatmap-title">
         <div class="card-head">
-          <div><div class="eyebrow">历史活动 · 最近 365 天</div><h2 id="overview-heatmap-title">每日用量热力图</h2></div>
+          <h2 id="overview-heatmap-title">每日用量热力图<span class="eyebrow">历史活动 · 最近 365 天</span></h2>
           <span class="subtle">颜色表示当日 token 量</span>
         </div>
         <div id="overview-heatmap" class="chart heatmap-shell"></div>
@@ -187,10 +184,7 @@ const Overview = {
     return `
       <section class="chart-card" aria-labelledby="overview-channel-title">
         <div class="card-head">
-          <div>
-            <div class="eyebrow">近 30 天 · 只有「订阅」受配额窗口约束</div>
-            <h2 id="overview-channel-title">计费通道构成</h2>
-          </div>
+          <h2 id="overview-channel-title">计费通道构成<span class="eyebrow">近 30 天 · 只有「订阅」受配额窗口约束</span></h2>
           <span class="subtle">${esc(coverage)}</span>
         </div>
         ${total ? `<div class="composition-strip" aria-label="计费通道构成">` + rows.map((row) =>

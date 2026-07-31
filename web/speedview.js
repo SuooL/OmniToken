@@ -125,7 +125,7 @@ const SpeedView = {
         <section class="stat-row" id="speed-tiles"></section>
         <section class="chart-card">
           <div class="card-head">
-            <div><div class="eyebrow">共享分母 contribution_tps · 非堆叠</div><h2>来源速度贡献</h2></div>
+            <h2>来源速度贡献<span class="eyebrow">共享分母 contribution_tps · 非堆叠</span></h2>
             <span class="coverage-note" data-role="measured-coverage"></span>
           </div>
           <div id="speed-source-lanes" class="chart source-lanes" data-chart="speed-source-lanes"></div>

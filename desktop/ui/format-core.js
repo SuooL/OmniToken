@@ -21,7 +21,11 @@ function compact(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
   if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
-  return String(n);
+  // Below 1K the value used to be printed verbatim, which is right for a token
+  // count (always an integer) and wrong for a rate: `renderBars` feeds this the
+  // same way for `total_tokens` and for `contribution_tps`, and a tok/s of
+  // 71.37388846357693 was reaching the panel with all fourteen digits.
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(1)));
 }
 const full = (n) => n.toLocaleString("en-US");
 

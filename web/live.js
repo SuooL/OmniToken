@@ -59,7 +59,7 @@ const Live = {
     const speed = telemetrySpeed(result.data);
     host.innerHTML = `<article class="chart-card">
       <div class="card-head">
-        <div><div class="eyebrow">近一小时 · 来源贡献</div><h2>生成速度来源</h2></div>
+        <h2>生成速度来源<span class="eyebrow">近一小时 · 来源贡献</span></h2>
         <div class="coverage-note" data-role="measured-coverage">${
           telemetryCoverageLabel(speed)
         }${result.stale ? " · 显示上次成功数据" : ""}</div>
