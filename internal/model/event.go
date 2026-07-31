@@ -3,7 +3,16 @@ package model
 // Event is the unified usage event across all sources (claude-code, codex, proxy).
 // EventID is globally unique and used for idempotent ingestion.
 type Event struct {
-	EventID             string `json:"event_id"`
+	EventID string `json:"event_id"`
+	// DedupKey identifies the generation rather than the log line that recorded
+	// it (ADR-0020). EventID answers "have I seen this line before"; that is
+	// enough everywhere a copy of a request keeps its identifier — claude-code
+	// repeats message.id, the proxy has no copies — but Codex forks copy a
+	// parent thread's whole history into a new rollout, rewriting the rollout id
+	// and every timestamp, which is exactly what EventID is built from. The key
+	// is an ADDITIONAL uniqueness constraint, never a replacement: empty means
+	// "no second opinion", which is the behaviour every source had before.
+	DedupKey            string `json:"dedup_key,omitempty"`
 	TS                  int64  `json:"ts"` // unix milliseconds
 	Device              string `json:"device"`
 	Source              string `json:"source"` // claude-code | codex | proxy
