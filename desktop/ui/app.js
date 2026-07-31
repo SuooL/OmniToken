@@ -1,33 +1,58 @@
 "use strict";
-// Activity-first menubar popover (ADR-0014, system redesign §7).
-// Rust owns the deterministic payload → view-model transformation. This file
-// renders that contract and keeps only presentation-time concerns: relative
-// age, SVG geometry, overview refresh, settings, and window sizing.
 
 const invoke = window.__TAURI__ && window.__TAURI__.core.invoke;
 const listen = window.__TAURI__ && window.__TAURI__.event.listen;
 const $ = (id) => document.getElementById(id);
 
+const TELEMETRY_MS = 30000;
+const REDRAW_MS = 10000;
+const PANEL_W = 420;
+const H_MIN = 520;
+const H_TARGET_MAX = 760;
+const WORK_AREA_MARGIN = 48;
+const MAX_CONTRIBUTORS = 5;
+
 let SERVER = "";
 let HAS_TOKEN = false;
-let overview = null;
-let latestView = null;
+let latestLive = null;
+let latestTelemetry = null;
+let telemetryError = "";
+let lastHeight = 0;
 
-const OVERVIEW_MS = 60000;
-const REDRAW_MS = 10000;
-const PANEL_W = 380;
-const H_MIN = 280;
-const H_MAX = 520;
-let lastH = 0;
+const CONNECTION_LABEL = {
+  live: "实时",
+  polling: "轮询",
+  stale: "数据陈旧",
+  unauthorized: "未授权",
+  offline: "离线",
+};
 
-async function apiGet(path) {
-  return invoke("api_get", { path });
+const sourceName = (source) => ({
+  "claude-code": "Claude",
+  codex: "Codex",
+  api: "Other/API",
+  proxy: "Other/API",
+  "openai-api": "Other/API",
+  "anthropic-api": "Other/API",
+}[source] || source || "未知来源");
+
+const finite = (value) => Number.isFinite(value);
+const tokenLabel = (value) => finite(value) ? compact(value) : "—";
+const rateLabel = (value) => finite(value) ? value.toFixed(value >= 100 ? 0 : 1) : "—";
+const timeLabel = (value) => !value ? "—" : new Date(value).toLocaleTimeString("zh-CN", {
+  hour12: false, hour: "2-digit", minute: "2-digit",
+});
+
+function dataAgeMs() {
+  const times = [
+    latestLive && latestLive.connection && latestLive.connection.generated_at_ms,
+    latestTelemetry && latestTelemetry.generated_at_ms,
+  ].filter(finite);
+  return times.length ? Math.max(0, Date.now() - Math.min(...times)) : null;
 }
 
 function contentHeight() {
   const panel = document.querySelector(".panel");
-  // Measure an intrinsic clone. Measuring the live flex item makes #main's
-  // current clientHeight a lower bound, so a popover can grow but never shrink.
   const clone = panel.cloneNode(true);
   Object.assign(clone.style, {
     position: "fixed",
@@ -44,289 +69,315 @@ function contentHeight() {
   return height;
 }
 
-function fitWindow() {
-  const w = window.__TAURI__ && window.__TAURI__.window;
-  const dpi = window.__TAURI__ && window.__TAURI__.dpi;
-  if (!w || !dpi) return;
-  const height = Math.min(H_MAX, Math.max(H_MIN, contentHeight()));
-  if (height === lastH) return;
-  lastH = height;
-  w.getCurrentWindow().setSize(new dpi.LogicalSize(PANEL_W, height)).catch(() => {});
-}
-
-// ── connection / freshness ───────────────────────────────────────────────
-
-const CONNECTION_LABEL = {
-  live: "实时",
-  polling: "轮询",
-  stale: "数据陈旧",
-  unauthorized: "未授权",
-  offline: "离线",
-};
-
-function ageLabel(generatedAt) {
-  if (!generatedAt) return "年龄未知";
-  return relTime(generatedAt);
-}
-
-function renderConnection(connection) {
-  const kind = connection.kind || "offline";
-  const el = $("link");
-  el.dataset.mode = kind;
-  el.textContent = `${CONNECTION_LABEL[kind] || kind} · ${ageLabel(connection.generated_at_ms)}`;
-  document.body.dataset.mode = kind;
-  document.body.classList.toggle("degraded", kind !== "live");
-  document.body.classList.toggle("stale", !!connection.is_stale);
-}
-
-// ── promoted risk ────────────────────────────────────────────────────────
-
-const TRACK = { x0: 2, x1: 352, base: 37.5, top: 3, max: 110 };
-const trackY = (percent) =>
-  TRACK.base - (Math.min(Math.max(percent, 0), TRACK.max) / TRACK.max) *
-  (TRACK.base - TRACK.top);
-
-function clockAt(ms) {
-  if (!ms) return "";
-  return new Date(ms).toLocaleTimeString("zh-CN", {
-    hour12: false, hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function drawRisk(risk) {
-  const root = $("risk");
-  root.hidden = !risk;
-  if (!risk) return;
-
-  const used = Math.max(0, risk.used_percent || 0);
-  const projected = Math.max(used, risk.projected_percent || 0);
-  const breach = projected > 100;
-  root.classList.toggle("breach", breach);
-  $("risk-source").textContent = risk.source;
-  $("risk-now").textContent = `${used.toFixed(0)}%`;
-  $("risk-projected").textContent = `预计 ${projected.toFixed(0)}%`;
-  $("risk-reset").textContent = untilReset(risk.remaining_minutes);
-
-  const span = Math.max(1, risk.resets_at - risk.start_ms);
-  const x = (ms) => TRACK.x0 +
-    ((Math.min(Math.max(ms, risk.start_ms), risk.resets_at) - risk.start_ms) / span) *
-    (TRACK.x1 - TRACK.x0);
-  const xNow = x(risk.end_ms);
-  const xEnd = x(risk.resets_at);
-  const yUsed = trackY(used);
-  const yProjected = trackY(projected);
-  const ceilingY = trackY(100);
-
-  $("track-past").setAttribute("d", `M ${TRACK.x0} ${TRACK.base} L ${xNow} ${yUsed}`);
-  $("track-nowdot").setAttribute("cx", xNow);
-  $("track-nowdot").setAttribute("cy", yUsed);
-  $("axis-start").textContent = clockAt(risk.start_ms);
-  $("axis-end").textContent = `${clockAt(risk.resets_at)} 重置`;
-  $("axis-hit").textContent = "";
-
-  if (breach && projected > used) {
-    const fraction = Math.min(1, Math.max(0, (100 - used) / (projected - used)));
-    const xHit = xNow + (xEnd - xNow) * fraction;
-    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xHit} ${ceilingY}`);
-    $("track-breach").setAttribute("d", `M ${xHit} ${ceilingY} L ${xEnd} ${yProjected}`);
-    const hitAt = risk.end_ms + (risk.resets_at - risk.end_ms) * fraction;
-    $("axis-hit").textContent = `${clockAt(hitAt)} 触顶`;
-  } else {
-    $("track-future").setAttribute("d", `M ${xNow} ${yUsed} L ${xEnd} ${yProjected}`);
-    $("track-breach").setAttribute("d", "");
-  }
-
-  $("track-desc").textContent =
-    `${risk.source}：当前 ${used.toFixed(0)}%，预计 ${projected.toFixed(0)}%。`;
-}
-
-// ── activity / quota / devices ───────────────────────────────────────────
-
-function showMore(id, count) {
-  const el = $(id);
-  el.hidden = !count;
-  el.textContent = count ? `另有 ${count} 项` : "";
-}
-
-function renderSessions(view) {
-  $("activity").dataset.kind = view.activity.kind;
-  $("activity-hero").textContent = view.activity.text;
-  $("session-list").innerHTML = view.sessions.map((session) => `
-    <div class="session-row">
-      <span class="session-tool" title="${esc(session.tool)}">${esc(session.tool)}</span>
-      <span class="session-repo" title="${esc(session.repository)}">${esc(session.repository)}</span>
-      <span class="session-model" title="${esc(session.model)}">${esc(session.model)}</span>
-      <span class="session-device" title="${esc(session.device)}">${esc(session.device)}</span>
-      <span class="session-rate">${session.rate.toFixed(0)} t/s</span>
-    </div>`).join("");
-  showMore("sessions-more", view.sessions_more);
-}
-
-function renderQuota(view) {
-  $("quota-summary").textContent = view.quota_summary || "暂无配额数据";
-  $("quota-reset").textContent = view.quota_reset_minutes == null
-    ? ""
-    : untilReset(view.quota_reset_minutes);
-  showMore("quotas-more", view.quotas_more);
-}
-
-function renderDevices(view) {
-  $("device-head").textContent = view.device_summary;
-  $("device-summary").textContent = view.device_summary;
-  $("device-list").innerHTML = view.devices.map((device) => {
-    const processState = !device.has_procs
-      ? "不可观测"
-      : device.running > 0 ? `${device.running} 个会话` : "无打开会话";
-    const stateLabel = {
-      active: "活跃", idle: "空闲", stale: "陈旧", unknown: "未知",
-    }[device.state] || device.state;
-    return `
-      <div class="device-row">
-        <span class="device-dot" data-state="${esc(device.state)}"></span>
-        <span class="device-name" title="${esc(device.name)}">${esc(device.name)}</span>
-        <span>${processState}</span>
-        <span>${stateLabel}</span>
-      </div>`;
-  }).join("");
-  showMore("devices-more", view.devices_more);
-}
-
-function renderReadouts(view) {
-  $("burn-value").textContent = view.burn_per_minute == null
-    ? "—"
-    : `${compact(view.burn_per_minute)}/min`;
-  const total = overview && overview.today && overview.today.total_tokens;
-  $("today-value").textContent = Number.isFinite(total) ? compact(total) : "—";
-}
-
-function renderView(view) {
-  latestView = view;
-  renderConnection(view.connection);
-  drawRisk(view.risk);
-  renderSessions(view);
-  renderQuota(view);
-  renderReadouts(view);
-  renderDevices(view);
-  fitWindow();
-}
-
-function renderUnknown(message) {
-  renderConnection({
-    kind: "offline", generated_at_ms: null, age_ms: null, is_stale: false,
-  });
-  $("risk").hidden = true;
-  $("activity").dataset.kind = "unknown";
-  $("activity-hero").textContent = "活动未知";
-  $("session-list").innerHTML = message ? `<div class="error">${esc(message)}</div>` : "";
-  for (const id of ["sessions-more", "quotas-more", "devices-more"]) $(id).hidden = true;
-  $("quota-summary").textContent = "—";
-  $("quota-reset").textContent = "";
-  $("burn-value").textContent = "—";
-  $("today-value").textContent = "—";
-  $("device-head").textContent = "设备未知";
-  $("device-summary").textContent = "设备未知";
-  $("device-list").innerHTML = "";
-  fitWindow();
-}
-
-function onUpdate(update) {
-  if (update.view) renderView(update.view);
-  else renderUnknown("客户端与服务端版本不匹配");
-}
-
-async function pullOverview() {
+async function availableMonitorHeight() {
+  const api = window.__TAURI__ && window.__TAURI__.window;
+  if (!api || !api.currentMonitor) return H_TARGET_MAX + WORK_AREA_MARGIN;
   try {
-    overview = await apiGet("/api/v1/overview?days=1");
+    const monitor = await api.currentMonitor();
+    const workArea = monitor && monitor.workArea;
+    const physicalHeight = (workArea && workArea.size && workArea.size.height)
+      || (monitor && monitor.size && monitor.size.height);
+    const scale = monitor && monitor.scaleFactor || 1;
+    return physicalHeight ? physicalHeight / scale : H_TARGET_MAX + WORK_AREA_MARGIN;
   } catch (_) {
-    // Unknown is deliberately not zero: overview can fail while live remains.
-    overview = null;
-  }
-  if (latestView) renderReadouts(latestView);
-}
-
-function redraw() {
-  if (latestView) {
-    renderConnection(latestView.connection);
-    renderReadouts(latestView);
+    return H_TARGET_MAX + WORK_AREA_MARGIN;
   }
 }
 
-// ── settings / actions ───────────────────────────────────────────────────
+async function fitWindow() {
+  const api = window.__TAURI__ && window.__TAURI__.window;
+  const dpi = window.__TAURI__ && window.__TAURI__.dpi;
+  if (!api || !dpi) return;
+  const workHeight = await availableMonitorHeight();
+  const maxHeight = Math.max(240, Math.min(H_TARGET_MAX, workHeight - WORK_AREA_MARGIN));
+  const height = Math.min(maxHeight, Math.max(Math.min(H_MIN, maxHeight), contentHeight()));
+  if (height === lastHeight) return;
+  lastHeight = height;
+  api.getCurrentWindow().setSize(new dpi.LogicalSize(PANEL_W, height)).catch(() => {});
+}
 
-const els = {
+function renderFreshness() {
+  const connection = latestLive && latestLive.connection;
+  const kind = connection && connection.kind || "offline";
+  const generatedAt = connection && connection.generated_at_ms
+    || latestTelemetry && latestTelemetry.generated_at_ms;
+  $("connection-state").dataset.mode = kind;
+  const telemetryStale = !!(latestTelemetry && latestTelemetry.is_stale);
+  $("connection-state").textContent =
+    `${CONNECTION_LABEL[kind] || kind}${telemetryStale ? " · 历史数据陈旧" : ""} · ` +
+    `${generatedAt ? relTime(generatedAt) : "年龄未知"}`;
+
+  const online = latestLive && latestLive.device_online;
+  const total = latestLive && latestLive.device_total;
+  $("fleet-state").textContent = finite(online) && finite(total)
+    ? `${online}/${total} 台在线`
+    : "设备未知";
+
+  document.body.dataset.mode = kind;
+  const degraded = kind !== "live";
+  document.body.classList.toggle("degraded", degraded);
+  const age = dataAgeMs();
+  $("footer-age").textContent = telemetryError
+    ? `历史数据：${telemetryError}`
+    : degraded ? (age == null ? "数据年龄未知" : `数据年龄 ${Math.round(age / 1000)}s`) : "";
+}
+
+function renderHero() {
+  const activity = latestLive && latestLive.activity;
+  const rate = activity && activity.rate;
+  $("current-speed").textContent = rateLabel(rate);
+  $("active-sessions").textContent = !activity
+    ? "会话未知"
+    : activity.kind === "unknown"
+      ? `${activity.session_count} 个打开会话 · 活跃未知`
+      : `${activity.session_count} 个近 10m 贡献会话`;
+  $("contributing-devices").textContent = activity
+    ? `${activity.contributing_devices} 台贡献设备`
+    : "设备未知";
+}
+
+function renderUsageCard(source, prefix) {
+  const rows = latestTelemetry && latestTelemetry.rolling_5h.sources || [];
+  const row = rows.find((item) => item.source === source);
+  $(`${prefix}-5h-value`).textContent = row ? tokenLabel(row.tokens) : "—";
+  const delta = $(`${prefix}-5h-change`);
+  if (!row) {
+    delta.textContent = "用量不可用";
+    delta.dataset.direction = "unknown";
+    return;
+  }
+  if (!finite(row.change_percent)) {
+    delta.textContent = "前窗为 0 · 比较不可用";
+    delta.dataset.direction = "unknown";
+    return;
+  }
+  const sign = row.change_percent > 0 ? "+" : "";
+  delta.textContent = `较前 5h ${sign}${row.change_percent.toFixed(1)}%`;
+  delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
+}
+
+function sourceRows(bucket) {
+  return bucket && Array.isArray(bucket.sources) ? bucket.sources : [];
+}
+
+function renderSpeedLanes() {
+  const speed = latestTelemetry && latestTelemetry.speed;
+  const root = $("speed-lanes");
+  if (!speed) {
+    root.innerHTML = `<div class="empty">速度遥测不可用</div>`;
+    $("speed-coverage").textContent = "测量覆盖未知";
+    return;
+  }
+  const series = speed.series || [];
+  const measured = new Set(speed.measured_sources || []);
+  const unmeasured = new Set(speed.unmeasured_sources || []);
+  const discovered = new Set(series.flatMap((bucket) => sourceRows(bucket).map((row) => row.source)));
+  const ordered = ["claude-code", "codex"];
+  [...discovered].filter((source) => !ordered.includes(source)).sort().forEach((source) => ordered.push(source));
+  const peak = finite(speed.peak_tps)
+    ? speed.peak_tps
+    : series.reduce((value, bucket) => Math.max(value, bucket.aggregate_tps || 0), 0);
+  const scale = Math.max(1, ...series.flatMap((bucket) =>
+    sourceRows(bucket).map((row) => row.contribution_tps || 0)));
+  root.innerHTML = ordered.map((source) => {
+    const unavailable = unmeasured.has(source) && !measured.has(source);
+    if (unavailable) {
+      return `<div class="lane lane-${esc(source)} unavailable">
+        <span class="lane-label">${esc(sourceName(source))}</span>
+        <span class="lane-unavailable">速度不可用</span>
+      </div>`;
+    }
+    const bars = series.map((bucket) => {
+      const row = sourceRows(bucket).find((item) => item.source === source);
+      const value = row && finite(row.contribution_tps) ? row.contribution_tps : 0;
+      const height = value > 0 ? Math.max(3, value / scale * 100) : 0;
+      const peakClass = peak > 0 && Math.abs((bucket.aggregate_tps || 0) - peak) < 1e-6
+        ? " is-peak" : "";
+      return `<i class="lane-bar${peakClass}" style="height:${height.toFixed(2)}%"
+        title="${esc(timeLabel(bucket.start_ms))} · ${esc(rateLabel(value))} tok/s"></i>`;
+    }).join("");
+    return `<div class="lane lane-${esc(source)}">
+      <span class="lane-label">${esc(sourceName(source))}</span>
+      <span class="lane-bars">${bars}</span>
+    </div>`;
+  }).join("");
+  const measuredLabel = [...measured].map(sourceName).join("、") || "无";
+  const unavailableLabel = [...unmeasured].map(sourceName).join("、");
+  $("speed-coverage").textContent = unavailableLabel
+    ? `已测 ${measuredLabel} · ${unavailableLabel} 不可用`
+    : `已测 ${measuredLabel}`;
+}
+
+function renderStats() {
+  const speed = latestTelemetry && latestTelemetry.speed;
+  $("peak-1h").textContent = speed && finite(speed.peak_tps)
+    ? `${rateLabel(speed.peak_tps)} tok/s` : "—";
+  $("active-ratio").textContent = speed && finite(speed.active_ratio)
+    ? `${(speed.active_ratio * 100).toFixed(0)}%` : "—";
+  $("measured-source-count").textContent = speed
+    ? String((speed.measured_sources || []).length) : "—";
+}
+
+function renderModels() {
+  const today = latestTelemetry && latestTelemetry.today;
+  const models = today && today.models || [];
+  $("today-total").textContent = today ? tokenLabel(today.total_tokens) : "—";
+  $("model-count").textContent = today ? `${models.length} 个模型` : "—";
+  $("model-strip").innerHTML = models.map((model, index) =>
+    `<span class="model-segment tone-${index % 5}" style="flex-grow:${Math.max(0, model.tokens)}"></span>`
+  ).join("");
+  $("model-list").innerHTML = !today ? `<div class="empty">今日用量不可用</div>` : models.length ? models.map((model, index) => `
+    <div class="model-row">
+      <span class="model-dot tone-${index % 5}"></span>
+      <span class="model-name" title="${esc(model.model)}">${esc(model.model)}</span>
+      <span class="model-share">${finite(model.share) ? (model.share * 100).toFixed(1) + "%" : "—"}</span>
+      <span class="fig">${tokenLabel(model.tokens)}</span>
+    </div>`).join("") : `<div class="empty">今日暂无用量</div>`;
+}
+
+function renderContributors() {
+  const sessions = (latestLive && latestLive.sessions || [])
+    .filter((session) => finite(session.contribution_rate))
+    .sort((a, b) => b.contribution_rate - a.contribution_rate);
+  $("contributor-list").innerHTML = !latestLive ? `<div class="empty">贡献数据不可用</div>` : sessions.length ? sessions.slice(0, MAX_CONTRIBUTORS).map((session) => {
+    const native = finite(session.native_rate) ? `自身 ${rateLabel(session.native_rate)} tok/s` : "自身速度未知";
+    return `<div class="contributor-row">
+      <span class="contributor-source">${esc(sourceName(session.tool))}</span>
+      <span class="contributor-main">
+        <b title="${esc(session.repository)}">${esc(session.repository)}</b>
+        <small>${esc(session.model)} · ${esc(session.device)} · ${esc(native)}</small>
+      </span>
+      <span class="fig">${rateLabel(session.contribution_rate)} tok/s</span>
+    </div>`;
+  }).join("") : `<div class="empty">当前无已测贡献</div>`;
+  const hidden = Math.max(latestLive && latestLive.sessions_more || 0, sessions.length - MAX_CONTRIBUTORS);
+  $("contributors-more").textContent = hidden > 0 ? `另有 ${hidden} 项` : "";
+}
+
+function renderDevices() {
+  const view = latestLive;
+  const devices = view && view.devices || [];
+  $("device-summary").textContent = view ? view.device_summary : "设备未知";
+  $("device-list").innerHTML = !view ? `<div class="empty">设备数据不可用</div>` : devices.length ? devices.map((device) => {
+    const processState = !device.has_procs ? "不可观测"
+      : device.running > 0 ? `${device.running} 个会话` : "无打开会话";
+    const state = { active: "活跃", idle: "空闲", stale: "陈旧", unknown: "未知" }[device.state] || device.state;
+    return `<div class="device-row">
+      <span class="device-dot" data-state="${esc(device.state)}"></span>
+      <span class="device-name" title="${esc(device.name)}">${esc(device.name)}</span>
+      <span>${processState}</span><span>${state}</span>
+    </div>`;
+  }).join("") : `<div class="empty">无设备数据</div>`;
+  const more = view && view.devices_more || 0;
+  $("devices-more").hidden = !more;
+  $("devices-more").textContent = more ? `另有 ${more} 台设备` : "";
+}
+
+function renderAll() {
+  renderFreshness();
+  renderHero();
+  renderUsageCard("claude-code", "claude");
+  renderUsageCard("codex", "codex");
+  renderSpeedLanes();
+  renderStats();
+  renderModels();
+  renderContributors();
+  renderDevices();
+  fitWindow();
+}
+
+function onLive(update) {
+  latestLive = update && update.view || null;
+  renderAll();
+}
+
+async function pullTelemetry() {
+  try {
+    latestTelemetry = await invoke("telemetry_get", { range: "1h" });
+    telemetryError = latestTelemetry.error || "";
+  } catch (error) {
+    telemetryError = String(error);
+    if (telemetryError.includes("401") || telemetryError.includes("未授权")) {
+      latestTelemetry = null;
+    }
+  }
+  if (telemetryError && latestTelemetry) {
+    latestTelemetry.is_stale = true;
+    latestTelemetry.error = telemetryError;
+  }
+  renderAll();
+}
+
+const settingsEls = {
   main: $("main"),
   settings: $("settings"),
   input: $("server-input"),
   token: $("token-input"),
-  msg: $("settings-msg"),
+  message: $("settings-msg"),
   save: $("settings-save"),
 };
 
-function say(text, kind) {
-  els.msg.textContent = text || "";
-  els.msg.className = "msg" + (kind ? " " + kind : "");
+function settingsMessage(text, kind) {
+  settingsEls.message.textContent = text || "";
+  settingsEls.message.className = "msg" + (kind ? ` ${kind}` : "");
   fitWindow();
 }
 
 function openSettings() {
-  els.input.value = SERVER;
-  els.token.value = "";
-  els.token.placeholder = HAS_TOKEN
+  settingsEls.input.value = SERVER;
+  settingsEls.token.value = "";
+  settingsEls.token.placeholder = HAS_TOKEN
     ? "已保存访问令牌；留空保持不变"
     : "服务端只监听本机时留空";
-  say("");
-  els.main.hidden = true;
-  els.settings.hidden = false;
+  settingsMessage("");
+  settingsEls.main.hidden = true;
+  settingsEls.settings.hidden = false;
+  settingsEls.input.focus();
+  settingsEls.input.select();
   fitWindow();
-  els.input.focus();
-  els.input.select();
 }
 
 function closeSettings() {
-  els.settings.hidden = true;
-  els.main.hidden = false;
-  // settings_set already respawns the bridge. Cancel changes nothing, and a
-  // second refresh here used to abort the connection that had just started.
-  pullOverview();
+  settingsEls.settings.hidden = true;
+  settingsEls.main.hidden = false;
+  pullTelemetry();
   fitWindow();
 }
 
 async function saveSettings() {
-  els.save.disabled = true;
-  say("验证中…");
+  settingsEls.save.disabled = true;
+  settingsMessage("验证中…");
   try {
     const stored = await invoke("settings_set", {
-      server: els.input.value,
-      token: els.token.value,
+      server: settingsEls.input.value,
+      token: settingsEls.token.value,
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
+    latestTelemetry = null;
     closeSettings();
   } catch (error) {
-    say(String(error), "bad");
+    settingsMessage(String(error), "bad");
   } finally {
-    els.save.disabled = false;
+    settingsEls.save.disabled = false;
   }
 }
 
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
-els.save.addEventListener("click", saveSettings);
-for (const input of [els.input, els.token]) {
+settingsEls.save.addEventListener("click", saveSettings);
+for (const input of [settingsEls.input, settingsEls.token]) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveSettings();
     if (event.key === "Escape") closeSettings();
   });
 }
-
-$("open-full").addEventListener("click", () => {
-  invoke("open_full_panel").catch(() => {});
-});
+$("open-full").addEventListener("click", () => invoke("open_full_panel").catch(() => {}));
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && els.settings.hidden) {
-    const w = window.__TAURI__ && window.__TAURI__.window;
-    if (w) w.getCurrentWindow().hide().catch(() => {});
+  if (event.key === "Escape" && settingsEls.settings.hidden) {
+    const api = window.__TAURI__ && window.__TAURI__.window;
+    if (api) api.getCurrentWindow().hide().catch(() => {});
   }
 });
 
@@ -334,15 +385,19 @@ async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
   HAS_TOKEN = !!stored.has_token;
-  await listen("live", (event) => onUpdate(event.payload));
+  await listen("live", (event) => onLive(event.payload));
   await listen("open-settings", openSettings);
-  await pullOverview();
-  setInterval(pullOverview, OVERVIEW_MS);
-  setInterval(redraw, REDRAW_MS);
+  await pullTelemetry();
+  setInterval(pullTelemetry, TELEMETRY_MS);
+  setInterval(renderAll, REDRAW_MS);
 }
 
 if (!invoke || !listen) {
-  renderUnknown("Tauri IPC 不可用");
+  telemetryError = "Tauri IPC 不可用";
+  renderAll();
 } else {
-  boot().catch((error) => renderUnknown(String(error)));
+  boot().catch((error) => {
+    telemetryError = String(error);
+    renderAll();
+  });
 }

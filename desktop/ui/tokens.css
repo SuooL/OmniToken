@@ -32,14 +32,14 @@
   color-scheme: dark;
   /* RGB triplets, so borders / glows / fills can be tinted from one hue
      instead of hard-coding a second colour that drifts out of step. */
-  --glass-rgb:   56, 60, 66;
+  --glass-rgb:   29, 32, 46;
   --overlay-rgb: 255, 255, 255;
   --line-rgb:    232, 238, 244;
 
-  --page:           #2d2f34;
-  --surface-1:      rgba(var(--glass-rgb), 0.62);
-  --surface-2:      rgba(var(--overlay-rgb), 0.05);
-  --glass:          rgba(var(--glass-rgb), 0.66);
+  --page:           #11131c;
+  --surface-1:      rgba(var(--glass-rgb), 0.84);
+  --surface-2:      rgba(var(--overlay-rgb), 0.055);
+  --glass:          rgba(var(--glass-rgb), 0.78);
   --glass-filter:   blur(30px) saturate(118%);
   --sheen:          rgba(var(--overlay-rgb), 0.08);
   --lift:           0 14px 38px rgba(0,0,0,0.34);
@@ -83,6 +83,11 @@
   --union:  var(--accent);
   --warn:   var(--amber);
   --critical: var(--red);
+  --source-claude: #f2a65a;
+  --source-codex: #5aa9ff;
+  --source-api: #a386f3;
+  --source-aggregate: #f07ac0;
+  --status-healthy: #75dfbf;
   --series-1: var(--accent);
   --series-2: var(--teal);
   --series-3: var(--rose);
@@ -137,5 +142,10 @@
     --teal:       #18957c;
     --red:        #d9263e;
     --union:      var(--accent);
+    --source-claude: #b95f16;
+    --source-codex: #176fc7;
+    --source-api: #6542c7;
+    --source-aggregate: #b92e7a;
+    --status-healthy: #137d67;
   }
 }
