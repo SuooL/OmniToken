@@ -198,6 +198,37 @@ body::before { content: none; }
 }
 .settings-danger { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
 .settings-danger h2 { color: var(--critical); }
+/* Device identity merge (ADR-0019). Collapsed by default and visually apart
+   from renaming: one is a label, the other rewrites stored attribution and
+   cannot be undone. */
+.merge-panel { margin-top: 12px; }
+.merge-panel > summary {
+  cursor: pointer; font-size: 12px; color: var(--text-secondary);
+  padding: 6px 0; list-style-position: inside;
+}
+.merge-panel[open] > summary { color: var(--text-primary); margin-bottom: 8px; }
+.merge-hint, .merge-warnings {
+  margin: 10px 0 0; padding: 10px 12px; font-size: 12px;
+  border: 1px dashed var(--border-strong); border-radius: 8px;
+  color: var(--text-secondary); background: var(--surface-2);
+}
+.merge-hint { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.merge-warnings { list-style: disc; padding-inline-start: 28px; }
+.merge-warnings li + li { margin-top: 4px; }
+.merge-error { color: var(--critical); }
+.merge-picker label, .merge-confirm-row label {
+  display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted);
+}
+.merge-confirm-row { margin-top: 12px; }
+.merge-confirm-row .form-input { min-width: 240px; }
+.merge-run:disabled { opacity: 0.4; cursor: default; }
+.merge-impact, .merge-history { margin-top: 10px; }
+.merge-picker select {
+  font: inherit; font-size: 12px; color: var(--text-secondary);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; max-width: 240px;
+}
+
 .credential-scope-map {
   display: grid; gap: 8px; margin: 14px 0; padding: 12px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
@@ -634,6 +665,11 @@ button:focus-visible {
   .data-table-shell { max-width: calc(100vw - 24px); }
   .filter-row select { max-width: 100%; min-height: 40px; }
   .credential-scope-map > div { grid-template-columns: 1fr; gap: 4px; }
+  /* On a phone the merge controls stack: a picker or a confirmation box that
+     overflows the card is one the user cannot read before committing. */
+  .merge-picker label, .merge-confirm-row label { width: 100%; align-items: stretch; flex-direction: column; }
+  .merge-picker select, .merge-confirm-row .form-input { max-width: 100%; min-width: 0; width: 100%; min-height: 40px; }
+  .merge-impact, .merge-history { max-width: calc(100vw - 24px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
