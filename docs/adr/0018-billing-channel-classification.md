@@ -78,11 +78,15 @@ Bedrock / Vertex 归在「官方 API」而不是单列：它们与直连 API key
 | `provider` | 通道 |
 |---|---|
 | `anthropic-oauth` | `subscription` |
-| `anthropic-api` / `bedrock` / `vertex` | `api` |
+| `openai-chatgpt`（Codex 确认 ChatGPT 订阅，见 §3a） | `subscription` |
+| `anthropic-api` / `openai-api` / `bedrock` / `vertex` | `api` |
 | `relay` | `relay` |
-| `anthropic`（确认第一方，但付费方式不明）/ `unknown` / 空 | `unknown` |
-| Codex：`openai` + 订阅证据 | `subscription` |
-| Codex：非 `openai` 的 `model_provider` | `relay` |
+| `anthropic`（确认第一方，但付费方式不明）/ `openai`（同形，Codex 侧）/ `unknown` / 空 | `unknown` |
+| 其它（Codex 的 `model_provider` 声明值：`custom` / `sub2api` / …） | `relay` |
+
+实现落在 `internal/model/provider.go` 的 `BillingChannel`，全部通道消费方
+（面板 `by_channel`、5h 窗口卡、成本真实/等效/未知三分、5h block）都走这一个函数，
+没有第二份口径。
 
 好处是映射改了不用重扫全库；代价是 `provider` 的取值集合从内部细节变成了对外契约
 的一部分，改值域要同时改映射和面板。不新增列，也就不新增一处可覆盖的状态。
@@ -120,6 +124,60 @@ Codex 侧同一形状，只是证据换了一套：
 - `model_provider` 是用户起的名字，`custom` 可能指向任何东西，包括用户自建的官方 API
   代理。所以第三方那一栏的准确含义与 Claude 侧完全一致：**「不是第一方端点」，
   不多不少**。
+
+> **验证结果（2026-07-31，实现时）：上面这条 `rate_limits` 判据已被证伪**，判据按
+> 实测数据改写，见下一节。
+
+### 3a. Codex 判据的修订 —— `rate_limits` 存在性无效，内容有效
+
+上一节要求「实现前必须先用真实数据验证」。验了，没通过。
+
+本机 610 个 rollout 里，**凡是有 `token_count` 行的会话，523 个全部带
+`rate_limits`，一个例外都没有** —— `openai` / `custom` / `sub2api` / `enjoy` /
+`aihub` / `trellisreview` 全中。中转商会把整个限流信封原样合成出来。作为「是不是
+真 OpenAI 订阅」的分类器，这条判据精确率 20.8%、准确率 20.8%，**比恒定回答「不是」
+还差**。原判断错在把「按量计费不返回订阅窗口」当成了公理，而它其实只是一个可以被
+模仿的响应形状 —— 与本 ADR 开头推翻模型名指纹的，是同一个错误。
+
+中转商没有合成的，是信封**里面的账户状态**：
+
+| 判据 | 精确率 | 召回率 | 准确率 |
+|---|---:|---:|---:|
+| 出现 `rate_limits`（原判据） | 20.8% | 100% | 20.8% |
+| `plan_type` 非空 | 98.2% | 98.2% | 99.2% |
+| `credits` 非空 | 100% | 54.1% | 90.4% |
+| **`plan_type` 或 `credits` 非空** | **98.2%** | **100%** | **99.6%** |
+
+`custom` / `sub2api` / `enjoy` / `aihub` / `trellisreview` 的 22,547 条
+`token_count` 记录里，两者**无一例外全是 null**。`plan_type` 只在 `openai` 下出现过
+（`plus` 12,934 条、`team` 114 条）；`credits` 补上 CLI 0.140 之前 `plan_type` 尚未
+稳定填充的那段历史。
+
+还有一个必须写下来的坑：**`model_provider` 要区分大小写比较**。本机
+`config.toml.backup` 里有这么一段：
+
+```toml
+model_provider = "OpenAI"
+[model_providers.OpenAI]
+base_url = "https://ice.v.ua"
+```
+
+142 个会话打着 `"OpenAI"` 的名字走中转，而 Codex 内建的 provider id 只有小写
+`openai`。解析器原先的 `strings.ToLower` 把两者合并了，于是**库里那 17,536 条
+`openai` 其实是 12,829 条真订阅 + 4,707 条中转**。去掉 ToLower 后二者分开。
+
+因此实现采用的判据是**两个信号同时成立**：
+
+> 会话的 `model_provider` 严格等于 `openai`（内建 id，区分大小写），**且**该 rollout
+> 里存在 `event_msg`/`token_count` 记录满足 `payload.rate_limits.plan_type` 非空
+> 或 `payload.rate_limits.credits` 非空 → `openai-chatgpt`（订阅）；否则 provider
+> 原样保留，由映射表读作 `relay` 或 `unknown`。
+
+要求两个都成立，是因为各自都有实测反例：一个自称 `OpenAI` 的中转，以及一个把共享
+账号的 `plan_type` 透传出来的中转（CLI 0.118 时期 2 例）。两条一起要求后，本机数据
+上的误判为 0。`~/.codex/auth.json` 的 `auth_mode` 只反映**此刻**的机器状态，对历史
+rollout 无效，所以不作为重判依据 —— 与第 5 条第 4 款「不拿现在的配置改写历史」是
+同一条理由。
 
 ### 4. 判据的局限：证明的是「非第一方」，不是「中转」
 
@@ -201,5 +259,42 @@ statusLine），本决策不改它们。受影响的是**与配额并排展示�
   但改分类口径不用重扫全库。
 - Codex 的 `openai` 细分依赖一条**尚未验证**的判据（`rate_limits` 出现即订阅），
   验证不通过就退回 auth.json 兜底，`unknown` 相应变多。
+  → 已验证并**证伪**，改为 `plan_type`/`credits` 非空 + 区分大小写的 provider id，
+  见 §3a。`unknown` 没有变多，中转那一栏反而多出 4,707 条以前被算作订阅的流量。
 - 本决策不改 `event_id`、不改任何计数列、不动 `source` 与 `device` 的既有覆盖规则，
   也不新增第四处覆盖。要再加一处，照旧先写 ADR。
+
+## 实现后的实测（2026-07-31）
+
+本机全量 `-rescan` 后的通道分布（65,074 条事件，10.15B tokens）：
+
+| 通道 | 条数 | 占比 | tokens | 占比 |
+|---|---:|---:|---:|---:|
+| 订阅 | 38,106 | 58.6% | 6.16B | 60.7% |
+| 官方 API | **1** | 0.00% | **0** | 0.00% |
+| 第三方中转 | 23,331 | 35.9% | 3.30B | 32.5% |
+| 未知 | 3,636 | 5.6% | 690M | 6.8% |
+
+与用户自述「只有订阅和第三方，没有官方 API」一致。那唯一一条 `api` 是
+2026-07-28 的一条 `px:` 代理记录，四个计数列全为 0 —— 一次没有实际用量的探路请求。
+
+重判的行（21,037 条，全部只动 `provider`）：
+
+| 原值 | 新值 | 条数 | 说明 |
+|---|---|---:|---|
+| `openai` | `openai-chatgpt` | 12,829 | 有 `plan_type`/`credits`，真订阅 |
+| `openai` | `OpenAI` | 4,707 | §3a 的中转，以前被当成订阅计进配额 |
+| `bedrock` | `relay` | 2,221 | 本机日志尚在，逐事件无 `requestId` |
+| `bedrock` | `unknown` | 951 | `hzsmini` 的日志不在本机，无从重判 |
+| `anthropic-oauth` | `relay` | 329 | 裸 `claude-*` 名的中转，被旧规则刷成了订阅 |
+
+铁律的验证（脚本逐行比对重判前后的库）：
+
+- **0 行**的 `ts` / `source` / `device` / 四个 token 列 / cache 分量发生变化；
+- 共同行的 token 总量 10,135,532,019 → 10,135,532,019，一字不差；
+- 第二遍 `-rescan` 产生 **0 次**重判、**0 条** provider 变化 —— 幂等成立。
+
+`unknown` 那 3,636 条**全部**来自设备 `hzsmini`（2,685 条 `anthropic` +
+951 条原 `bedrock`），它的 Claude Code 日志不在本机，本地无法重判。在那台机器上跑
+一次带新版二进制的 `-rescan` 即可消化掉这一栏的绝大部分 —— 这正是 §6「日志还在就
+重扫，不在就落 unknown」预期的形状。

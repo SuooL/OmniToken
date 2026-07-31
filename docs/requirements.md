@@ -43,7 +43,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F6 | Codex 日志解析 | P0 | M2 ✅ |
 | F7 | 成本折算:LiteLLM 定价,与 ccusage 数字可对账;区分真实成本(API/Bedrock)与等效成本(订阅) | P0 | M2 ✅ |
 | F8 | repo/时间统计:cwd→git repo 归一(跨设备同 repo 归并);事件区间化 + 双指标时长(投入 union / 代理运转 sum,思考期 ≤5min 计入、可配,ADR-0006);repo×设备×时间分析 | P1 | M2 ✅ |
-| F9 | **计费通道三分类**:订阅 / 官方 API / 第三方中转,三者分开统计与展示;判据为逐事件 `requestId` 有无(分第一方端点)+ 运行时环境探测(在第一方那侧分 OAuth 与 API key)+ 代理观测(多账号 key);Codex 侧取 rollout 的 `model_provider`。判不出的落 `unknown` 并显示占比,不猜(ADR-0018) | P1 | M1/M2/M3 ✅ → **M9 重做** |
+| F9 | **计费通道三分类**:订阅 / 官方 API / 第三方中转,三者分开统计与展示;判据为逐事件 `requestId` 有无(分第一方端点)+ 运行时环境探测(在第一方那侧分 OAuth 与 API key)+ 代理观测(多账号 key);Codex 侧为 `rate_limits.plan_type`/`credits` 非空 + 区分大小写的内建 `model_provider`(ADR-0018 §3a:原定的「出现 `rate_limits` 即订阅」实测证伪)。判不出的落 `unknown` 并显示占比,不猜(ADR-0018) | P1 | M1/M2/M3 ✅ → **M9 重做 ✅** |
 | F10 | Live 实时页:设备在线、活跃会话、燃烧速率、并发生成泳道,SSE 推送 | **P0** | M2 ✅ |
 | F11 | 5 小时窗口:按计费通道分卡(订阅用权威 resets_at 边界 / API 计费用滚动 5h,ADR-0007);燃烧速率外推与窗口余量预测 | P2 | ✅ |
 | F12 | 报表:日/周/月/会话聚合,任意区间,导出 JSON/CSV | P1 | M2 ✅ |
