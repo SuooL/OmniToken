@@ -204,6 +204,7 @@ func fetch(cfg Config) (*serverData, error) {
 		Costs map[string]struct {
 			RealUSD       float64 `json:"real_usd"`
 			EquivalentUSD float64 `json:"equivalent_usd"`
+			UnknownUSD    float64 `json:"unknown_usd"`
 		} `json:"costs"`
 		ByDevice []struct {
 			Key string `json:"key"`
@@ -229,7 +230,10 @@ func fetch(cfg Config) (*serverData, error) {
 		FetchedAt:   time.Now(),
 	}
 	if c, ok := overview.Costs["today"]; ok {
-		d.TodayCost = c.RealUSD + c.EquivalentUSD
+		// All three buckets: the status line shows one figure for the day, and
+		// dropping the not-yet-classified slice would make it shrink for a
+		// reason nobody could see (ADR-0018 §6).
+		d.TodayCost = c.RealUSD + c.EquivalentUSD + c.UnknownUSD
 	}
 	now := time.Now().UnixMilli()
 	for _, q := range quota.Quotas {

@@ -359,7 +359,7 @@ func TestProxyProviderFollowsCredentialShape(t *testing.T) {
 		{"openai api key", "openai",
 			hdr("Authorization", "Bearer sk-proj-xxxx"), "openai-api"},
 		{"codex on a chatgpt plan", "openai",
-			hdr("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.xxxx"), "openai"},
+			hdr("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.xxxx"), "openai-chatgpt"},
 		// No credential, or one we do not recognise: stay undetermined rather
 		// than invent a channel. Both labels count as equivalent value.
 		{"no credential", "anthropic", hdr(), "anthropic"},
@@ -367,8 +367,9 @@ func TestProxyProviderFollowsCredentialShape(t *testing.T) {
 			hdr("Authorization", "Bearer opaque-token"), "anthropic"},
 		{"unrecognised shape openai", "openai",
 			hdr("Authorization", "Bearer opaque-token"), "openai"},
-		// A custom upstream keeps its prefix: the model fingerprint classifies
-		// relay traffic, and this function must not overrule it.
+		// A custom upstream keeps its prefix: the name the user configured is
+		// itself the evidence that this is not a first-party endpoint
+		// (model.BillingChannel reads any unknown prefix as relay).
 		{"custom prefix", "myrelay",
 			hdr("Authorization", "Bearer sk-whatever"), "myrelay"},
 	}

@@ -75,6 +75,36 @@ func TestProbeProcessOverrideWins(t *testing.T) {
 	}
 }
 
+// "endpoint rerouted" and "found nothing" both used to come back as "", but
+// ADR-0018 §4 needs them apart: one leaves the log's verdict alone, the other
+// withdraws the relay verdict because a rerouted endpoint could equally be a
+// real Bedrock/Vertex deployment.
+func TestProbeClaudeSeparatesOverrideFromSilence(t *testing.T) {
+	for _, envs := range []string{
+		"CLAUDE_CODE_USE_BEDROCK=1",
+		"CLAUDE_CODE_USE_VERTEX=1",
+		"ANTHROPIC_BASE_URL=https://proxy.internal",
+	} {
+		stubProbe(t)
+		psOutput = func() ([]byte, error) { return []byte("claude " + envs + "\n"), nil }
+		got := ProbeClaude()
+		if !got.EndpointOverride || got.Provider != "" {
+			t.Errorf("env %q: got %+v, want an override with no provider", envs, got)
+		}
+	}
+
+	stubProbe(t)
+	if got := ProbeClaude(); got.EndpointOverride || got.Provider != "" {
+		t.Errorf("nothing configured: got %+v, want a fully silent probe", got)
+	}
+
+	stubProbe(t)
+	writeHomeFile(t, ".claude/.credentials.json", `{"claudeAiOauth":{}}`)
+	if got := ProbeClaude(); got.EndpointOverride || got.Provider != AuthAnthropicOAuth {
+		t.Errorf("OAuth credentials: got %+v, want oauth with no override", got)
+	}
+}
+
 func TestProbeIgnoresNonClaudeProcesses(t *testing.T) {
 	stubProbe(t)
 	psOutput = func() ([]byte, error) {
@@ -209,10 +239,10 @@ func TestNewCachedProber(t *testing.T) {
 		return []byte("claude ANTHROPIC_API_KEY=sk-test\n"), nil
 	}
 	probe := NewCachedProber(time.Hour)
-	if got := probe(); got != AuthAnthropicAPI {
+	if got := probe().Provider; got != AuthAnthropicAPI {
 		t.Fatalf("got %q, want %q", got, AuthAnthropicAPI)
 	}
-	if got := probe(); got != AuthAnthropicAPI {
+	if got := probe().Provider; got != AuthAnthropicAPI {
 		t.Fatalf("cached: got %q, want %q", got, AuthAnthropicAPI)
 	}
 	if calls != 1 {

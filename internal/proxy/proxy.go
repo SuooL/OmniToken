@@ -271,7 +271,7 @@ func proxyProvider(prefix string, h http.Header) string {
 		case credAPIKey:
 			return "openai-api"
 		case credOAuth:
-			return "openai" // Codex on a ChatGPT plan (store.SubscriptionProviders)
+			return model.ProviderOpenAIChatGPT // Codex on a ChatGPT plan
 		}
 		return "openai"
 	default:

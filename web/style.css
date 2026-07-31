@@ -179,6 +179,14 @@ body::before { content: none; }
   background: var(--grid); margin-top: 10px;
 }
 .composition-strip > span { min-width: 2px; height: 100%; }
+/* Channel swatch in the billing-channel table. The colour repeats the strip
+   above, so it is a cross-reference rather than the sole carrier of meaning —
+   the label sits right beside it (ADR-0018 §6 wants the split legible, not
+   decoded from hue). */
+.channel-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 999px;
+  margin-right: 7px; vertical-align: middle;
+}
 .data-table-shell { overflow-x: auto; overscroll-behavior-inline: contain; }
 .data-table-shell table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
 .data-table-shell th, .data-table-shell td {

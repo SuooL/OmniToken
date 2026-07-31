@@ -100,8 +100,8 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 	fiveHourQuota := tightestFiveHourQuota(quotas, now)
 	rollingStart := now.Add(-fiveHours)
 
-	sum := func(from time.Time, keep func(store.ChannelUsage) bool) (tokens, events int64, cost float64, err error) {
-		rows, err := s.store.UsageByChannel(from, now.Add(time.Minute))
+	sum := func(from time.Time, keep func(store.ProviderUsage) bool) (tokens, events int64, cost float64, err error) {
+		rows, err := s.store.UsageByProvider(from, now.Add(time.Minute))
 		if err != nil {
 			return 0, 0, 0, err
 		}
@@ -124,7 +124,7 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 		{"codex", "Codex 订阅"},
 	} {
 		source := src.source
-		keep := func(u store.ChannelUsage) bool {
+		keep := func(u store.ProviderUsage) bool {
 			return u.Source == source && store.IsSubscription(u.Source, u.Provider)
 		}
 		card := windowCard{
@@ -150,20 +150,36 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 		cards = append(cards, card)
 	}
 
-	// Pay-per-use has no window, so a rolling look-back is the only
-	// meaningful figure; the card appears only when there is actual usage.
-	apiTokens, apiEvents, apiCost, err := sum(rollingStart, func(u store.ChannelUsage) bool {
-		return !store.IsSubscription(u.Source, u.Provider)
-	})
-	if err != nil {
-		return nil, err
-	}
-	if apiTokens > 0 {
+	// Everything that is not a subscription, one card per channel (ADR-0018).
+	// These used to share a single "API 计费" card defined as "not
+	// subscription", which put relay spend under the official-API heading and
+	// swept the unclassified remainder in with it — three different billing
+	// relationships presented as one number.
+	//
+	// None of them gets a quota bar or a projection: a metered channel has no
+	// window to be a percentage of, so drawing one would be a category error
+	// rather than a missing feature (ADR-0018 §7). A channel with no usage in
+	// the look-back produces no card at all.
+	for _, ch := range []struct{ channel, label, note string }{
+		{model.ChannelAPI, "官方 API · 最近 5 小时", "第一方按量计费,无配额窗口,按最近 5 小时滚动统计"},
+		{model.ChannelRelay, "第三方中转 · 最近 5 小时", "非第一方端点,不占用订阅额度;成本按公开价推算,仅供参考"},
+		{model.ChannelUnknown, "未知通道 · 最近 5 小时", "证据不足以判定计费通道,既不计入订阅也不并入任何计费类"},
+	} {
+		channel := ch.channel
+		tokens, events, cost, err := sum(rollingStart, func(u store.ProviderUsage) bool {
+			return model.BillingChannel(u.Provider) == channel
+		})
+		if err != nil {
+			return nil, err
+		}
+		if tokens == 0 {
+			continue
+		}
 		cards = append(cards, windowCard{
-			Key: "api", Kind: "api", Label: "API 计费 · 最近 5 小时",
-			Tokens: apiTokens, Events: apiEvents, CostUSD: apiCost,
+			Key: channel, Kind: channel, Label: ch.label,
+			Tokens: tokens, Events: events, CostUSD: cost,
 			StartMS: rollingStart.UnixMilli(), EndMS: now.UnixMilli(),
-			Note: "按量付费无配额窗口,按最近 5 小时滚动统计",
+			Note: ch.note,
 		})
 	}
 	return cards, nil

@@ -112,6 +112,8 @@ const Overview = {
         </article>
       </section>
 
+      ${this.channelSection(summary.by_channel || [])}
+
       <section class="chart-card" aria-labelledby="today-model-title">
         <div class="card-head">
           <div><div class="eyebrow">本地午夜至今 · 完整列表</div><h2 id="today-model-title">今日模型构成</h2></div>
@@ -162,6 +164,52 @@ const Overview = {
       <div class="metric-value">${compact(row.tokens || 0)}</div>
       <div class="subtle">${change} · 前五小时 ${compact(row.previous_tokens || 0)}</div>
     </article>`;
+  },
+
+  // Billing channels (F9 / ADR-0018). Three real channels plus `unknown`.
+  //
+  // Why this is its own section rather than a slice of the token total: only
+  // the subscription channel is bound by a quota window, so a total that mixes
+  // it with relay traffic makes the quota bar next to it unreadable — you
+  // cannot tell which of the two numbers is wrong. Split, both are usable.
+  //
+  // `unknown` gets a column and a stated share, never a fold into a neighbour
+  // and never a proportional split across the three. It is what the panel says
+  // when the evidence is gone (the source log was rotated away) or was never
+  // conclusive — and the honest size of that gap is exactly what a reader needs
+  // in order to know how far to trust the other three.
+  channelSection(rows) {
+    const total = rows.reduce((sum, row) => sum + (row.total_tokens || 0), 0);
+    const unknown = rows.find((row) => row.channel === "unknown") || {};
+    const coverage = total
+      ? `已分类 ${(100 * (total - (unknown.total_tokens || 0)) / total).toFixed(1)}%`
+      : "暂无数据";
+    return `
+      <section class="chart-card" aria-labelledby="overview-channel-title">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">近 30 天 · 只有「订阅」受配额窗口约束</div>
+            <h2 id="overview-channel-title">计费通道构成</h2>
+          </div>
+          <span class="subtle">${esc(coverage)}</span>
+        </div>
+        ${total ? `<div class="composition-strip" aria-label="计费通道构成">` + rows.map((row) =>
+          `<span title="${esc(row.label)} ${compact(row.total_tokens || 0)}" ` +
+          `style="width:${Math.max(0, 100 * (row.total_tokens || 0) / total)}%;` +
+          `background:var(--channel-${row.channel})"></span>`).join("") + `</div>` : ""}
+        <div class="data-table-shell">
+          <table>
+            <thead><tr><th>通道</th><th>tokens</th><th>占比</th><th>请求</th></tr></thead>
+            <tbody>${rows.map((row) => `<tr>
+              <td><span class="channel-dot" style="background:var(--channel-${row.channel})"></span>${esc(row.label || row.channel)}</td>
+              <td>${compact(row.total_tokens || 0)}</td>
+              <td>${total ? (100 * (row.total_tokens || 0) / total).toFixed(1) : "0.0"}%</td>
+              <td>${full(row.events || 0)}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>
+        <p class="subtle">未知通道既不并入订阅,也不按比例摊分到其它通道 —— 证据不足时不猜(ADR-0018)。</p>
+      </section>`;
   },
 
   sourceComposition(rows, total) {

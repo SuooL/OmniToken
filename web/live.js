@@ -215,21 +215,27 @@ const Live = {
 
   // 5-hour window cards, one per billing channel (server: buildWindowCards).
   // Subscription windows use the provider's real reset boundary when known;
-  // pay-per-use has no window, so it is a rolling look-back and says so.
+  // the metered channels have no window at all, so they are a rolling
+  // look-back and say so — and they get no bar (ADR-0018 §7).
   renderWindows(windows) {
     const el = document.getElementById("window-row");
     if (!windows.length) { el.innerHTML = ""; return; }
     el.innerHTML = windows.map((w) => {
       const spanMin = Math.max(1, Math.round((w.end_ms - w.start_ms) / 60000));
       const elapsed = `${Math.floor(spanMin / 60)}h${spanMin % 60}m`;
-      // Bar length: quota % when authoritative, else consumption intensity
-      // relative to a 5h reference so the bar still conveys "how hot".
+      // A bar on a metered channel would be a category error, not a missing
+      // feature: `api` / `relay` / `unknown` are not a percentage of anything,
+      // because there is no allowance for them to be a fraction of. Drawing one
+      // anyway — as this did, scaling tokens against an invented 80M reference
+      // — is how relay spend came to look like it was eating a quota.
+      const metered = w.kind !== "subscription";
       const pct = w.authoritative && w.used_percent
         ? Math.min(100, w.used_percent)
         : Math.min(100, 100 * w.tokens / 80e6);
       const badge = w.authoritative
         ? `<span class="chip authoritative">权威窗口</span>`
-        : (w.placeholder ? `<span class="chip">占位 · 滚动 5h</span>` : `<span class="chip">滚动 5h</span>`);
+        : (metered ? `<span class="chip">按量计费 · 无窗口</span>`
+          : (w.placeholder ? `<span class="chip">占位 · 滚动 5h</span>` : `<span class="chip">滚动 5h</span>`));
       const bits = [];
       if (w.authoritative && w.used_percent) {
         const remain = Math.max(0, Math.round((w.resets_at - Date.now()) / 60000));
@@ -251,7 +257,8 @@ const Live = {
         <div class="value">${w.tokens ? compact(w.tokens) : "0"}</div>
         <div class="sub">${bits.join(" · ")}</div>
         ${proj ? `<div class="sub proj${w.projected_percent >= 100 ? " over" : ""}">${esc(proj)}</div>` : ""}
-        <div class="meter"><div class="meter-fill ${severity(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
+        ${w.note ? `<div class="sub">${esc(w.note)}</div>` : ""}
+        ${metered ? "" : `<div class="meter"><div class="meter-fill ${severity(pct)}" style="width:${pct.toFixed(1)}%"></div></div>`}
       </div>`;
     }).join("");
   },

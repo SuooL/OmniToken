@@ -5,8 +5,10 @@ package store
 import (
 	"database/sql"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -77,7 +79,60 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateLegacyFingerprintProviders(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// providerReclassKey marks the one-time demotion below as done. It has to be a
+// flag rather than a repeatable statement: after a rescan the same rows carry
+// real evidence again, and re-running the demotion would wipe it.
+const providerReclassKey = "schema.provider_reclass_v1"
+
+// migrateLegacyFingerprintProviders clears the provider labels that could only
+// ever have come from the disproved model-name rule (ADR-0018 §6).
+//
+// `bedrock` and `vertex` were produced by exactly one thing — FingerprintProvider
+// reading a model id — and nothing produces them any more. On the machine this
+// was measured against, all 3,172 `bedrock` rows were relay traffic from a
+// vendor that had adopted Bedrock-style names, on a host with no AWS
+// configuration of any kind. Left alone they would keep showing up under
+// "official API", which is the number the user needs to be able to trust.
+//
+// They become `unknown`, not a new guess. Where the source log survives, the
+// next rescan supplies real evidence and the rank guard lets it through; where
+// the log is gone, the row honestly reports that it cannot be classified. The
+// alternative — back-filling from the model name — is the original bug rewritten
+// with a fresh coat of "已重判" on top.
+//
+// Counts are untouched: this statement names one column.
+func migrateLegacyFingerprintProviders(db *sql.DB) error {
+	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
+	var done string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, providerReclassKey).Scan(&done)
+	if err == nil && done != "" {
+		return nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	res, err := db.Exec(
+		`UPDATE events SET provider = ? WHERE provider IN (?, ?)`,
+		model.ProviderUnknown, model.ProviderBedrock, model.ProviderVertex)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: %d 行的 provider 由模型名指纹(bedrock/vertex)降级为 unknown,等待 -rescan 重判(ADR-0018);计数列未改动", n)
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, providerReclassKey)
+	return err
 }
 
 // DeviceOrigin records how a row's device attribution was obtained (ADR-0015).
@@ -178,10 +233,14 @@ type eventApplyResult struct {
 	inserted     int
 	filled       int
 	reattributed int
+	// reclassified counts rows whose billing channel evidence improved, keyed
+	// by the new provider label — ADR-0018 §5.5 requires the reclassification
+	// to be auditable, so that "归属变了、总数没变" can actually be checked.
+	reclassified map[string]int
 }
 
 func (r eventApplyResult) mutated() bool {
-	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0
+	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0 || len(r.reclassified) > 0
 }
 
 func logEventApply(result eventApplyResult) {
@@ -190,6 +249,10 @@ func logEventApply(result eventApplyResult) {
 	}
 	if result.reattributed > 0 {
 		log.Printf("store: %d existing events re-attributed to the machine that reported them itself (ADR-0015)", result.reattributed)
+	}
+	for _, provider := range slices.Sorted(maps.Keys(result.reclassified)) {
+		log.Printf("store: %d 条事件的计费通道重判为 %s(%s),计数列未改动(ADR-0018)",
+			result.reclassified[provider], provider, model.ChannelLabel(model.BillingChannel(provider)))
 	}
 }
 
@@ -305,6 +368,35 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 	}
 	defer reattribute.Close()
 
+	// The third sanctioned overwrite, and like the other two it goes one way
+	// only (ADR-0018). A rescan re-reads a log that predates the current
+	// classification rule and arrives with better evidence about which endpoint
+	// answered — the very case the reclassification exists for.
+	//
+	// One-way is enforced by comparing evidence strength (model.ProviderRank):
+	// the guard only fires when the incoming label outranks the stored one. That
+	// single comparison carries every rule ADR-0018 §5 asks for:
+	//
+	//   - idempotent and order-independent — replay the same evidence in any
+	//     order any number of times and the column settles on the strongest
+	//     label present, because the guard fails once it is there;
+	//   - a re-run of today's probe cannot rewrite a past billing conclusion,
+	//     since the two probe outcomes share a rank (§5.4);
+	//   - an event-level relay verdict still corrects a row the machine-level
+	//     probe had painted as subscription, because they are not the same
+	//     question and the event-level answer is the specific one (§3).
+	//
+	// Like `promote` and `reattribute`, it names one column and no count column
+	// is anywhere near it: which channel a request is billed to has nothing to
+	// do with how many times it is counted.
+	reclassify, err := tx.Prepare(
+		`UPDATE events SET provider = ?1
+		 WHERE event_id = ?2 AND ?3 > (` + providerRankSQL + `)`)
+	if err != nil {
+		return result, err
+	}
+	defer reclassify.Close()
+
 	for _, e := range events {
 		if e.EventID == "" {
 			continue
@@ -322,6 +414,18 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 		}
 		// Already known: contribute whatever this observation adds.
 		changed := false
+		if e.Provider != "" {
+			r, err := reclassify.Exec(e.Provider, e.EventID, model.ProviderRank(e.Provider))
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				if result.reclassified == nil {
+					result.reclassified = map[string]int{}
+				}
+				result.reclassified[e.Provider] += int(n)
+			}
+		}
 		if origin == OriginSelf && e.Device != "" {
 			r, err := reattribute.Exec(e.Device, e.EventID)
 			if err != nil {

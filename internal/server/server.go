@@ -425,6 +425,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		rows, e := s.store.Breakdown(dim, rangeStart, end, 30)
 		put("by_"+dim, rows, e)
 	}
+	// Billing channels (F9/ADR-0018). Derived from the stored provider at query
+	// time, always four rows including `unknown`, and they partition the range —
+	// which is what lets the panel show a share rather than a total that mixes
+	// a subscription's flat fee with metered spend.
+	channels, e := s.store.ChannelBreakdown(rangeStart, end)
+	put("by_channel", channels, e)
 	// Costs (ADR-0005): real vs equivalent per period; per-model over the range.
 	costs := map[string]PeriodCost{}
 	for key, start := range map[string]time.Time{"today": dayStart, "week": weekStart, "month": monthStart, "all_time": time.UnixMilli(0)} {

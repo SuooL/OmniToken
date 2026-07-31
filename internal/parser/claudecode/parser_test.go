@@ -41,21 +41,89 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestProviderFingerprintViaParse(t *testing.T) {
-	cases := map[string]string{
-		"claude-fable-5": "anthropic",
-		"us.anthropic.claude-sonnet-4-20250514-v1:0": "bedrock",
-		"claude-sonnet-4@20250514":                   "vertex",
-		"glm-4.7":                                    "relay",
+// The endpoint verdict comes from the per-event requestId and nothing else
+// (ADR-0018 §3). Model ids used to decide this and were disproved on real data:
+// this machine's `anthropic.claude-opus-4-8` events (4,218 of them, all without
+// a requestId) came from a relay imitating Bedrock naming, while relays also
+// serve bare `claude-*` names — so the same id appears on both sides.
+func TestProviderFromRequestIDNotModelName(t *testing.T) {
+	modelIDs := []string{
+		"claude-fable-5",
+		"anthropic.claude-opus-4-8",
+		"us.anthropic.claude-sonnet-4-20250514-v1:0",
+		"claude-sonnet-4@20250514",
+		"glm-4.7",
 	}
-	for modelID, want := range cases {
+	for _, modelID := range modelIDs {
 		line := strings.Replace(assistantLine, "claude-fable-5", modelID, 1)
 		events := Parse(strings.NewReader(line+"\n"), "d", 0).Events
 		if len(events) != 1 {
 			t.Fatalf("%s: no event", modelID)
 		}
-		if events[0].Provider != want {
-			t.Errorf("%s: provider = %q, want %q", modelID, events[0].Provider, want)
+		if got := events[0].Provider; got != "anthropic" {
+			t.Errorf("%s with a requestId: provider = %q, want %q", modelID, got, "anthropic")
+		}
+
+		noReq := strings.Replace(line, `"requestId":"req_01",`, "", 1)
+		events = Parse(strings.NewReader(noReq+"\n"), "d", 0).Events
+		if len(events) != 1 {
+			t.Fatalf("%s (no requestId): no event", modelID)
+		}
+		if got := events[0].Provider; got != "relay" {
+			t.Errorf("%s without a requestId: provider = %q, want %q", modelID, got, "relay")
+		}
+	}
+}
+
+// An empty requestId is the same evidence as an absent one: not first-party.
+func TestProviderEmptyRequestIDIsRelay(t *testing.T) {
+	line := strings.Replace(assistantLine, `"requestId":"req_01"`, `"requestId":""`, 1)
+	events := Parse(strings.NewReader(line+"\n"), "d", 0).Events
+	if len(events) != 1 {
+		t.Fatalf("no event")
+	}
+	if events[0].Provider != "relay" {
+		t.Errorf("provider = %q, want relay", events[0].Provider)
+	}
+}
+
+// ADR-0004 is not touched by ADR-0018: the same log line must keep producing
+// the same event_id, whatever the classification says. These are the exact ids
+// the parser produced before the provider rule changed.
+func TestEventIDUnchangedByClassification(t *testing.T) {
+	cases := []struct{ line, want string }{
+		{assistantLine, "cc:msg_01:req_01"},
+		{strings.Replace(assistantLine, `"requestId":"req_01",`, "", 1), "cc:msg_01:"},
+		{strings.Replace(assistantLine, `"requestId":"req_01"`, `"requestId":""`, 1), "cc:msg_01:"},
+		{strings.Replace(assistantLine, `"id":"msg_01",`, "", 1), "cc:uuid:u1"},
+		{strings.Replace(assistantLine, "claude-fable-5", "anthropic.claude-opus-4-8", 1), "cc:msg_01:req_01"},
+	}
+	for _, c := range cases {
+		events := Parse(strings.NewReader(c.line+"\n"), "d", 0).Events
+		if len(events) != 1 {
+			t.Fatalf("no event for %.60s", c.line)
+		}
+		if events[0].EventID != c.want {
+			t.Errorf("event id = %q, want %q", events[0].EventID, c.want)
+		}
+	}
+}
+
+// Reclassifying the same log twice must produce identical events, provider
+// included (ADR-0018 §5.3: the reclassification is a pure function).
+func TestParseIsDeterministic(t *testing.T) {
+	input := assistantLine + "\n" +
+		strings.Replace(assistantLine, `"requestId":"req_01",`, "", 1) + "\n"
+	first := Parse(strings.NewReader(input), "d", 0).Events
+	for i := 0; i < 3; i++ {
+		again := Parse(strings.NewReader(input), "d", 0).Events
+		if len(again) != len(first) {
+			t.Fatalf("run %d: %d events, want %d", i, len(again), len(first))
+		}
+		for j := range first {
+			if again[j] != first[j] {
+				t.Errorf("run %d event %d differs:\n got %+v\nwant %+v", i, j, again[j], first[j])
+			}
 		}
 	}
 }

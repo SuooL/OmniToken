@@ -113,7 +113,7 @@ type Agent struct {
 	cfg    Config
 	state  *collect.State
 	client *http.Client
-	probe  func() string
+	probe  func() collect.ClaudeAuthProbe
 	outbox *Outbox
 	bootID string
 	sleep  func(time.Duration)
