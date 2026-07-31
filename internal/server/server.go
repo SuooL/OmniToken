@@ -98,6 +98,10 @@ func (s *Server) Run() error {
 		return err
 	}
 
+	// Said once at startup, before the panel is even open: this machine is in
+	// the database under two names (ADR-0019 §7.3).
+	s.logDuplicateLocalIdentity()
+
 	go s.runCollectors()
 	s.startProxy()
 

@@ -23,6 +23,12 @@ type Config struct {
 	readTokenConfigured  bool `json:"-"`
 	adminTokenConfigured bool `json:"-"`
 
+	// deviceNameFile keeps what the config file actually said, so re-resolving
+	// with a flag cannot mistake an earlier resolution's output for
+	// configuration. deviceIdentity records where the effective name came from.
+	deviceNameFile string         `json:"-"`
+	deviceIdentity DeviceIdentity `json:"-"`
+
 	// PricingOverrides: per-1M-token USD prices keyed by model id (ADR-0005).
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides,omitempty"`
 	// WorktimeIdleMinutes: idle gap that stops the work clock (F8); default 5.
@@ -142,13 +148,11 @@ func (c *Config) applyDefaults() {
 	if c.MirrorRoot == "" {
 		c.MirrorRoot = filepath.Join(dd, "mirror")
 	}
-	if c.DeviceName == "" {
-		if h, err := os.Hostname(); err == nil {
-			c.DeviceName = h
-		} else {
-			c.DeviceName = "server"
-		}
-	}
+	// One chain for both roles (ADR-0019 §7): serve used to fall back to the
+	// hostname here while the agent fell back to it somewhere else, and the two
+	// paths disagreed about whether config.json's device_name counted.
+	c.deviceNameFile = c.DeviceName
+	c.ResolveDeviceName("")
 	if c.Collect.IntervalSeconds <= 0 {
 		c.Collect.IntervalSeconds = 15
 	}
@@ -166,6 +170,23 @@ func (c *Config) applyDefaults() {
 		c.Collect.CodexDirs = DefaultLocalCodexDirs()
 	}
 }
+
+// ResolveDeviceName sets this server's device name from the shared chain and
+// returns where it came from. The config file's own `device_name` occupies the
+// config slot, so there is nothing left for the shared-config slot to add.
+func (c *Config) ResolveDeviceName(flagValue string) DeviceIdentity {
+	c.deviceIdentity = ResolveDeviceName(DeviceNameInputs{
+		Flag:     flagValue,
+		Env:      os.Getenv(DeviceNameEnv),
+		Config:   c.deviceNameFile,
+		Hostname: os.Hostname,
+	})
+	c.DeviceName = c.deviceIdentity.Name
+	return c.deviceIdentity
+}
+
+// DeviceIdentity reports how the effective device name was arrived at.
+func (c *Config) DeviceIdentity() DeviceIdentity { return c.deviceIdentity }
 
 func (c *Config) LocalEnabled() bool {
 	return c.Collect.Local == nil || *c.Collect.Local

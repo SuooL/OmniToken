@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 
@@ -150,6 +151,18 @@ func (s *Server) localHostname() string {
 		return ""
 	}
 	return name
+}
+
+// logDuplicateLocalIdentity says at startup what the settings page also shows.
+// It only ever reports, never acts: a merge stays something the user asks for.
+func (s *Server) logDuplicateLocalIdentity() {
+	identity, err := s.localIdentity()
+	if err != nil || identity.DuplicateIdentity == "" {
+		return
+	}
+	log.Printf("device: 库里同时存在本机的两个身份 %q 与 %q(两者都自报过事件)。"+
+		"它们很可能是同一台机器 —— 可在设置页把其中一个合并进另一个(ADR-0019),此处不会自动合并",
+		identity.Device, identity.DuplicateIdentity)
 }
 
 func (s *Server) localIdentity() (localIdentity, error) {
