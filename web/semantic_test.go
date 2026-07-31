@@ -46,12 +46,118 @@ func TestSemanticAssetContracts(t *testing.T) {
 	for _, name := range []string{"overview.js", "speedview.js", "devicesview.js", "modelsview.js"} {
 		t.Run(name+" ECharts aria", func(t *testing.T) {
 			source := semanticAsset(t, name)
+			if strings.Contains(source, "ChartRegistry.set(") {
+				charts := semanticAsset(t, "charts.js")
+				if !strings.Contains(charts, "aria: { enabled: true") {
+					t.Errorf("%s delegates charts to ChartRegistry without its aria contract", name)
+				}
+				return
+			}
 			options := strings.Count(source, "setOption({")
 			aria := strings.Count(source, "aria: { enabled: true }")
 			if options == 0 || aria != options {
 				t.Errorf("%s has %d setOption calls but %d enabled aria configs", name, options, aria)
 			}
 		})
+	}
+}
+
+func TestTelemetryStudioOverviewAndLiveContracts(t *testing.T) {
+	overview := semanticAsset(t, "overview.js")
+	for _, contract := range []string{
+		"TelemetryCache.load",
+		`this.metricCard("today-total"`,
+		`data-role="rolling-five-hour-total"`,
+		`this.sourceCard("claude-code"`,
+		`this.sourceCard("codex"`,
+		`data-role="fleet-coverage"`,
+		`data-chart="source-lanes"`,
+		`data-role="current-contributors"`,
+		`data-chart="today-model-composition"`,
+		`data-role="device-throughput"`,
+		`data-role="model-throughput"`,
+		"unmeasured_sources",
+	} {
+		if !strings.Contains(overview, contract) {
+			t.Errorf("Overview A2 contract missing %q", contract)
+		}
+	}
+	if strings.Contains(overview, `data-chart="source-donut"`) {
+		t.Error("Overview must not restore the redundant standalone source donut")
+	}
+
+	live := semanticAsset(t, "live.js")
+	for _, contract := range []string{
+		"TelemetryCache.load",
+		"contribution_tps",
+		"会话自身速度",
+		"总吞吐按全局活跃时间计算；各行贡献使用同一分母，因此可以相加。",
+		`data-chart="live-source-lanes"`,
+		`data-role="measured-coverage"`,
+	} {
+		if !strings.Contains(live, contract) {
+			t.Errorf("Live A2 contract missing %q", contract)
+		}
+	}
+}
+
+func TestTelemetryStudioAnalyticalPageContracts(t *testing.T) {
+	contracts := map[string][]string{
+		"speedview.js": {
+			`data-chart="speed-source-lanes"`, `data-role="measured-coverage"`,
+			"native_tps", "contribution_tps", "共享分母",
+		},
+		"modelsview.js": {
+			`data-chart="model-distribution"`, `data-chart="model-cost-token"`,
+			`data-role="active-model-contribution"`, `data-table-shell`,
+		},
+		"devicesview.js": {
+			`data-chart="device-throughput-trend"`, "identity_status",
+			"connection_state", "queued_batches", `data-table-shell`,
+		},
+		"cacheview.js": {
+			`data-chart="cache-composition"`, `data-chart="cache-model-comparison"`,
+			"saved_usd", "cache_creation", "cache_read", "TTL",
+		},
+		"heatmap.js": {
+			`data-chart="calendar-activity"`, "heatmap-details", "逐日数据表",
+		},
+	}
+	for name, required := range contracts {
+		source := semanticAsset(t, name)
+		for _, contract := range required {
+			if !strings.Contains(source, contract) {
+				t.Errorf("%s analytical contract missing %q", name, contract)
+			}
+		}
+	}
+}
+
+func TestTelemetryStudioOperationalPageContracts(t *testing.T) {
+	contracts := map[string][]string{
+		"reports.js": {
+			`data-chart="report-trend"`, `id="reports-export-status"`,
+			"downloadAPI(", "_loadGeneration:", `"stale"`,
+		},
+		"details.js": {
+			`data-role="filter-summary"`, `data-chart="event-distribution"`,
+			"detailsSessionHref", "applyRoute", `data-table-shell`,
+		},
+		"settingsview.js": {
+			`data-settings-group="connection-auth"`, `data-settings-group="pricing"`,
+			`data-settings-group="device-identities"`, `data-settings-group="preferences"`,
+			`data-settings-scope="section"`, `data-settings-danger="true"`,
+			`class="credential-scope-map"`,
+			"Api.token", "Api.adminToken", "_revision:",
+		},
+	}
+	for name, required := range contracts {
+		source := semanticAsset(t, name)
+		for _, contract := range required {
+			if !strings.Contains(source, contract) {
+				t.Errorf("%s operational contract missing %q", name, contract)
+			}
+		}
 	}
 }
 
@@ -62,7 +168,7 @@ func TestSemanticBehaviorInNode(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	for _, name := range []string{"details.js", "live.js", "heatmap.js"} {
+	for _, name := range []string{"charts.js", "details.js", "live.js", "heatmap.js", "telemetry.js"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(semanticAsset(t, name)), 0o600); err != nil {
 			t.Fatalf("write %s companion asset: %v", name, err)
 		}
@@ -121,6 +227,66 @@ test('heatmap renders a keyboard-readable per-day table alongside the svg', () =
   assert.match(heat.innerHTML, /<th scope="col">日期<\/th>/);
   assert.match(heat.innerHTML, />12<\/td>/);
   assert.match(heat.innerHTML, />3<\/td>/);
+});
+
+test('telemetry cache rejects obsolete completions and keeps last-good data stale', async () => {
+  const pending = [];
+  const context = load('telemetry.js', {
+    Api: {get: (path) => new Promise((resolve, reject) => pending.push({path, resolve, reject}))},
+    Date,
+  });
+  const older = run(context, 'TelemetryCache.load("5h", {force:true})');
+  const newer = run(context, 'TelemetryCache.load("5h", {force:true})');
+  assert.equal(pending[0].path, '/api/v1/telemetry?range=5h');
+  pending[1].resolve({generated_at: 2, speed: {series: []}});
+  await newer;
+  pending[0].resolve({generated_at: 1, speed: {series: []}});
+  await older;
+  assert.equal(run(context, 'TelemetryCache.peek("5h").data.generated_at'), 2);
+
+  const failed = run(context, 'TelemetryCache.load("5h", {force:true})');
+  pending[2].reject(new Error('offline'));
+  const stale = await failed;
+  assert.equal(stale.data.generated_at, 2);
+  assert.equal(stale.stale, true);
+
+  const unauthorized = run(context, 'TelemetryCache.load("5h", {force:true})');
+  const authError = new Error('unauthorized');
+  authError.status = 401;
+  pending[3].reject(authError);
+  await assert.rejects(unauthorized, /unauthorized/);
+  assert.equal(run(context, 'TelemetryCache.peek("5h").data'), null);
+});
+
+test('overview headline prefers the fresher live aggregate over the last historical bucket', () => {
+  const context = load('telemetry.js');
+  assert.equal(
+    run(context, 'currentAggregateTPS({tps:80.3}, {aggregate_tps:60.2})'),
+    80.3,
+  );
+  assert.equal(run(context, 'currentAggregateTPS({}, {aggregate_tps:60.2})'), null);
+  assert.equal(run(context, 'currentAggregateTPS({}, {})'), null);
+});
+
+test('chart registry disposes detached canvases and observers before rendering again', () => {
+  const context = load('charts.js', {
+    matchMedia: () => ({matches: false}),
+    cssVar: String, tooltipStyle: () => ({}), chartFont: () => 'sans',
+  });
+  const connected = {isConnected: true};
+  const detached = {isConnected: false};
+  const disposed = [];
+  const disconnected = [];
+  context.connected = connected;
+  context.detached = detached;
+  context.disposed = disposed;
+  context.disconnected = disconnected;
+  run(context, 'ChartRegistry._instances.set(connected,{dispose(){}}); ChartRegistry._instances.set(detached,{dispose(){disposed.push("chart")}}); ChartRegistry._observers.set(detached,{disconnect(){disconnected.push("observer")}})');
+  run(context, 'ChartRegistry.prune()');
+  assert.deepEqual(disposed, ['chart']);
+  assert.deepEqual(disconnected, ['observer']);
+  assert.equal(run(context, 'ChartRegistry._instances.has(detached)'), false);
+  assert.equal(run(context, 'ChartRegistry._instances.has(connected)'), true);
 });
 `
 	path := filepath.Join(dir, "semantic.test.mjs")

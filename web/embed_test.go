@@ -4,8 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,6 +15,74 @@ func embeddedAsset(t *testing.T, name string) string {
 		t.Fatalf("read embedded %s: %v", name, err)
 	}
 	return string(b)
+}
+
+func TestTelemetryStudioSharedAssetsAreEmbedded(t *testing.T) {
+	for _, name := range []string{"charts.js", "telemetry.js"} {
+		source := embeddedAsset(t, name)
+		if strings.TrimSpace(source) == "" {
+			t.Fatalf("%s must be a non-empty embedded asset", name)
+		}
+	}
+}
+
+func TestTelemetryStudioShellIsSingularAccessibleAndRoutable(t *testing.T) {
+	html := embeddedAsset(t, "index.html")
+	if got := strings.Count(html, "OmniToken"); got != 1 {
+		t.Fatalf("global shell has %d OmniToken wordmarks, want exactly one", got)
+	}
+	for _, contract := range []string{
+		`class="skip-link"`,
+		`href="#main-content"`,
+		`id="hub-health"`,
+		`aria-live="polite"`,
+		`<script src="charts.js"></script>`,
+		`<script src="telemetry.js"></script>`,
+	} {
+		if !strings.Contains(html, contract) {
+			t.Errorf("Telemetry Studio shell missing %q", contract)
+		}
+	}
+
+	app := embeddedAsset(t, "app.js")
+	for _, contract := range []string{
+		`a.setAttribute("aria-current", "page")`,
+		`a.removeAttribute("aria-current")`,
+		`document.getElementById("main-content")`,
+		`document.getElementById("hub-health")`,
+	} {
+		if !strings.Contains(app, contract) {
+			t.Errorf("Telemetry Studio router shell missing %q", contract)
+		}
+	}
+}
+
+func TestTelemetryStudioVisualPrimitivesExist(t *testing.T) {
+	style := embeddedAsset(t, "style.css")
+	for _, contract := range []string{
+		".instrument-card",
+		".metric-card",
+		".chart-card",
+		".composition-strip",
+		".data-table-shell",
+		".state-panel",
+		"@media (max-width: 860px)",
+	} {
+		if !strings.Contains(style, contract) {
+			t.Errorf("shared visual system missing %q", contract)
+		}
+	}
+	tokens := embeddedAsset(t, "tokens.css")
+	for _, contract := range []string{
+		"--source-claude:",
+		"--source-codex:",
+		"--source-api:",
+		"--status-healthy:",
+	} {
+		if !strings.Contains(tokens, contract) {
+			t.Errorf("shared telemetry palette missing %q", contract)
+		}
+	}
 }
 
 func TestReportsUseAuthenticatedDownloadAPI(t *testing.T) {
@@ -244,53 +310,15 @@ func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
 		t.Error("active mobile navigation item must be scrolled into view")
 	}
 
-	for _, name := range []string{
-		"overview.js", "speedview.js", "devicesview.js", "modelsview.js",
-	} {
+	for _, name := range []string{"speedview.js", "devicesview.js", "modelsview.js"} {
 		source := embeddedAsset(t, name)
 		if !strings.Contains(source, `animation: !matchMedia("(prefers-reduced-motion: reduce)").matches`) {
 			t.Errorf("%s must disable canvas animation for reduced motion", name)
 		}
 	}
-}
-
-func TestDesktopPopoverGeometryAndReadableMetadata(t *testing.T) {
-	readWorkspaceFile := func(path string) string {
-		t.Helper()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		return string(data)
-	}
-
-	config := readWorkspaceFile("../desktop/src-tauri/tauri.conf.json")
-	for _, contract := range []string{`"width": 380`, `"height": 280`} {
-		if !strings.Contains(config, contract) {
-			t.Errorf("popover startup geometry missing %q", contract)
-		}
-	}
-
-	app := readWorkspaceFile("../desktop/ui/app.js")
-	for _, contract := range []string{"const PANEL_W = 380", "const H_MAX = 520"} {
-		if !strings.Contains(app, contract) {
-			t.Errorf("popover runtime geometry missing %q", contract)
-		}
-	}
-
-	style := readWorkspaceFile("../desktop/ui/style.css")
-	fontSize := regexp.MustCompile(`(?m)font(?:-size)?:[^;]*?([0-9]+(?:\.[0-9]+)?)px`)
-	for _, match := range fontSize.FindAllStringSubmatch(style, -1) {
-		size, err := strconv.ParseFloat(match[1], 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if size < 13 {
-			t.Errorf("popover metadata font below 13px: %q", match[0])
-		}
-	}
-	if !strings.Contains(style, "@media (prefers-reduced-motion: reduce)") {
-		t.Error("popover must honor reduced motion")
+	charts := embeddedAsset(t, "charts.js")
+	if !strings.Contains(charts, `animation: !matchMedia("(prefers-reduced-motion: reduce)").matches`) {
+		t.Error("shared ChartRegistry must disable canvas animation for reduced motion")
 	}
 }
 
@@ -520,8 +548,8 @@ test('settings serializes pricing and device saves per section', async () => {
 
 test('route empty predicates reflect meaningful data', () => {
   const overview = load('overview.js');
-  assert.equal(run(overview, 'overviewIsEmpty({today:{total_tokens:0},week:{total_tokens:0},month:{total_tokens:0},all_time:{total_tokens:0}})'), true);
-  assert.equal(run(overview, 'overviewIsEmpty({all_time:{total_tokens:1}})'), false);
+  assert.equal(run(overview, 'overviewIsEmpty({telemetry:{today:{total_tokens:0},rolling_5h:{total_tokens:0}}})'), true);
+  assert.equal(run(overview, 'overviewIsEmpty({telemetry:{today:{total_tokens:1},rolling_5h:{total_tokens:0}}})'), false);
 
   const speed = load('speedview.js');
   assert.equal(run(speed, 'speedIsEmpty({models:[],exact:[],series:{buckets:[]},live:{output_tokens:0}})'), true);

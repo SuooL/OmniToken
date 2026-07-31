@@ -79,9 +79,13 @@ function route() {
   Views[next].enter();
   // The view was hidden until a moment ago; anything canvas-based needs to be
   // told its real size now that it has one.
-  requestAnimationFrame(() => resizeChartsIn(Views[next].el()));
+  requestAnimationFrame(() => {
+    resizeChartsIn(Views[next].el());
+    ChartRegistry.resizeWithin(Views[next].el());
+  });
   document.querySelectorAll("#nav a").forEach((a) => {
-    a.toggleAttribute("aria-current", a.dataset.view === next);
+    if (a.dataset.view === next) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
   });
   const active = document.querySelector(`#nav a[data-view="${next}"]`);
   if (active && matchMedia("(max-width: 860px)").matches) {
@@ -91,6 +95,7 @@ function route() {
   const link = active;
   document.getElementById("page-title").textContent = link ? link.textContent : "";
   document.getElementById("page-sub").textContent = PAGE_SUB[next] || "";
+  document.getElementById("main-content").focus({ preventScroll: true });
 }
 
 // One line each, saying what the page answers rather than what it contains.
@@ -128,15 +133,19 @@ Api.loadToken();
 // again so an obsolete warning never survives after credentials change.
 async function refreshAuthState() {
   document.querySelector(".auth-banner")?.remove();
+  const health = document.getElementById("hub-health");
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
+    health.className = "hub-health healthy";
+    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 正常</span>`;
     if (h.auth_required && !Api.token) {
       document.querySelector(".viz-root").insertAdjacentHTML("afterbegin",
         `<div class="auth-banner">这台服务端可被其它机器访问,读取需要令牌。
            请到 <a href="#settings">设置 → 访问令牌</a> 填写 <code>config.json</code> 里的 <code>token</code>。</div>`);
     }
   } catch (e) {
-    // Server down or not ours; the views report that themselves.
+    health.className = "hub-health unavailable";
+    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 不可达</span>`;
   }
 }
 

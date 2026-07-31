@@ -3,11 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OmniToken</title>
+<title>Telemetry Studio</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#main-content">跳到主要内容</a>
 <div class="viz-root">
   <nav class="rail" aria-label="主导航">
     <div class="brand">
@@ -33,39 +34,22 @@
     </div>
   </nav>
 
-  <div class="content">
+  <div class="content" id="main-content" tabindex="-1">
   <div class="page-head">
     <div>
       <h2 id="page-title">实时</h2>
       <p class="subtitle" id="page-sub">跨设备 LLM 用量监控</p>
     </div>
-    <div class="refresh" id="refresh-note"></div>
+    <div class="page-utilities">
+      <div class="hub-health" id="hub-health" aria-live="polite">
+        <span class="health-dot" aria-hidden="true"></span>
+        <span>Hub 检查中</span>
+      </div>
+      <div class="refresh" id="refresh-note"></div>
+    </div>
   </div>
 
-  <main id="view-overview" hidden>
-    <section class="stat-row" id="stat-row"></section>
-    <section class="card">
-      <div class="card-head">
-        <h2>每日 Token 用量 · <span id="range-note">近 30 天</span></h2>
-        <div class="head-tools">
-          <div class="legend" id="daily-legend"></div>
-          <button id="table-toggle" class="ghost-btn" aria-pressed="false">表格</button>
-        </div>
-      </div>
-      <div id="daily-chart" class="chart"></div>
-      <div id="daily-table" class="data-table" hidden></div>
-    </section>
-    <section class="card">
-      <h2 id="heatmap-title">活动热力图 · 近 365 天</h2>
-      <div id="heatmap" class="chart" aria-labelledby="heatmap-title"></div>
-    </section>
-    <section class="grid3">
-      <div class="card"><h2>按模型</h2><div id="by-model" class="bars"></div></div>
-      <div class="card"><h2>按设备</h2><div id="by-device" class="bars"></div></div>
-      <div class="card"><h2>按项目</h2><div id="by-repo" class="bars"></div></div>
-    </section>
-    <section class="chip-row" id="chip-row"></section>
-  </main>
+  <main id="view-overview" hidden></main>
 
   <main id="view-live" hidden>
     <!-- The strip leads. A number tile would say "here is a figure"; the strip
@@ -74,6 +58,8 @@
       <div class="figure"><span id="speed-tps">—</span><span class="unit"> tok/s</span></div>
       <div class="caption" id="speed-sub">正在等待数据</div>
     </section>
+
+    <section id="live-telemetry-card"></section>
 
     <section class="card">
       <div class="card-head">
@@ -132,6 +118,8 @@
 <script src="icons.js"></script>
 <script src="format-core.js"></script>
 <script src="format.js"></script>
+<script src="charts.js"></script>
+<script src="telemetry.js"></script>
 <script src="overview.js"></script>
 <script src="live.js"></script>
 <script src="reports.js"></script>

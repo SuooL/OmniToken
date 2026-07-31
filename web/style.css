@@ -11,18 +11,20 @@
 }
 
 body { background: var(--page); }
+.skip-link {
+  position: fixed; left: 12px; top: 8px; z-index: 100;
+  transform: translateY(-150%);
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--surface-1); color: var(--text-primary);
+}
+.skip-link:focus { transform: none; }
 
-/* Ambient depth. Two very low-opacity washes behind everything, so surfaces
-   have something to float above — a flat fill is what made the old panel read
-   as a printed sheet. Fixed, so it does not travel with scroll. */
+/* Keep the page ground quiet. Magnitude and grouping belong inside charts;
+   a decorative wash behind every card would compete with those encodings. */
 body::before {
   content: "";
   position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background:
-    radial-gradient(58% 48% at 8% -8%,  rgba(77,157,250,0.20), transparent 70%),
-    radial-gradient(52% 44% at 62% -6%, rgba(155,123,245,0.17), transparent 68%),
-    radial-gradient(46% 42% at 100% 8%, rgba(63,208,168,0.14), transparent 66%),
-    radial-gradient(60% 50% at 78% 100%, rgba(255,180,84,0.10), transparent 70%);
+  background: none;
 }
 .viz-root { position: relative; z-index: 1; }
 
@@ -96,6 +98,14 @@ body::before {
 .page-head h2 { font-size: 15px; font-weight: 620; color: var(--text-primary); margin: 0; }
 .subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
 .refresh { color: var(--text-muted); font-size: 12px; font-family: var(--font-display); }
+.page-utilities { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.hub-health { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.hub-health.healthy .health-dot {
+  background: var(--status-healthy);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--status-healthy) 55%, transparent);
+}
+.hub-health.unavailable .health-dot { background: var(--critical); }
 
 /* Gains columns with width instead of stretching them. */
 .grid-auto {
@@ -115,6 +125,7 @@ body::before {
   .tabs .tab-group { display: none; }
   .tabs a { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
   .tabs a[aria-current] { border-left: 0; border-bottom-color: var(--accent); }
+  .content { width: 100%; overflow-x: clip; }
 }
 
 /* Glass, not paper. A translucent panel over the ambient wash, lifted by an
@@ -134,6 +145,59 @@ body::before {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 .card:hover { border-color: var(--border-strong); box-shadow: var(--lift-hi), inset 0 1px 0 var(--sheen); }
+.instrument-card,
+.metric-card,
+.chart-card,
+.state-panel {
+  background: color-mix(in srgb, var(--surface-1) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--lift), inset 0 1px 0 var(--sheen);
+}
+.instrument-card, .chart-card, .state-panel { padding: 16px 18px; margin-bottom: 14px; }
+.metric-card { padding: 14px 16px; min-width: 0; }
+.metric-card .metric-value {
+  font: 600 clamp(24px, 3.2vw, 38px)/1 var(--font-display);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.035em;
+}
+.metric-card .metric-label, .eyebrow {
+  color: var(--text-muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+}
+.composition-strip {
+  display: flex; height: 8px; overflow: hidden; border-radius: 999px;
+  background: var(--grid); margin-top: 10px;
+}
+.composition-strip > span { min-width: 2px; height: 100%; }
+.data-table-shell { overflow-x: auto; overscroll-behavior-inline: contain; }
+.data-table-shell table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+.data-table-shell th, .data-table-shell td {
+  padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap;
+}
+.data-table-shell th:first-child, .data-table-shell td:first-child { text-align: left; }
+.chart-fallback { margin-top: 10px; color: var(--text-muted); }
+.chart-fallback summary { cursor: pointer; font-size: 12px; }
+.telemetry-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.coverage-note { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--text-muted); font-size: 12px; }
+.unavailable-lane {
+  padding: 10px 12px; border: 1px dashed var(--border-strong);
+  border-radius: 8px; color: var(--text-muted); font-size: 12px;
+}
+.settings-danger { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
+.settings-danger h2 { color: var(--critical); }
+.credential-scope-map {
+  display: grid; gap: 8px; margin: 14px 0; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+}
+.credential-scope-map > div {
+  display: grid; grid-template-columns: minmax(96px, .7fr) auto minmax(150px, 1.4fr);
+  align-items: center; gap: 12px; color: var(--text-secondary); font-size: 12px;
+}
+.credential-scope-map strong { color: var(--text-primary); }
+.source-lanes { min-height: 280px; }
+.model-composition { min-height: 300px; }
 h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 /* Wraps as a whole: a legend wide enough to crowd the title takes its own line
    instead of squeezing it. Without this the flex row shrinks the heading first,
@@ -364,9 +428,9 @@ a.ghost-btn { text-decoration: none; }
 .now .caption b { color: var(--text-primary); font-weight: 600; }
 .now.idle .figure { color: var(--text-muted); }
 
-/* Lanes. One row per concurrent stream, then the union beneath — the whole
-   argument of ADR-0009 in one picture: three sessions at 50 tok/s are not
-   150 unless they took turns. */
+/* Lanes. One row per stream, then the union beneath — the whole argument of
+   ADR-0009 in one picture: concurrent 50 tok/s sessions add on the shared
+   timeline, while sequential sessions do not inflate the aggregate. */
 .lanes { display: flex; flex-direction: column; gap: 2px; }
 .lane {
   display: grid;
@@ -462,14 +526,8 @@ a.ghost-btn { text-decoration: none; }
    visibly breaking. */
 @media (prefers-color-scheme: light) {
   :root:where(:not([data-theme="dark"])) {
-    /* The ambient washes carry depth on a dark ground. At the same alpha over
-       white they just tint the page dirty, so they drop to a hint. */
-    body::before {
-      background:
-        radial-gradient(58% 46% at 6% -10%,  rgba(30,109,204,0.10), transparent 70%),
-        radial-gradient(50% 42% at 66% -8%,  rgba(84,46,209,0.07), transparent 68%),
-        radial-gradient(46% 40% at 100% 6%,  rgba(24,149,124,0.06), transparent 66%);
-    }
+    /* The analytical ground remains untextured in both themes. */
+    body::before { background: none; }
     /* Surfaces are lifted by shadow, not by being lighter than their
        surroundings — on white there is no "lighter" left. Hence white cards on
        an off-white page, and a real shadow instead of an inset sheen. */
@@ -605,7 +663,9 @@ button:focus-visible {
   .card { padding: 13px 12px; margin-bottom: 10px; }
   .stat-row { gap: 8px; margin-bottom: 10px; }
   .data-table { max-width: calc(100vw - 24px); }
+  .data-table-shell { max-width: calc(100vw - 24px); }
   .filter-row select { max-width: 100%; min-height: 40px; }
+  .credential-scope-map > div { grid-template-columns: 1fr; gap: 4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -44,7 +44,11 @@ const SpeedView = {
       renderState(root, { kind: "loading", title: "正在加载速度数据" });
     }
     try {
-      const data = await Api.get("/api/v1/speed?days=30");
+      const [data, telemetryResult] = await Promise.all([
+        Api.get("/api/v1/speed?days=30"),
+        TelemetryCache.load("1h", { force: true }),
+      ]);
+      data.telemetry = telemetryResult.data;
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
@@ -116,6 +120,15 @@ const SpeedView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="speed-tiles"></section>
+        <section class="chart-card">
+          <div class="card-head">
+            <div><div class="eyebrow">共享分母 contribution_tps · 非堆叠</div><h2>来源速度贡献</h2></div>
+            <span class="coverage-note" data-role="measured-coverage"></span>
+          </div>
+          <div id="speed-source-lanes" class="chart source-lanes" data-chart="speed-source-lanes"></div>
+          <div id="speed-unmeasured"></div>
+          <p class="subtle">贡献速度使用共享分母，因此各来源可以相加得到 aggregate_tps；native_tps 是来源自身活跃时的速度，仅用于下钻，不能相加。</p>
+        </section>
         <section class="card">
           <div class="card-head">
             <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟</h2>
@@ -147,9 +160,53 @@ const SpeedView = {
     document.getElementById("speed-window").textContent = series.window_minutes || 60;
 
     this.renderTiles(live, series);
+    this.renderSourceLanes(d.telemetry || {});
     this.renderCurve(series);
     this.renderModels(models);
     document.getElementById("speed-exact").innerHTML = this.exactBody(exact, d.has_exact);
+  },
+
+  renderSourceLanes(snapshot) {
+    const speed = telemetrySpeed(snapshot);
+    const buckets = speed.series || [];
+    const keys = [...new Set([
+      ...(speed.measured_sources || []),
+      ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
+    ])];
+    document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
+      `已测 ${(speed.measured_sources || []).map(sourceLabelA2).join(" · ") || "无"} · 未测 ${(speed.unmeasured_sources || []).map(sourceLabelA2).join(" · ") || "无"}`;
+    document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
+      `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable；用量不受影响</div>`
+    ).join("");
+    const el = document.getElementById("speed-source-lanes");
+    if (!buckets.length || !keys.length) {
+      el.innerHTML = `<p class="empty">此范围暂无已测来源速度。</p>`;
+      return;
+    }
+    const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
+    ChartRegistry.set(el, {
+      titleText: "速度页来源贡献",
+      grid: keys.map((_, i) => ({left: 58, right: 18, top: 12 + i * 92, height: 54})),
+      xAxis: keys.map((_, i) => ({
+        type: "category", gridIndex: i, data: labels,
+        axisLabel: {show: i === keys.length - 1, color: cssVar("--text-muted")},
+        axisLine: {lineStyle: {color: cssVar("--baseline")}},
+      })),
+      yAxis: keys.map((key, i) => ({
+        type: "value", gridIndex: i, min: 0, name: sourceLabelA2(key),
+        nameTextStyle: {color: ChartRegistry.sourceColor(key)},
+        splitLine: {lineStyle: {color: cssVar("--grid")}},
+        axisLabel: {color: cssVar("--text-muted")},
+      })),
+      series: keys.map((key, i) => ({
+        name: sourceLabelA2(key), type: "bar", xAxisIndex: i, yAxisIndex: i,
+        itemStyle: {color: ChartRegistry.sourceColor(key), borderRadius: [3, 3, 0, 0]},
+        data: buckets.map((bucket) => {
+          const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
+          return row ? row.contribution_tps || 0 : 0;
+        }),
+      })),
+    });
   },
 
   renderTiles(live, series) {
@@ -161,9 +218,9 @@ const SpeedView = {
 
     document.getElementById("speed-tiles").innerHTML = `
       <div class="stat-tile">
-        <div class="label">当前速度 · 近 10 分钟</div>
+        <div class="label">近 10 分钟已测总吞吐</div>
         <div class="value">${this.tps(live.tps || 0)}<span class="unit"> tok/s</span></div>
-        <div class="sub">${(live.sessions || []).length ? `${(live.sessions || []).length} 个会话在生成` : "当前没有生成"}</div>
+        <div class="sub">${(live.sessions || []).length ? `${(live.sessions || []).length} 个近 10m 贡献会话` : "近 10m 没有生成"}</div>
       </div>
       <div class="stat-tile">
         <div class="label">近 ${series.window_minutes || 60} 分钟峰值</div>
