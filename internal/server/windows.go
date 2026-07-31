@@ -67,19 +67,37 @@ func (c *windowCard) projectToWindowEnd(now time.Time, start time.Time) {
 // otherwise it falls back to a rolling [now-5h, now] and says so. The two
 // billing kinds are never summed — a subscription window and pay-per-use
 // usage answer different questions (ADR-0005).
-func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) ([]windowCard, error) {
-	type win struct {
-		start, resets time.Time
-		pct           float64
-	}
-	fiveHourQuota := map[string]win{}
+type fiveHourWin struct {
+	start, resets time.Time
+	pct           float64
+}
+
+// tightestFiveHourQuota picks, per source, the live 5-hour reading the user is
+// closest to exhausting.
+//
+// Every device signed into one account reports that account's window, and the
+// readings differ because each observed at a different moment. Keeping whichever
+// row came last would let map iteration order decide how full the panel says the
+// window is, and the menubar's quota card leads with that number. The tray
+// already resolves this by taking the tightest (`gauge::tightest_percent`), so
+// any other rule here also makes the two disagree about the same account.
+func tightestFiveHourQuota(quotas []model.QuotaSnapshot, now time.Time) map[string]fiveHourWin {
+	out := map[string]fiveHourWin{}
 	for _, q := range quotas {
 		if q.WindowMinutes != 300 || q.ResetsAt == 0 || q.ResetsAt < now.UnixMilli() {
 			continue
 		}
+		if cur, ok := out[q.Source]; ok && cur.pct >= q.UsedPercent {
+			continue
+		}
 		resets := time.UnixMilli(q.ResetsAt)
-		fiveHourQuota[q.Source] = win{start: resets.Add(-fiveHours), resets: resets, pct: q.UsedPercent}
+		out[q.Source] = fiveHourWin{start: resets.Add(-fiveHours), resets: resets, pct: q.UsedPercent}
 	}
+	return out
+}
+
+func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) ([]windowCard, error) {
+	fiveHourQuota := tightestFiveHourQuota(quotas, now)
 	rollingStart := now.Add(-fiveHours)
 
 	sum := func(from time.Time, keep func(store.ChannelUsage) bool) (tokens, events int64, cost float64, err error) {
