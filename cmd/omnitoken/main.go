@@ -90,6 +90,20 @@ func runServe(args []string) {
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
+	// Before the store opens: this decides where a day starts for every
+	// aggregation, on both the Go and the SQL side (ADR-0021). Always logged —
+	// following the host is a legitimate choice, but it should be a recorded
+	// one rather than a default nobody ever looked at.
+	if zone := server.ApplyTimezone(cfg); cfg.Timezone == "" {
+		// `time.Local.String()` is just "Local" when TZ is unset, which says
+		// nothing. Name the offset actually in force instead — the whole point
+		// of logging this is that an unconfigured zone stops being invisible.
+		abbr, offset := time.Now().Zone()
+		log.Printf("timezone: 未配置,跟随主机时区(当前 %s,UTC%+03d:%02d);"+
+			"日/周/月的切分以它为准(ADR-0021)", abbr, offset/3600, abs(offset%3600)/60)
+	} else {
+		log.Printf("timezone: %s —— 日/周/月的切分以它为准(ADR-0021)", zone)
+	}
 	logDeviceIdentity(cfg.ResolveDeviceName(*name))
 	srv, err := server.New(cfg)
 	if err != nil {
@@ -411,4 +425,11 @@ func logDeviceIdentity(identity server.DeviceIdentity) {
 	case server.DeviceNameLastResort:
 		log.Printf("device: 未配置 device_name 且读不到主机名,退回 %q", identity.Name)
 	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }

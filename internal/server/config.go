@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
 	"github.com/suool/omnitoken/internal/pricing"
@@ -19,6 +21,13 @@ type Config struct {
 	ReadToken  string `json:"read_token,omitempty"`
 	AdminToken string `json:"admin_token,omitempty"`
 	DeviceName string `json:"device_name"`
+	// Timezone is the IANA name whose midnight defines a day for every
+	// daily/weekly/monthly aggregation (ADR-0021). Empty follows the host.
+	Timezone string `json:"timezone,omitempty"`
+
+	// location caches the parsed Timezone. Resolved during validate() so a
+	// typo fails the load rather than surfacing as a quietly shifted day.
+	location *time.Location `json:"-"`
 
 	readTokenConfigured  bool `json:"-"`
 	adminTokenConfigured bool `json:"-"`
@@ -115,7 +124,48 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	return c.resolveTimezone()
+}
+
+// resolveTimezone parses Timezone once, at load. A typo must not survive to
+// runtime: an unknown zone that quietly became UTC would move every daily,
+// weekly and monthly bucket by hours, and nothing on screen would say so.
+func (c *Config) resolveTimezone() error {
+	if strings.TrimSpace(c.Timezone) == "" {
+		c.location = time.Local
+		return nil
+	}
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return fmt.Errorf(`timezone %q: %w (需 IANA 名,如 "America/New_York")`, c.Timezone, err)
+	}
+	c.location = loc
 	return nil
+}
+
+// Location is the zone whose midnight starts a day for every aggregation.
+func (c *Config) Location() *time.Location {
+	if c.location == nil {
+		return time.Local
+	}
+	return c.location
+}
+
+// ApplyTimezone pins the aggregation day boundary for this process and returns
+// the zone it settled on, for the caller to log (ADR-0021).
+//
+// It assigns the package-level `time.Local` on purpose. That is the only switch
+// reaching both halves of the split: the nine Go sites that call
+// `now.Location()`, and the eight SQL sites using `date(..., 'localtime')`,
+// which the modernc driver resolves through `time.Local`. Passing a Location
+// down to the Go callers would leave the SQL half on the host zone, and the two
+// would disagree about which day a row belongs to.
+//
+// Call once, during startup, before the store opens or any query runs; nothing
+// writes it afterwards.
+func ApplyTimezone(c *Config) string {
+	time.Local = c.Location()
+	return time.Local.String()
 }
 
 func (c *Config) applyDefaults() {
