@@ -96,10 +96,14 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		Spans:         [][2]int64{},
 	}
 
+	// Every source with an interval counts, Codex included since ADR-0009's
+	// 2026-07-31 revision: its interval comes from the turn's own task_complete
+	// timing, not from the log line timestamps that made it unmeasurable before.
+	// The filter that matters is gen_ms > 0 — an unmeasured row is absent from
+	// the numerator and the denominator alike, never a zero in either.
 	q := `SELECT session_id, device, repo, model, source, output_tokens, gen_ms, ts
 	      FROM events
-	      WHERE ts >= ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0
-	        AND source != 'codex'`
+	      WHERE ts >= ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0`
 	args := []any{startMS, endMS}
 	if device != "" {
 		q += ` AND device = ?`

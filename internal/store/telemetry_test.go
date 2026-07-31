@@ -151,8 +151,75 @@ func TestTelemetrySpeedSeriesAllocatesTokensAndReportsCoverage(t *testing.T) {
 			t.Errorf("bucket %d source sum = %v, aggregate = %v", bucket.StartMS, sum, bucket.AggregateTPS)
 		}
 	}
-	if len(got.MeasuredSources) != 2 || got.MeasuredSources[0] != "api" || got.MeasuredSources[1] != "claude-code" {
-		t.Errorf("measured_sources = %v, want [api claude-code]", got.MeasuredSources)
+	if len(got.MeasuredSources) != 3 ||
+		got.MeasuredSources[0] != "api" || got.MeasuredSources[1] != "claude-code" || got.MeasuredSources[2] != "codex" {
+		t.Errorf("measured_sources = %v, want [api claude-code codex]", got.MeasuredSources)
+	}
+	if len(got.UnmeasuredSources) != 0 {
+		t.Errorf("unmeasured_sources = %v, want none: every source here carries an interval", got.UnmeasuredSources)
+	}
+	byKey := map[string]TelemetrySourceCoverage{}
+	for _, row := range got.Coverage {
+		byKey[row.Key] = row
+	}
+	if row := byKey["codex"]; row.MeasuredEvents != 1 || row.MeasuredOutputTokens != 500 {
+		t.Errorf("codex coverage = %+v, want its measured turn counted", row)
+	}
+	if row := byKey["claude-code"]; row.TotalEvents != 2 || row.MeasuredEvents != 1 {
+		t.Errorf("claude coverage = %+v, want 1 of 2 measured", row)
+	}
+}
+
+// A Codex turn Codex itself did not time (aborted, or replayed into a new
+// rollout with the flush timestamp) has no interval, and the page must say so
+// rather than draw it as zero speed — ADR-0009's coverage rule.
+func TestTelemetrySpeedSeriesReportsUnmeasuredCodex(t *testing.T) {
+	st := speedStore(t)
+	from := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	to := from.Add(10 * time.Minute)
+
+	measured := telemetryEvent("codex-measured", from.Add(4*time.Minute), "codex", "gpt-5", 0)
+	measured.OutputTokens = 500
+	measured.GenMS = int64(time.Minute / time.Millisecond)
+	uncovered := telemetryEvent("codex-uncovered", from.Add(6*time.Minute), "codex", "gpt-5", 0)
+	uncovered.OutputTokens = 700
+	if _, err := st.InsertEvents([]model.Event{measured, uncovered}, to.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.TelemetrySpeedSeries(from, to, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("TelemetrySpeedSeries: %v", err)
+	}
+	if len(got.MeasuredSources) != 1 || got.MeasuredSources[0] != "codex" {
+		t.Errorf("measured_sources = %v, want [codex]", got.MeasuredSources)
+	}
+	if len(got.UnmeasuredSources) != 0 {
+		t.Errorf("unmeasured_sources = %v, want none: codex has measured events here", got.UnmeasuredSources)
+	}
+	row := got.Coverage[0]
+	if row.Key != "codex" || row.TotalEvents != 2 || row.MeasuredEvents != 1 ||
+		row.TotalOutputTokens != 1_200 || row.MeasuredOutputTokens != 500 {
+		t.Errorf("codex coverage = %+v, want 1/2 events and 500/1200 tokens measured", row)
+	}
+}
+
+// With nothing measured at all, Codex is listed as unmeasured like any other
+// source — but only because its own events say so, not by a hard-coded rule.
+func TestTelemetrySpeedSeriesUnmeasuredCodexOnly(t *testing.T) {
+	st := speedStore(t)
+	from := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	to := from.Add(10 * time.Minute)
+
+	uncovered := telemetryEvent("codex-uncovered", from.Add(6*time.Minute), "codex", "gpt-5", 0)
+	uncovered.OutputTokens = 700
+	if _, err := st.InsertEvents([]model.Event{uncovered}, to.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.TelemetrySpeedSeries(from, to, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("TelemetrySpeedSeries: %v", err)
 	}
 	if len(got.UnmeasuredSources) != 1 || got.UnmeasuredSources[0] != "codex" {
 		t.Errorf("unmeasured_sources = %v, want [codex]", got.UnmeasuredSources)

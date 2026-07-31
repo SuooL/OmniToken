@@ -229,8 +229,7 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 	rows, err := s.db.Query(
 		`SELECT source, ts, gen_ms, output_tokens
 		 FROM events
-		 WHERE ts > ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0
-		   AND source != 'codex'`,
+		 WHERE ts > ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0`,
 		startMS, endMS)
 	if err != nil {
 		return out, err
@@ -319,12 +318,17 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 		}
 	}
 
+	// Coverage is per source and honest by construction: the denominator is
+	// every event, the numerator only those carrying an interval. Codex sits at
+	// roughly 90% of events (turns Codex did not time, and turns replayed into
+	// a later rollout, have none), and the panel must show that rather than
+	// treating the rest as zero speed.
 	coverageRows, err := s.db.Query(
 		`SELECT source,
 		        COUNT(*),
-		        COALESCE(SUM(CASE WHEN gen_ms > 0 AND source != 'codex' THEN 1 ELSE 0 END),0),
+		        COALESCE(SUM(CASE WHEN gen_ms > 0 THEN 1 ELSE 0 END),0),
 		        COALESCE(SUM(output_tokens),0),
-		        COALESCE(SUM(CASE WHEN gen_ms > 0 AND source != 'codex' THEN output_tokens ELSE 0 END),0)
+		        COALESCE(SUM(CASE WHEN gen_ms > 0 THEN output_tokens ELSE 0 END),0)
 		 FROM events
 		 WHERE ts > ? AND ts <= ? AND output_tokens > 0
 		 GROUP BY source`,
@@ -371,16 +375,6 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 		if row.MeasuredEvents == 0 {
 			out.UnmeasuredSources = append(out.UnmeasuredSources, row.Key)
 		}
-	}
-	codexUnmeasured := false
-	for _, key := range out.UnmeasuredSources {
-		if key == "codex" {
-			codexUnmeasured = true
-			break
-		}
-	}
-	if !codexUnmeasured {
-		out.UnmeasuredSources = append(out.UnmeasuredSources, "codex")
 	}
 	sort.Strings(out.MeasuredSources)
 	sort.Strings(out.UnmeasuredSources)

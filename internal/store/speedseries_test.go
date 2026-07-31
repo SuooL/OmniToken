@@ -211,3 +211,48 @@ func TestSpeedByModelKeepsShortRepliesInTheAggregate(t *testing.T) {
 		t.Errorf("tps = %.1f, want ~91.1", got)
 	}
 }
+
+// TTFT is an exact number wherever it exists at all — Codex records it per turn
+// and the proxy measures it per request — so it is reported next to the speed
+// rather than derived from it. Events without one must not read as "no wait":
+// they are simply not part of that distribution.
+func TestSpeedByModelReportsTTFTSeparatelyFromSpeed(t *testing.T) {
+	s := openSpeedStore(t)
+	base := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	for i, ttft := range []int64{4_000, 9_000, 26_000, 0} {
+		ev := model.Event{
+			EventID: "cx" + string(rune('a'+i)),
+			TS:      base.Add(time.Duration(i+1) * time.Minute).UnixMilli(),
+			Device:  "mac", Source: "codex", Model: "gpt-5.6-sol", SessionID: "s1",
+			OutputTokens: 1000, GenMS: 10_000, TTFTMS: ttft,
+		}
+		if _, err := s.InsertEvents([]model.Event{ev}, base.UnixMilli()); err != nil {
+			t.Fatalf("InsertEvents: %v", err)
+		}
+	}
+
+	stats, err := s.SpeedByModelUnion(base, base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("stats = %+v, want one model", stats)
+	}
+	if stats[0].TTFTSamples != 3 {
+		t.Errorf("ttft_samples = %d, want 3 — the event without a TTFT is not a zero", stats[0].TTFTSamples)
+	}
+	if stats[0].MedianTTFTMS != 9_000 {
+		t.Errorf("median_ttft_ms = %v, want 9000", stats[0].MedianTTFTMS)
+	}
+	if stats[0].P90TTFTMS != 26_000 {
+		t.Errorf("p90_ttft_ms = %v, want 26000", stats[0].P90TTFTMS)
+	}
+	if stats[0].Samples != 4 {
+		t.Errorf("samples = %d, want 4: TTFT coverage is its own question", stats[0].Samples)
+	}
+	// The page labels a Codex row as a lower bound, so the row has to say which
+	// channel measured it.
+	if len(stats[0].Sources) != 1 || stats[0].Sources[0] != "codex" {
+		t.Errorf("sources = %v, want [codex]", stats[0].Sources)
+	}
+}
