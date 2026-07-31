@@ -36,6 +36,7 @@
 | `read_token` | 未显式填写时回落 `token` | 非 loopback 查询、面板与 SSE 的只读 credential |
 | `admin_token` | 未显式填写时回落 `token` | enrollment 与 settings mutation credential;新部署应与 read/v1 分离 |
 | `device_name` | hostname | 本机作为被统计设备的名字 |
+| `timezone` | 空(跟随主机) | IANA 名(如 `America/New_York`)。**决定日/周/月怎么切**:`今日用量`、30 天趋势、热力图、报表全部以它的午夜为界。非法值启动即拒绝;留空也会在启动日志里打印实际解析到的时区。只需在 Hub 上配置 —— agent 只推 epoch,不切日界(ADR-0021) |
 | `pricing_overrides` | — | `{模型: {input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok}}`(单位 USD/百万 token) |
 | `worktime_idle_minutes` | 5 | 工时空闲停表阈值(ADR-0006) |
 | `statusline_cache_path` | `~/.omnitoken/statusline-cache.json` | 定位 `omnitoken statusline` 的产物;配额从它旁边的 `rate-limits.json` 读取(ADR-0011)。不再轮询任何端点 |
