@@ -157,6 +157,55 @@ function renderUsageCard(source, prefix) {
   delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
 }
 
+// Which window a quota card is leading with, and how that window is named on
+// screen. The server decides the basis; the popover only has to say it out loud,
+// because "24% of the 5 hours" and "24% of the week" are not the same warning.
+const QUOTA_BASIS = {
+  five_hour: { percent: "five_hour_percent", label: "官方 5h 用量" },
+  weekly: { percent: "weekly_percent", label: "官方周用量" },
+};
+
+const SOURCE_TONE = { "claude-code": "claude", codex: "codex" };
+
+// Whole percent, matching how the Live page writes the same authoritative
+// numbers. A quota moves in points, not in tenths.
+const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "—";
+
+function quotaDetail(quota) {
+  if (quota.basis === "five_hour") {
+    // The projection is absent until the window has enough elapsed time to
+    // extrapolate from — an em dash, not 0%, because nothing has been ruled out.
+    return `预估 5h ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
+  }
+  // Not a fault: Codex's `primary` limit became a weekly window, so it has no
+  // 5-hour figure to report at all, and Claude's is captured opportunistically.
+  if (quota.basis === "weekly") return "无官方 5h 数据";
+  return "官方端点未报配额";
+}
+
+function renderQuotas() {
+  const quotas = latestLive && latestLive.quotas;
+  const root = $("quota-grid");
+  if (!quotas || !quotas.length) {
+    root.innerHTML = `<div class="empty">官方配额不可用</div>`;
+    return;
+  }
+  root.innerHTML = quotas.map((quota) => {
+    const basis = QUOTA_BASIS[quota.basis];
+    const percent = basis ? quota[basis.percent] : null;
+    const reset = basis && finite(quota.resets_in_minutes) ? untilReset(quota.resets_in_minutes) : "";
+    return `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}"
+      data-basis="${esc(quota.basis)}">
+      <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
+      <strong class="fig" data-severity="${finite(percent) ? severity(percent) : ""}">${
+        finite(percent) ? percentLabel(percent) : "暂无"}</strong>
+      <span class="quota-basis">${basis ? esc(basis.label) : "无官方配额"}${
+        reset ? ` · ${esc(reset)}` : ""}</span>
+      <span class="delta">${esc(quotaDetail(quota))}</span>
+    </article>`;
+  }).join("");
+}
+
 function sourceRows(bucket) {
   return bucket && Array.isArray(bucket.sources) ? bucket.sources : [];
 }
@@ -288,6 +337,7 @@ function renderAll() {
   renderHero();
   renderUsageCard("claude-code", "claude");
   renderUsageCard("codex", "codex");
+  renderQuotas();
   renderSpeedLanes();
   renderStats();
   renderModels();

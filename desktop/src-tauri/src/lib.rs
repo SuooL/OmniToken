@@ -425,6 +425,7 @@ mod ui_contract_tests {
             "已测总吞吐",
             r#"id="claude-5h""#,
             r#"id="codex-5h""#,
+            r#"id="quota-grid""#,
             r#"id="speed-lanes""#,
             r#"id="peak-1h""#,
             r#"id="active-ratio""#,

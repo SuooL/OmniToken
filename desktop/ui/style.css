@@ -180,6 +180,17 @@ body.degraded #main { opacity: .88; }
 .delta[data-direction="up"] { color: var(--status-healthy); }
 .delta[data-direction="down"] { color: var(--amber); }
 
+.quota-card .quota-basis { color: var(--text-secondary); font-size: 10px; }
+.quota-card .delta { color: var(--text-muted); font-size: 10px; }
+/* Fixed steps from severity() in format-core.js, not a gradient: the reader
+   needs "is this fine or not", not a hue to interpolate. */
+.quota-card strong[data-severity="warn"] { color: var(--meter-warn); }
+.quota-card strong[data-severity="serious"] { color: var(--meter-serious); }
+.quota-card strong[data-severity="critical"] { color: var(--meter-critical); }
+/* No reading at all reads as muted, so it can never be mistaken for a healthy
+   low number. */
+.quota-card[data-basis="none"] strong { color: var(--text-muted); }
+
 .speed-history {
   padding: 12px 12px 9px;
   background: #0d1124;
