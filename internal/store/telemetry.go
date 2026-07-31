@@ -334,7 +334,7 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 		if row.MeasuredEvents > 0 {
 			out.MeasuredSources = append(out.MeasuredSources, row.Key)
 		}
-		if row.MeasuredEvents < row.TotalEvents {
+		if row.MeasuredEvents == 0 {
 			out.UnmeasuredSources = append(out.UnmeasuredSources, row.Key)
 		}
 	}

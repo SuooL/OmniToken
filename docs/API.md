@@ -204,7 +204,7 @@ native_tps(group) = measured_output_tokens(group)
 `aggregate_tps = Σ sources[].contribution_tps`。`native_tps` 使用各来源自身分母，
 只供下钻比较，不能组成总计。
 
-`measured_sources` 和 `unmeasured_sources` 区分“已测为零”与“没有可靠速度区间”。
+`measured_sources` 和 `unmeasured_sources` 互斥，区分“至少有一个可靠速度区间”与“完全没有可靠速度区间”。部分覆盖由 `coverage[].measured_events < coverage[].total_events` 表示，不得把来源整体标成 unavailable。
 当前 Codex 在后者；它仍出现在 `today` 与 `rolling_5h` 用量中，但不会被伪造成
 0 tok/s，也不会静默进入 `aggregate_tps`。
 

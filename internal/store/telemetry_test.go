@@ -113,13 +113,15 @@ func TestTelemetrySpeedSeriesAllocatesTokensAndReportsCoverage(t *testing.T) {
 	claude := telemetryEvent("claude", from.Add(6*time.Minute), "claude-code", "claude-sonnet-4-5", 0)
 	claude.OutputTokens = 400
 	claude.GenMS = int64((4 * time.Minute) / time.Millisecond)
+	claudeUnmeasured := telemetryEvent("claude-unmeasured", from.Add(8*time.Minute), "claude-code", "claude-sonnet-4-5", 0)
+	claudeUnmeasured.OutputTokens = 50
 	codex := telemetryEvent("codex", from.Add(4*time.Minute), "codex", "gpt-5", 0)
 	codex.OutputTokens = 500
 	codex.GenMS = int64(time.Minute / time.Millisecond)
 	api := telemetryEvent("api", from.Add(9*time.Minute), "proxy", "claude-sonnet-4-5", 0)
 	api.OutputTokens = 100
 	api.GenMS = int64(time.Minute / time.Millisecond)
-	if _, err := st.InsertEvents([]model.Event{claude, codex, api}, to.UnixMilli()); err != nil {
+	if _, err := st.InsertEvents([]model.Event{claude, claudeUnmeasured, codex, api}, to.UnixMilli()); err != nil {
 		t.Fatalf("InsertEvents: %v", err)
 	}
 
