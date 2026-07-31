@@ -17,7 +17,7 @@
   <main id="main">
     <section class="hero instrument-card" aria-labelledby="speed-label">
       <div>
-        <div class="eyebrow" id="speed-label">近 10m 已测总吞吐</div>
+        <div class="eyebrow" id="speed-label" title="近 10m 已测总吞吐">当前生成总速度</div>
         <div class="hero-value">
           <span class="fig" id="current-speed">—</span>
           <span class="unit">tok/s</span>
@@ -31,12 +31,12 @@
 
     <section class="usage-grid" aria-label="滚动五小时实际用量">
       <article class="usage-card claude" id="claude-5h">
-        <div class="source-title"><span class="source-dot"></span>Claude · 5h</div>
+        <div class="source-title"><span class="source-dot"></span>Claude · 最近 5h</div>
         <strong class="fig" id="claude-5h-value">—</strong>
         <span class="delta" id="claude-5h-change">比较未知</span>
       </article>
       <article class="usage-card codex" id="codex-5h">
-        <div class="source-title"><span class="source-dot"></span>Codex · 5h</div>
+        <div class="source-title"><span class="source-dot"></span>Codex · 最近 5h</div>
         <strong class="fig" id="codex-5h-value">—</strong>
         <span class="delta" id="codex-5h-change">比较未知</span>
       </article>
@@ -45,7 +45,7 @@
     <section class="instrument-card speed-history" aria-labelledby="history-title">
       <div class="section-head">
         <div>
-          <div class="eyebrow" id="history-title">最近 60 分钟 · 来源贡献</div>
+          <div class="eyebrow" id="history-title">速度热图 · 最近 60 分钟</div>
           <div class="coverage" id="speed-coverage">测量覆盖未知</div>
         </div>
       </div>
@@ -62,7 +62,7 @@
     <section class="instrument-card today" aria-labelledby="today-title">
       <div class="section-head">
         <div>
-          <div class="eyebrow" id="today-title">今日累计 · 所有模型</div>
+          <div class="eyebrow" id="today-title">今日各模型累计</div>
           <div class="today-total"><span class="fig" id="today-total">—</span> tokens</div>
         </div>
         <span class="model-count" id="model-count">—</span>
@@ -73,7 +73,7 @@
 
     <section class="instrument-card contributors" aria-labelledby="contributors-title">
       <div class="section-head">
-        <div><div class="eyebrow" id="contributors-title">近 10m 贡献</div><span class="coverage">共享分母 · 可加和</span></div>
+        <div><div class="eyebrow" id="contributors-title">当前速度贡献</div><span class="coverage">近 10m · 共享分母 · 可加和</span></div>
         <span id="contributors-more"></span>
       </div>
       <div class="contributor-list" id="contributor-list"></div>

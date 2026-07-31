@@ -159,7 +159,7 @@ const Overview = {
     if (!total) return `<div class="composition-strip" aria-label="暂无来源用量"></div>`;
     return `<div class="composition-strip" aria-label="五小时来源构成">` + rows.map((row) =>
       `<span title="${esc(sourceLabelA2(speedSourceKey(row)))} ${compact(row.tokens || 0)}" ` +
-      `style="width:${Math.max(0, 100 * (row.tokens || 0) / total)}%;background:${ChartRegistry.sourceColor(speedSourceKey(row))}"></span>`
+      `style="width:${Math.max(0, 100 * (row.tokens || 0) / total)}%;background:${ChartRegistry.sourceGradientCSS(speedSourceKey(row), "90deg")}"></span>`
     ).join("") + `</div>`;
   },
 
@@ -214,7 +214,7 @@ const Overview = {
       })),
       series: sourceKeys.map((key, index) => ({
         name: sourceLabelA2(key), type: "bar", xAxisIndex: index, yAxisIndex: index,
-        itemStyle: { color: ChartRegistry.sourceColor(key), borderRadius: [3, 3, 0, 0] },
+        itemStyle: { color: ChartRegistry.sourceGradient(key), borderRadius: [3, 3, 0, 0] },
         data: buckets.map((bucket) => {
           const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
           return row ? row.contribution_tps || 0 : 0;

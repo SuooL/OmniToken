@@ -10,8 +10,11 @@ const ChartRegistry = {
   palette() {
     return {
       claude: cssVar("--source-claude"),
+      claudeDeep: cssVar("--source-claude-deep"),
       codex: cssVar("--source-codex"),
+      codexDeep: cssVar("--source-codex-deep"),
       api: cssVar("--source-api"),
+      apiDeep: cssVar("--source-api-deep"),
       aggregate: cssVar("--source-aggregate"),
       healthy: cssVar("--status-healthy"),
       muted: cssVar("--text-muted"),
@@ -20,10 +23,33 @@ const ChartRegistry = {
   },
 
   sourceColor(source) {
+    return this.sourceStops(source)[0];
+  },
+
+  sourceStops(source) {
     const palette = this.palette();
-    if (source === "claude-code" || source === "claude") return palette.claude;
-    if (source === "codex") return palette.codex;
-    return palette.api;
+    if (source === "claude-code" || source === "claude") {
+      return [palette.claude, palette.claudeDeep];
+    }
+    if (source === "codex") return [palette.codex, palette.codexDeep];
+    return [palette.api, palette.apiDeep];
+  },
+
+  sourceGradientCSS(source, angle = "180deg") {
+    const [start, end] = this.sourceStops(source);
+    return `linear-gradient(${angle}, ${start}, ${end})`;
+  },
+
+  sourceGradient(source, direction = "vertical") {
+    const [start, end] = this.sourceStops(source);
+    if (typeof echarts === "undefined" || !echarts.graphic || !echarts.graphic.LinearGradient) {
+      return start;
+    }
+    const horizontal = direction === "horizontal";
+    return new echarts.graphic.LinearGradient(
+      0, 0, horizontal ? 1 : 0, horizontal ? 0 : 1,
+      [{ offset: 0, color: start }, { offset: 1, color: end }],
+    );
   },
 
   prune() {

@@ -200,7 +200,7 @@ const SpeedView = {
       })),
       series: keys.map((key, i) => ({
         name: sourceLabelA2(key), type: "bar", xAxisIndex: i, yAxisIndex: i,
-        itemStyle: {color: ChartRegistry.sourceColor(key), borderRadius: [3, 3, 0, 0]},
+        itemStyle: {color: ChartRegistry.sourceGradient(key), borderRadius: [3, 3, 0, 0]},
         data: buckets.map((bucket) => {
           const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
           return row ? row.contribution_tps || 0 : 0;
