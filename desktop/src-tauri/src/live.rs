@@ -176,7 +176,6 @@ fn normalize_endpoint_identity(endpoint: &str) -> String {
 }
 
 const MAX_POPOVER_ITEMS: usize = 3;
-const URGENT_RESET_MINUTES: i64 = 30;
 
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -215,18 +214,6 @@ struct SessionView {
 }
 
 #[derive(Serialize, Clone, Debug)]
-struct RiskView {
-    source: String,
-    used_percent: f64,
-    projected_percent: f64,
-    remaining_minutes: i64,
-    start_ms: i64,
-    end_ms: i64,
-    resets_at: i64,
-    promoted: bool,
-}
-
-#[derive(Serialize, Clone, Debug)]
 struct DeviceView {
     name: String,
     state: String,
@@ -240,11 +227,6 @@ struct PopoverView {
     activity: ActivityView,
     sessions: Vec<SessionView>,
     sessions_more: usize,
-    risk: Option<RiskView>,
-    quota_summary: String,
-    quotas_more: usize,
-    quota_reset_minutes: Option<i64>,
-    burn_per_minute: Option<i64>,
     devices: Vec<DeviceView>,
     devices_more: usize,
     device_online: usize,
@@ -387,122 +369,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
     let sessions_more = sessions.len().saturating_sub(MAX_POPOVER_ITEMS);
     sessions.truncate(MAX_POPOVER_ITEMS);
 
-    let windows = payload
-        .and_then(|data| data.get("windows"))
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let risk = windows
-        .iter()
-        .filter(|window| {
-            window
-                .get("authoritative")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && window
-                    .get("resets_at")
-                    .and_then(Value::as_i64)
-                    .is_some_and(|resets_at| resets_at > 0)
-                && (window
-                    .get("projected_percent")
-                    .and_then(Value::as_f64)
-                    .is_some_and(|projected| projected > 100.0)
-                    || window
-                        .get("remaining_minutes")
-                        .and_then(Value::as_i64)
-                        .is_some_and(|remaining| (0..=URGENT_RESET_MINUTES).contains(&remaining)))
-        })
-        .max_by(|a, b| {
-            let a_projected = a
-                .get("projected_percent")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
-            let b_projected = b
-                .get("projected_percent")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
-            let a_breach = a_projected > 100.0;
-            let b_breach = b_projected > 100.0;
-            a_breach
-                .cmp(&b_breach)
-                .then_with(|| a_projected.total_cmp(&b_projected))
-        })
-        .map(|window| RiskView {
-            source: window
-                .get("label")
-                .and_then(Value::as_str)
-                .or_else(|| window.get("key").and_then(Value::as_str))
-                .unwrap_or("配额")
-                .to_string(),
-            used_percent: window
-                .get("used_percent")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0),
-            projected_percent: window
-                .get("projected_percent")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0),
-            remaining_minutes: window
-                .get("remaining_minutes")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-            start_ms: window.get("start_ms").and_then(Value::as_i64).unwrap_or(0),
-            end_ms: window.get("end_ms").and_then(Value::as_i64).unwrap_or(0),
-            resets_at: window.get("resets_at").and_then(Value::as_i64).unwrap_or(0),
-            promoted: true,
-        });
-
-    let quotas = payload
-        .and_then(|data| data.get("quotas"))
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let quota_summary = quotas
-        .iter()
-        .take(MAX_POPOVER_ITEMS)
-        .map(|quota| {
-            let source = source_label(quota.get("source").and_then(Value::as_str).unwrap_or(""));
-            let window = quota
-                .get("window_label")
-                .and_then(Value::as_str)
-                .filter(|label| !label.is_empty())
-                .unwrap_or("窗口");
-            let scope = quota
-                .get("scope")
-                .and_then(Value::as_str)
-                .filter(|scope| !scope.is_empty())
-                .map(|scope| format!(" [{scope}]"))
-                .unwrap_or_default();
-            let device = quota
-                .get("device")
-                .and_then(Value::as_str)
-                .filter(|device| !device.is_empty());
-            let identity = device
-                .map(|device| format!("{source} {window}{scope} · {device}"))
-                .unwrap_or_else(|| format!("{source} {window}{scope}"));
-            let reset = quota
-                .get("resets_at")
-                .and_then(Value::as_i64)
-                .filter(|resets_at| *resets_at > 0)
-                .and_then(|_| quota.get("remaining_minutes").and_then(Value::as_i64))
-                .filter(|remaining| *remaining >= 0)
-                .map(|remaining| format!(" · {remaining} 分钟后重置"))
-                .unwrap_or_default();
-            format!(
-                "{identity} {:.0}%{reset}",
-                quota
-                    .get("used_percent")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" / ");
-    let quotas_more = quotas.len().saturating_sub(MAX_POPOVER_ITEMS);
-    // Reset timing is embedded beside the quota it describes. A single tail
-    // would be ambiguous when one provider exposes several windows.
-    let quota_reset_minutes = None;
-
     let mut devices: Vec<DeviceView> = payload
         .and_then(|data| data.get("devices"))
         .and_then(Value::as_array)
@@ -566,14 +432,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         activity,
         sessions,
         sessions_more,
-        risk,
-        quota_summary,
-        quotas_more,
-        quota_reset_minutes,
-        burn_per_minute: payload
-            .and_then(|data| data.get("burn"))
-            .and_then(|burn| burn.get("per_minute"))
-            .and_then(Value::as_i64),
         devices,
         devices_more,
         device_online,
@@ -1481,10 +1339,46 @@ mod tests {
         assert_eq!(view.device_online, 3);
         assert_eq!(view.device_total, 4);
         assert_eq!(view.devices[0].name, "macmini");
-        assert!(view.risk.is_none());
-        assert!(view
-            .quota_summary
-            .contains("Claude 5 小时窗口 [five_hour] · macmini 42% · 192 分钟后重置"));
+    }
+
+    /// The A2 popover renders speed, 5h usage, today's models, contributors and
+    /// devices. Quota kept its consumers elsewhere — the tray glyph and title go
+    /// through `tray_readings`, the warnings through `Alerts` — so none of it has
+    /// to ride along here. A serialized field no reader consumes is worse than
+    /// absent: it reads like a supported contract and the next person wires a
+    /// view to it.
+    #[test]
+    fn popover_payload_carries_no_field_the_webview_cannot_read() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {"tps":68.0,"sessions":[]},
+            "processes": {"sessions":[]},
+            "devices": [],
+            "quotas": [
+                {"source":"claude-code","scope":"five_hour","window_label":"5 小时窗口","device":"macmini","used_percent":42.0,"resets_at":99_999,"remaining_minutes":192}
+            ],
+            "windows": [
+                {"key":"breach","label":"Claude","authoritative":true,"used_percent":62.0,"projected_percent":121.0,"remaining_minutes":80,"start_ms":1,"end_ms":2,"resets_at":3}
+            ],
+            "burn": {"per_minute":3100}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live, 13_000);
+        let encoded = serde_json::to_value(&view).expect("popover view serializes");
+        let fields = encoded.as_object().expect("popover view is an object");
+
+        for dead in [
+            "risk",
+            "quota_summary",
+            "quotas_more",
+            "quota_reset_minutes",
+            "burn_per_minute",
+        ] {
+            assert!(
+                !fields.contains_key(dead),
+                "popover payload still carries `{dead}`, which desktop/ui/app.js never reads"
+            );
+        }
     }
 
     #[test]
@@ -1522,43 +1416,11 @@ mod tests {
         assert_eq!(view.activity.text, "活动未知");
     }
 
+    /// Quota payloads must stay harmless to the popover: it neither renders them
+    /// nor may it choke on the shapes the tray and the alerts still care about
+    /// (missing `resets_at`, several scopes under one window label).
     #[test]
-    fn risk_view_promotes_only_projected_breach_or_urgent_reset() {
-        let payload = json!({
-            "generated_at": 10_000,
-            "speed":{"tps":10.0,"sessions":[]},
-            "processes":{"sessions":[]},
-            "devices":[],
-            "quotas":[],
-            "windows":[
-                {"key":"safe","label":"Safe","authoritative":true,"used_percent":80.0,"projected_percent":95.0,"remaining_minutes":90},
-                {"key":"breach","label":"Claude","authoritative":true,"used_percent":62.0,"projected_percent":121.0,"remaining_minutes":80,"start_ms":1,"end_ms":2,"resets_at":3},
-                {"key":"urgent","label":"Codex","authoritative":true,"used_percent":20.0,"projected_percent":30.0,"remaining_minutes":20}
-            ],
-            "burn":{"per_minute":10}
-        });
-
-        let view = view_for(Some(&payload), ConnectionKind::Live, 11_000);
-
-        assert_eq!(view.risk.as_ref().unwrap().source, "Claude");
-        assert_eq!(view.risk.as_ref().unwrap().projected_percent, 121.0);
-        assert!(view.risk.as_ref().unwrap().promoted);
-
-        let expired_only = json!({
-            "generated_at": 10_000,
-            "speed":{"tps":0.0,"sessions":[]},
-            "processes":{"sessions":[]},
-            "devices":[],
-            "quotas":[],
-            "windows":[
-                {"key":"expired","authoritative":true,"used_percent":80.0,"projected_percent":95.0,"remaining_minutes":-1}
-            ],
-            "burn":{"per_minute":0}
-        });
-        assert!(view_for(Some(&expired_only), ConnectionKind::Live, 11_000)
-            .risk
-            .is_none());
-
+    fn quota_shapes_do_not_disturb_the_popover_view() {
         let unknown_reset = json!({
             "generated_at": 10_000,
             "speed":{"tps":0.0,"sessions":[]},
@@ -1584,15 +1446,10 @@ mod tests {
             "burn":{"per_minute":0}
         });
         let view = view_for(Some(&unknown_reset), ConnectionKind::Live, 11_000);
-        assert!(view.risk.is_none());
-        assert!(view
-            .quota_summary
-            .contains("Claude 7 天窗口 [seven_day_sonnet] · macmini 42%"));
-        assert!(view
-            .quota_summary
-            .contains("Claude 7 天窗口 [seven_day_opus] · macmini 18%"));
-        assert!(!view.quota_summary.contains("重置"));
-        assert_eq!(view.quota_reset_minutes, None);
+
+        assert_eq!(view.activity.kind, ActivityKind::Idle);
+        assert_eq!(view.connection.kind, ConnectionKind::Live);
+        assert!(view.sessions.is_empty());
     }
 
     #[test]
