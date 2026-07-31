@@ -24,3 +24,4 @@ ADR 标注 supersedes,不改写历史。
 | [0017](0017-additive-speed-contributions.md) | 速度分解:共享时间轴上的可加和来源/会话贡献(补充 0009) | 已采纳 |
 | [0018](0018-billing-channel-classification.md) | 计费通道三分类:订阅/官方 API/第三方,判据为逐事件 requestId | 已采纳 |
 | [0019](0019-device-identity-merge.md) | 设备身份合并:用户显式发起的覆盖,与自动覆盖的边界 | 已采纳 |
+| [0020](0020-codex-resume-duplicate-events.md) | Codex 分叉线程复制历史:加第二把去重键 dedup_key,不改 event_id | 已采纳 |
