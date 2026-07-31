@@ -250,4 +250,9 @@ func TestSpeedByModelReportsTTFTSeparatelyFromSpeed(t *testing.T) {
 	if stats[0].Samples != 4 {
 		t.Errorf("samples = %d, want 4: TTFT coverage is its own question", stats[0].Samples)
 	}
+	// The page labels a Codex row as a lower bound, so the row has to say which
+	// channel measured it.
+	if len(stats[0].Sources) != 1 || stats[0].Sources[0] != "codex" {
+		t.Errorf("sources = %v, want [codex]", stats[0].Sources)
+	}
 }
