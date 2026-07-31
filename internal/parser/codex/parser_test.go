@@ -1,8 +1,12 @@
 package codex
 
 import (
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 const sessionMeta = `{"timestamp":"2026-07-26T02:59:50.563Z","type":"session_meta","payload":{"session_id":"s-1","id":"r-1","cwd":"/home/u/proj","cli_version":"0.146.0","model_provider":"openai"}}`
@@ -69,6 +73,323 @@ func TestTotalsDeltaFallback(t *testing.T) {
 	// second event = totals delta
 	if events[1].InputTokens != (300-100)-(60-10) || events[1].CacheReadTokens != 50 || events[1].OutputTokens != 75 {
 		t.Errorf("delta wrong: %+v", events[1])
+	}
+}
+
+// --- turn bracketing (ADR-0009, 2026-07-31 revision) ---
+//
+// Shapes copied from real rollouts under ~/.codex/sessions: task_started and
+// task_complete bracket a turn by FILE POSITION, the token_count lines in
+// between carry no turn_id, and the closing line's started_at/completed_at/
+// duration_ms/time_to_first_token_ms are Codex's own authoritative timing
+// rather than anything derived from the log line's timestamp.
+
+func taskStarted(ts string, startedAt int64) string {
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"task_started",` +
+		`"turn_id":"019fb32d-ff2e-7f53-8849-b3afd49b81d5","started_at":` + itoa(startedAt) +
+		`,"model_context_window":258400,"collaboration_mode_kind":"default"}}`
+}
+
+func taskComplete(ts string, startedAt, completedAt, durationMS, ttftMS int64) string {
+	s := `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"task_complete",` +
+		`"turn_id":"019fb32d-ff2e-7f53-8849-b3afd49b81d5","last_agent_message":"done",` +
+		`"started_at":` + itoa(startedAt) + `,"completed_at":` + itoa(completedAt) +
+		`,"duration_ms":` + itoa(durationMS)
+	if ttftMS > 0 {
+		s += `,"time_to_first_token_ms":` + itoa(ttftMS)
+	}
+	return s + `}}`
+}
+
+func turnAborted(ts string, startedAt, completedAt, durationMS int64) string {
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"turn_aborted",` +
+		`"turn_id":"019fb5a4-450f-7400-ae9b-a06b8b85c335","reason":"interrupted","started_at":` +
+		itoa(startedAt) + `,"completed_at":` + itoa(completedAt) + `,"duration_ms":` + itoa(durationMS) + `}}`
+}
+
+func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func usageJSON(out, reasoning int64) string {
+	return `{"input_tokens":1000,"cached_input_tokens":0,"cache_write_input_tokens":0,` +
+		`"output_tokens":` + itoa(out) + `,"reasoning_output_tokens":` + itoa(reasoning) +
+		`,"total_tokens":` + itoa(1000+out+reasoning) + `}`
+}
+
+// One real turn: 03:00:00 start, three model responses, closed at 03:00:50.5
+// with duration 50,500ms and TTFT 5,000ms — so 45,500ms of generation.
+func turnLines() []string {
+	const startedAt, completedAt = 1785034800, 1785034850
+	return []string{
+		sessionMeta, turnCtx,
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		tokenCount("2026-07-26T03:00:12.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+		tokenCount("2026-07-26T03:00:30.000Z", usageJSON(150, 50), usageJSON(300, 50)),
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(200, 100), usageJSON(600, 200)),
+		taskComplete("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500, 5000),
+	}
+}
+
+func parseLines(t *testing.T, lines []string) []model.Event {
+	t.Helper()
+	return Parse(strings.NewReader(strings.Join(lines, "\n")+"\n"), "d", 0).Events
+}
+
+// unionMS merges [ts-gen_ms, ts] the way store.SpeedSeries and
+// store.LiveSpeedSince do, so the test asserts what those views will measure.
+func unionMS(events []model.Event) int64 {
+	type span struct{ start, end int64 }
+	var spans []span
+	for _, e := range events {
+		if e.GenMS > 0 {
+			spans = append(spans, span{e.TS - e.GenMS, e.TS})
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	var total, curStart, curEnd int64
+	for i, s := range spans {
+		if i == 0 || s.start > curEnd {
+			total += curEnd - curStart
+			curStart, curEnd = s.start, s.end
+			continue
+		}
+		curEnd = max(curEnd, s.end)
+	}
+	return total + curEnd - curStart
+}
+
+func TestTurnGenerationIntervalIsAuthoritative(t *testing.T) {
+	events := parseLines(t, turnLines())
+	if len(events) != 3 {
+		t.Fatalf("want 3 events, got %d", len(events))
+	}
+	const gen = 50500 - 5000
+	// Every event of a measured turn carries part of the interval, so the union
+	// is the turn's generation time and Σoutput is the whole turn's output.
+	for i, e := range events {
+		if e.GenMS <= 0 {
+			t.Errorf("event %d has no generation interval: %+v", i, e)
+		}
+	}
+	if got := unionMS(events); got != gen {
+		t.Errorf("union of generation intervals = %d, want %d (duration_ms - time_to_first_token_ms)", got, gen)
+	}
+	// The interval must end at the last response and start where generation
+	// began, not at the turn's own first log line.
+	if start := events[0].TS - events[0].GenMS; start != events[2].TS-gen {
+		t.Errorf("interval starts at %d, want %d", start, events[2].TS-gen)
+	}
+	// TTFT is Codex's own exact number: reported once, on the response whose
+	// latency it measured.
+	if events[0].TTFTMS != 5000 {
+		t.Errorf("first event ttft_ms = %d, want 5000", events[0].TTFTMS)
+	}
+	for i, e := range events[1:] {
+		if e.TTFTMS != 0 {
+			t.Errorf("event %d must not repeat the turn's TTFT: %d", i+1, e.TTFTMS)
+		}
+	}
+	var out int64
+	for _, e := range events {
+		out += e.OutputTokens
+	}
+	if out != 100+150+200 {
+		t.Errorf("output tokens over the turn = %d, want 450", out)
+	}
+}
+
+// A resumed session replays the whole prior thread into a new rollout with the
+// flush time on every line, while started_at/completed_at keep the real epoch.
+// Those turns must be left unmeasured rather than dropped onto the timeline at
+// the moment of the replay — the ADR's "no data" is not "zero speed".
+func TestReplayedTurnCarriesNoInterval(t *testing.T) {
+	const flush = "2026-07-26T09:13:26.384Z"
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskStarted(flush, startedAt),
+		tokenCount(flush, usageJSON(100, 0), usageJSON(100, 0)),
+		tokenCount("2026-07-26T09:13:26.385Z", usageJSON(150, 50), usageJSON(300, 50)),
+		taskComplete("2026-07-26T09:13:26.386Z", startedAt, completedAt, 50500, 5000),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.GenMS != 0 || e.TTFTMS != 0 {
+			t.Errorf("replayed event %d must stay unmeasured: gen=%d ttft=%d", i, e.GenMS, e.TTFTMS)
+		}
+	}
+}
+
+// turn_aborted and older task_complete records carry no time_to_first_token_ms,
+// so the generation interval cannot be separated from the wait for it.
+func TestTurnWithoutTTFTCarriesNoInterval(t *testing.T) {
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		tokenCount("2026-07-26T03:00:12.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+		turnAborted("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if events[0].GenMS != 0 || events[0].TTFTMS != 0 {
+		t.Errorf("aborted turn must stay unmeasured: %+v", events[0])
+	}
+}
+
+// The turn in flight has no closing record yet; the next full reparse (Codex
+// files are re-read whole) fills the interval in through the store's UPSERT.
+func TestOpenTurnCarriesNoIntervalYet(t *testing.T) {
+	lines := turnLines()
+	events := parseLines(t, lines[:len(lines)-1])
+	if len(events) != 3 {
+		t.Fatalf("want 3 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.GenMS != 0 {
+			t.Errorf("event %d of an unfinished turn must stay unmeasured: %d", i, e.GenMS)
+		}
+	}
+}
+
+// A turn whose token_count lines span more than the generation interval (tool
+// output arriving after the last response) must still union to exactly the
+// authoritative interval, and no event may lose its tokens to a zero interval.
+func TestOverlongTurnSpanScalesToAuthoritativeInterval(t *testing.T) {
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		tokenCount("2026-07-26T03:00:12.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+		tokenCount("2026-07-26T03:00:30.000Z", usageJSON(150, 50), usageJSON(300, 50)),
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(200, 100), usageJSON(600, 200)),
+		taskComplete("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500, 40000),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 3 {
+		t.Fatalf("want 3 events, got %d", len(events))
+	}
+	if got := unionMS(events); got != 50500-40000 {
+		t.Errorf("union = %d, want %d", got, 50500-40000)
+	}
+	for i, e := range events {
+		if e.GenMS <= 0 {
+			t.Errorf("event %d lost its interval and would drop out of Σoutput: %+v", i, e)
+		}
+	}
+}
+
+// A one-response turn takes the whole interval, and the noise around it
+// (agent_message, patch_apply_end, a closing record with no turn open) must
+// neither create nor move an interval.
+func TestSingleResponseTurnAndSurroundingNoise(t *testing.T) {
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskComplete("2026-07-26T02:59:59.000Z", startedAt, completedAt, 1000, 100), // no turn open
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		`{"timestamp":"2026-07-26T03:00:11.000Z","type":"event_msg","payload":{"type":"agent_message","message":"x"}}`,
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(400, 100), usageJSON(400, 100)),
+		taskComplete("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500, 5000),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if events[0].GenMS != 50500-5000 || events[0].TTFTMS != 5000 {
+		t.Errorf("single-response turn: gen=%d ttft=%d", events[0].GenMS, events[0].TTFTMS)
+	}
+}
+
+// Two responses written in the same millisecond still both need an interval:
+// the views that union the intervals sum output_tokens over the same rows, so a
+// zero interval would silently drop a response's tokens from the numerator.
+func TestNoEventLosesItsIntervalToRounding(t *testing.T) {
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(150, 50), usageJSON(300, 50)),
+		taskComplete("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500, 5000),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.GenMS <= 0 {
+			t.Errorf("event %d has no interval: %+v", i, e)
+		}
+	}
+	if got := unionMS(events); got != 50500-5000 {
+		t.Errorf("union = %d, want %d", got, 50500-5000)
+	}
+}
+
+// Only part of the turn was replayed: the closing record's clocks agree, but an
+// event inside it carries a timestamp from outside the turn's own window.
+func TestPartiallyReplayedTurnCarriesNoInterval(t *testing.T) {
+	const startedAt, completedAt = 1785034800, 1785034850
+	lines := []string{
+		sessionMeta, turnCtx,
+		taskStarted("2026-07-26T03:00:00.010Z", startedAt),
+		tokenCount("2026-07-26T00:12:00.000Z", usageJSON(100, 0), usageJSON(100, 0)), // hours earlier
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(150, 50), usageJSON(300, 50)),
+		taskComplete("2026-07-26T03:00:50.500Z", startedAt, completedAt, 50500, 5000),
+	}
+	events := parseLines(t, lines)
+	if len(events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.GenMS != 0 || e.TTFTMS != 0 {
+			t.Errorf("event %d of a partially replayed turn must stay unmeasured: %+v", i, e)
+		}
+	}
+}
+
+// ADR-0004's iron law: identity may not move. Bracketing turns adds no line to
+// the sequence and reads no field the id is built from.
+func TestEventIDsUnaffectedByTurnBracketing(t *testing.T) {
+	full := parseLines(t, turnLines())
+	bare := parseLines(t, []string{
+		sessionMeta, turnCtx,
+		tokenCount("2026-07-26T03:00:12.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+		tokenCount("2026-07-26T03:00:30.000Z", usageJSON(150, 50), usageJSON(300, 50)),
+		tokenCount("2026-07-26T03:00:45.000Z", usageJSON(200, 100), usageJSON(600, 200)),
+	})
+	if len(full) != len(bare) {
+		t.Fatalf("event count changed: %d vs %d", len(full), len(bare))
+	}
+	for i := range full {
+		if full[i].EventID != bare[i].EventID {
+			t.Errorf("event %d id moved: %s != %s", i, full[i].EventID, bare[i].EventID)
+		}
+	}
+}
+
+// Golden ids: a literal so that any change to the derivation (rollout id,
+// timestamp, sequence, usage) fails here instead of silently double-counting
+// every event already in the database.
+func TestEventIDsStable(t *testing.T) {
+	events := parseLines(t, turnLines())
+	want := []string{
+		"cx:2dcff158c0c1785ceda46ff4",
+		"cx:f273419784fdb6ae06447a5d",
+		"cx:db1fc090060864cbb8351ff9",
+	}
+	for i, e := range events {
+		if i >= len(want) {
+			break
+		}
+		if e.EventID != want[i] {
+			t.Errorf("event %d id = %s, want %s (event_id derivation must never change)", i, e.EventID, want[i])
+		}
 	}
 }
 
