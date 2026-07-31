@@ -16,7 +16,8 @@ cross a ceiling?” but:
 4. What is today’s cumulative total and how is it distributed across models?
 5. Which sessions, devices, and models caused the observed speed?
 
-The selected visual direction is **Telemetry Studio A2**: a dark, high-contrast
+The selected visual direction is **Telemetry Studio A4** (the approved fourth
+iteration of the A direction): a dark, high-contrast
 instrument panel with restrained gradients, compact analytical cards, temporal
 speed bars, and source-specific colors.
 
@@ -419,14 +420,36 @@ seconds.
 
 ## 9. Visual system
 
+- **Normative reference:** the approved prototype served at
+  `http://localhost:56187/`, backed by
+  `.superpowers/brainstorm/38641-1785460784/content/telemetry-studio-a4-separated-web-lanes.html`
+  in the redesign worktree. When prose and the prototype differ, the prototype
+  controls visual appearance while this document controls data semantics,
+  accessibility, and error states.
+- The prototype is not merely a mood board. Web and the installed menu bar must
+  visibly belong to the same A4 system: near-black canvas, indigo radial
+  ambience, blue-black gradient surfaces, fine lavender borders, strong white
+  telemetry numerals, and source-colored gradient bars.
+- Canonical base tokens: page `#090b15`; surface gradient `#181a36 → #0d1022`;
+  card gradient `#14182f → #0e1226`; border `#2b3352`; primary text `#f7f8ff`;
+  secondary text `#9aa5c2`; muted text `#7f89a7`.
 - Base: deep indigo/graphite surfaces with clear border separation.
-- Claude: warm orange.
-- Codex: clear blue.
-- Current/healthy status: restrained mint.
-- Exceptional peak or error: magenta/red only when semantically meaningful.
+- Claude: warm orange `#f2a16c`, with bars fading toward `#8d4d35`.
+- Codex: clear blue `#67c9ff`, with bars fading toward `#315b8e`.
+- Other/API: violet `#a982ee`, with bars fading toward `#5f458f`.
+- Current/healthy status: restrained mint `#67e4b9`.
+- Exceptional peak: magenta `#ff72a7`; destructive/error red remains separate.
 - Typography: system sans for labels, tabular display numerals for telemetry.
-- Gradients communicate magnitude or grouping; they are not decorative page
-  backgrounds inside every card.
+- The page uses the prototype's two restrained radial ambient gradients.
+  Surfaces and source bars use the prototype gradients; ordinary text blocks
+  do not invent additional decorative gradients.
+- Web uses the A4 navigation header and 12-column analytical grid at desktop
+  widths. The menu bar uses the A4 single-column instrument ordering. They
+  share tokens, borders, numeric hierarchy, source colors, and chart treatment;
+  only information density and navigation differ.
+- Card radius is 16px on Web and 12–17px in the popover; the outer popover and
+  main Web surface use 24px. Hairlines remain 1px and shadows are deep, broad,
+  and low-opacity rather than light-theme elevation shadows.
 - Motion is limited to data transitions and respects `prefers-reduced-motion`.
 - No chart uses color as its only source distinction; labels and accessible
   descriptions accompany it.

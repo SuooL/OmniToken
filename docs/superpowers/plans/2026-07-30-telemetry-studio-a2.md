@@ -857,3 +857,57 @@ gh pr create --base dev --head codex/telemetry-studio-a2 \
 The PR body includes metric equations, test/build evidence, installed-app
 verification, screenshots, migration notes, and the Codex speed coverage
 boundary.
+
+### Task 13: Align production visuals with the approved A4 prototype
+
+**Trigger:** Installed Web and menu bar were functionally correct but visually
+diverged from the approved prototype at `http://localhost:56187/`. The prototype
+is now explicitly normative in the design spec.
+
+**Files:**
+- Modify: `web/tokens.css`
+- Modify: `web/style.css`
+- Modify only page JS/HTML needed to reproduce A4 component geometry.
+- Modify: `desktop/ui/index.html`
+- Modify: `desktop/ui/style.css`
+- Modify: `desktop/ui/app.js` only for A4 chart geometry/classes.
+- Sync: `desktop/ui/tokens.css`
+
+- [ ] **Step 1: Add visual contract tests**
+
+Require the canonical A4 canvas/surface/text/source tokens, ambient background,
+gradient source bars, 24px outer surfaces, dark-only color scheme, and shared
+Web/menu source palette. Tests must fail against the light A2 production theme.
+
+- [ ] **Step 2: Rebuild the shared A4 tokens and Web shell**
+
+Use the prototype's near-black canvas, indigo ambience, blue-black surfaces,
+lavender hairlines, high-contrast telemetry typography, and analytical
+12-column layout. Preserve all routes, data contracts, error states, keyboard
+behavior, and reduced motion.
+
+- [ ] **Step 3: Align every Web route**
+
+Apply the same A4 card, table, filter, chart, empty/stale, and navigation
+treatment across all nine routes. Do not leave light-theme islands or generic
+white cards.
+
+- [ ] **Step 4: Align the menu bar**
+
+Reproduce the prototype's single-column instrument surface: borderless hero
+divider, two compact 5h cards, gradient source lanes, compact three-stat row,
+daily model composition, and contributor list. Retain the verified dynamic
+height, scroll, unknown/401 behavior, and installed-app actions.
+
+- [ ] **Step 5: Verify side by side**
+
+Compare the prototype, production Web, and installed popover at the same scale.
+The acceptance criterion is recognizable visual-system identity, not merely
+similar colors. Run browser route/overflow checks and installed-app AX/screenshot
+inspection.
+
+- [ ] **Step 6: Rebuild and reinstall**
+
+Run `make check`, `make desktop-check`, rebuild/sign the Tauri bundle, replace
+the installed app recoverably, restart the Hub only if Web assets changed, and
+verify `/api/v1/telemetry` plus the installed popover.
