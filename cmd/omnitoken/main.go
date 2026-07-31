@@ -101,9 +101,13 @@ func runServe(args []string) {
 			log.Fatalf("rescan: %v", err)
 		}
 		// Worth saying out loud: this looks alarming and is not. Re-import is
-		// idempotent on event_id, so the pass ahead can only fill in derived
-		// fields (ADR-0009's gen_ms today) — no count changes.
-		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次启动将重扫全部本地日志(幂等,只回填派生字段)", n)
+		// idempotent on event_id, so the pass ahead fills in derived fields
+		// (ADR-0009's gen_ms) and cannot add a count. It can now REMOVE one, and
+		// exactly one thing does that: a Codex fork that copied a generation
+		// into a second rollout is collapsed back to one row (ADR-0020). That
+		// happens once; every rescan after it reports nothing.
+		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次启动将重扫全部本地日志"+
+			"(幂等:回填派生字段;首次还会清掉 Codex 分叉重复计入的行,见 ADR-0020)", n)
 	}
 	log.Fatal(srv.Run())
 }
@@ -216,7 +220,10 @@ func runAgent(args []string) {
 		if err != nil {
 			log.Fatalf("rescan: %v", err)
 		}
-		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次将重扫全部本地日志(幂等,只回填派生字段)", n)
+		// Same caveat as serve's: idempotent, except that the first pass after
+		// ADR-0020 collapses Codex's forked copies back to one row each.
+		log.Printf("rescan: 已清空 %d 个文件的读取位点,本次将重扫全部本地日志"+
+			"(幂等:回填派生字段;首次还会清掉 Codex 分叉重复计入的行,见 ADR-0020)", n)
 	}
 	if *once {
 		n, err := a.RunOnce()

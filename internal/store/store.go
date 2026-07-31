@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS events (
 	git_branch TEXT NOT NULL DEFAULT '',
 	repo TEXT NOT NULL DEFAULT '',
 	app_version TEXT NOT NULL DEFAULT '',
-	received_at INTEGER NOT NULL DEFAULT 0
+	received_at INTEGER NOT NULL DEFAULT 0,
+	dedup_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_device_ts ON events(device, ts);
@@ -76,6 +77,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateEventsDeviceOrigin(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateEventsDedupKey(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -191,6 +196,37 @@ func migrateEventsDeviceOrigin(db *sql.DB) error {
 	return err
 }
 
+// migrateEventsDedupKey adds the second uniqueness constraint of ADR-0020.
+//
+// The column comes first and the index second, in that order and in this one
+// place, because both paths have to converge: a fresh database gets the column
+// from CREATE TABLE, an existing one gets it from the ALTER, and only then can
+// the index be built over it.
+//
+// Existing rows start empty and are filled in by the next full rescan, the same
+// way gen_ms was (ADR-0009). Empty is exempt from the constraint on purpose: it
+// means "this source offers no second opinion", which is every row written
+// before this migration and every row from a source other than Codex. Were empty
+// treated as a value, the first two such rows would collide and the constraint
+// would swallow the entire database.
+func migrateEventsDedupKey(db *sql.DB) error {
+	var sqlText string
+	switch err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText); {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return err
+	case !strings.Contains(sqlText, "dedup_key"):
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup_key ON events(dedup_key) WHERE dedup_key != ''`)
+	return err
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertEvents is idempotent: duplicates (same event_id) are ignored, so
@@ -233,6 +269,12 @@ type eventApplyResult struct {
 	inserted     int
 	filled       int
 	reattributed int
+	// deduped counts rows deleted because a second rollout file held a copy of
+	// the same generation (ADR-0020). It is the only counter here that reports a
+	// decrease, so it is logged separately and loudly: on this machine the first
+	// rescan after the change is expected to remove 845 rows, and every rescan
+	// after that must report zero.
+	deduped int
 	// reclassified counts rows whose billing channel evidence improved, keyed
 	// by the new provider label — ADR-0018 §5.5 requires the reclassification
 	// to be auditable, so that "归属变了、总数没变" can actually be checked.
@@ -240,10 +282,14 @@ type eventApplyResult struct {
 }
 
 func (r eventApplyResult) mutated() bool {
-	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0 || len(r.reclassified) > 0
+	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0 || r.deduped > 0 || len(r.reclassified) > 0
 }
 
 func logEventApply(result eventApplyResult) {
+	if result.deduped > 0 {
+		log.Printf("store: 删除 %d 行 —— Codex 分叉线程把同一次生成复制进了第二个 rollout,"+
+			"每组只保留时间戳在先的那条(ADR-0020);这是唯一一处会让计数下降的操作", result.deduped)
+	}
 	if result.filled > 0 {
 		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", result.filled)
 	}
@@ -264,12 +310,60 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 		(event_id, ts, device, device_origin, source, model, provider, account_label,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		 cache_1h_tokens, cache_5m_tokens, duration_ms, gen_ms, ttft_ms,
-		 session_id, cwd, git_branch, repo, app_version, received_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		 session_id, cwd, git_branch, repo, app_version, received_at, dedup_key)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return result, err
 	}
 	defer stmt.Close()
+	insert := func(e model.Event) (bool, error) {
+		res, err := stmt.Exec(e.EventID, e.TS, e.Device, string(origin), e.Source, e.Model, e.Provider, e.AccountLabel,
+			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
+			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
+			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt, e.DedupKey)
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		return n > 0, nil
+	}
+
+	// The dedup key's own statements (ADR-0020). `INSERT OR IGNORE` above already
+	// refuses a row whose key is taken — the unique index sees to that — but
+	// refusing is not enough on its own, for two reasons:
+	//
+	//   - which copy is kept must not depend on which file was scanned first. A
+	//     fork stamps its copy with the flush instant, so the copy's ts is
+	//     fiction: keeping it would paint an eleven-day-old turn onto the day the
+	//     fork happened. The rule is therefore data-driven — smaller ts wins —
+	//     and it is also provably the original, since a fork can only ever happen
+	//     after the generation it copies;
+	//   - the copies already in the database were written before the key existed.
+	//     They are found by backfilling the key onto rows that have none, which
+	//     is the same "fill a derived column, never a count" move ADR-0009 made
+	//     for gen_ms; the collision that follows is what identifies them.
+	keyOwner, err := tx.Prepare(`SELECT event_id, ts FROM events WHERE dedup_key = ?`)
+	if err != nil {
+		return result, err
+	}
+	defer keyOwner.Close()
+	keyFill, err := tx.Prepare(`UPDATE events SET dedup_key = ?1 WHERE event_id = ?2 AND dedup_key = ''`)
+	if err != nil {
+		return result, err
+	}
+	defer keyFill.Close()
+	// The one statement in this file that removes a row, and the only one
+	// anywhere that can make a count go down. Its safety is not in a guard but in
+	// where it is called from: only after the store has both copies in hand and
+	// has established that they carry the same dedup key, and it only ever names
+	// the one of the two whose timestamp is later. CLAUDE.md records it as the
+	// single exception to "覆盖从不碰计数列", because being counted twice is a
+	// count problem by definition.
+	dropCopy, err := tx.Prepare(`DELETE FROM events WHERE event_id = ?`)
+	if err != nil {
+		return result, err
+	}
+	defer dropCopy.Close()
 
 	// Merging a second observation of an already-known event (ADR-0009 for
 	// gen_ms, ADR-0013 for the rest). Two things make this necessary: a rescan
@@ -401,19 +495,60 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 		if e.EventID == "" {
 			continue
 		}
-		res, err := stmt.Exec(e.EventID, e.TS, e.Device, string(origin), e.Source, e.Model, e.Provider, e.AccountLabel,
-			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
-			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
-			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt)
+		stored, err := insert(e)
 		if err != nil {
 			return result, err
 		}
-		if n, _ := res.RowsAffected(); n > 0 {
+		if !stored && e.DedupKey != "" {
+			// Refused: either this event_id is known, or another row already
+			// holds this generation. Only the second case needs deciding.
+			var ownerID string
+			var ownerTS int64
+			switch err := keyOwner.QueryRow(e.DedupKey).Scan(&ownerID, &ownerTS); {
+			case err == sql.ErrNoRows: // the key is free; this is a plain event_id repeat
+			case err != nil:
+				return result, err
+			case ownerID != e.EventID && e.TS >= ownerTS:
+				// This one is the fork's copy. Drop it, including any row an
+				// earlier scan wrote for it back when nothing could tell.
+				r, err := dropCopy.Exec(e.EventID)
+				if err != nil {
+					return result, err
+				}
+				// deduped counts rows the database lost, not copies refused —
+				// that is the number the user can check against a row count.
+				n, _ := r.RowsAffected()
+				result.deduped += int(n)
+				continue
+			case ownerID != e.EventID:
+				// This one is the original and the stored row is the copy.
+				if _, err := dropCopy.Exec(ownerID); err != nil {
+					return result, err
+				}
+				result.deduped++
+				if stored, err = insert(e); err != nil {
+					return result, err
+				}
+			}
+		}
+		if stored {
 			result.inserted++
 			continue
 		}
 		// Already known: contribute whatever this observation adds.
 		changed := false
+		if e.DedupKey != "" {
+			// Backfill for a row written before ADR-0020. It cannot violate the
+			// index here: the branch above has just established that nothing else
+			// holds this key.
+			r, err := keyFill.Exec(e.DedupKey, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+		}
 		if e.Provider != "" {
 			r, err := reclassify.Exec(e.Provider, e.EventID, model.ProviderRank(e.Provider))
 			if err != nil {

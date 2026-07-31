@@ -528,3 +528,127 @@ func TestCodexEventIDIndependentOfProvider(t *testing.T) {
 		t.Errorf("event id moved with the classification: %q vs %q", withPlan[0].EventID, without[0].EventID)
 	}
 }
+
+// --- dedup_key: the same generation written into two rollout files (ADR-0020) ---
+//
+// Shapes taken from the real pair on this machine: rollout 019f6fb0 (source
+// vscode, thread_source user) and rollout 019fabdc, whose session_meta carries
+// forked_from_id=019f6fb0 and whose first 4,300 lines are 019f6fb0's history
+// copied verbatim — same turn_id, same usage, only the line timestamps replaced
+// by the fork's flush instant (72ms covering eleven days of history).
+
+const forkedMeta = `{"timestamp":"2026-07-29T03:13:26.378Z","type":"session_meta","payload":{"session_id":"s-1","id":"r-2","forked_from_id":"r-1","cwd":"/home/u/proj","cli_version":"0.146.0","model_provider":"openai"}}`
+
+// replayed rewrites a turn the way a fork does: identical payloads, every line
+// stamped with the flush instant.
+func replayed(lines []string, flush string) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		i := strings.Index(l, `","type":`)
+		out = append(out, `{"timestamp":"`+flush+l[i:])
+	}
+	return out
+}
+
+func TestDedupKeySurvivesForkedRollout(t *testing.T) {
+	live := parseLines(t, turnLines())
+	fork := parseLines(t, append([]string{forkedMeta}, replayed(turnLines()[1:], "2026-07-29T03:13:26.379Z")...))
+	if len(live) != 3 || len(fork) != 3 {
+		t.Fatalf("want 3 events each, got %d and %d", len(live), len(fork))
+	}
+	for i := range live {
+		// The premise of the bug: the rollout id and every timestamp moved, so
+		// event_id cannot possibly match. If that ever stops holding, this test
+		// is no longer testing anything.
+		if live[i].EventID == fork[i].EventID {
+			t.Fatalf("event %d: test is vacuous, event_id already matches", i)
+		}
+		if live[i].DedupKey == "" {
+			t.Fatalf("event %d has no dedup key", i)
+		}
+		if live[i].DedupKey != fork[i].DedupKey {
+			t.Errorf("event %d: the copy must carry the same dedup key: %q vs %q",
+				i, live[i].DedupKey, fork[i].DedupKey)
+		}
+	}
+}
+
+func TestDedupKeyDistinctPerGeneration(t *testing.T) {
+	events := parseLines(t, turnLines())
+	seen := map[string]int{}
+	for i, e := range events {
+		if prev, dup := seen[e.DedupKey]; dup {
+			t.Fatalf("events %d and %d share dedup key %q — distinct generations must not merge", prev, i, e.DedupKey)
+		}
+		seen[e.DedupKey] = i
+	}
+	if len(seen) != 3 {
+		t.Fatalf("want 3 distinct keys, got %d", len(seen))
+	}
+}
+
+// A dedup key may only be built on an identifier that is globally unique by
+// construction. Codex's MCP sessions number their turns with a per-session
+// counter, and "2" is reused by every such session on this machine (13 files) —
+// keying on it would merge unrelated generations, which undercounts silently.
+func TestNoDedupKeyWhenTurnIDIsNotAUUID(t *testing.T) {
+	lines := turnLines()
+	for i, l := range lines {
+		lines[i] = strings.ReplaceAll(l, `"turn_id":"019fb32d-ff2e-7f53-8849-b3afd49b81d5"`, `"turn_id":"2"`)
+	}
+	for i, e := range parseLines(t, lines) {
+		if e.DedupKey != "" {
+			t.Errorf("event %d: a per-session counter turn id must not produce a key, got %q", i, e.DedupKey)
+		}
+	}
+}
+
+// Codex 0.136.0 writes no task_started at all (176 events on this machine).
+// Those keep event_id-only dedup, which is exactly today's behaviour.
+func TestNoDedupKeyWithoutTurn(t *testing.T) {
+	for i, e := range parseLines(t, []string{
+		sessionMeta, turnCtx,
+		tokenCount("2026-07-26T03:00:12.000Z", usageJSON(100, 0), usageJSON(100, 0)),
+	}) {
+		if e.DedupKey != "" {
+			t.Errorf("event %d: no turn means no key, got %q", i, e.DedupKey)
+		}
+	}
+}
+
+// Golden keys, for the same reason TestEventIDsStable exists: the key is a
+// dedup identity, so a silent change to its derivation stops matching the rows
+// already carrying it and lets the copies back in.
+func TestDedupKeysStable(t *testing.T) {
+	// Verified against an independent implementation of the documented
+	// derivation, sha1("<turn_id>|<total input|cached|cache_write|output|
+	// reasoning|total>"), not copied from what the parser happened to print.
+	want := []string{
+		"cxg:ae967f7e6dbd30de6fbcfea0",
+		"cxg:5fbe85d7f16f2193dc199915",
+		"cxg:e54e5fe542eb23de6ba296b1",
+	}
+	for i, e := range parseLines(t, turnLines()) {
+		if i < len(want) && e.DedupKey != want[i] {
+			t.Errorf("event %d dedup key = %s, want %s", i, e.DedupKey, want[i])
+		}
+	}
+}
+
+// The key must not move when unrelated parsing context changes, for the same
+// reason event_id must not (ADR-0004): both are dedup identities.
+func TestDedupKeyIndependentOfProvider(t *testing.T) {
+	lines := turnLines()
+	other := make([]string, len(lines))
+	copy(other, lines)
+	other[0] = strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"custom"`, 1)
+	a, b := parseLines(t, lines), parseLines(t, other)
+	if len(a) != len(b) {
+		t.Fatalf("event count changed: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i].DedupKey != b[i].DedupKey {
+			t.Errorf("event %d: key moved with the provider: %q vs %q", i, a[i].DedupKey, b[i].DedupKey)
+		}
+	}
+}

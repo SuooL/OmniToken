@@ -21,6 +21,11 @@
 //     total_token_usage values recovers it;
 //   - OpenAI-style input_tokens INCLUDES cached_input_tokens (clamped), so
 //     non-cached input = input - cached; reasoning tokens are part of output.
+//
+// Forking a thread (by hand, or by spawning a subagent) copies the parent's
+// whole history into the new rollout, token_count lines included, changing only
+// the line timestamps. ADR-0004 assumed the opposite; ADR-0020 measured it and
+// added dedupKey, which is what makes those copies count once.
 package codex
 
 import (
@@ -70,10 +75,11 @@ type entry struct {
 		// turn (ADR-0009, 2026-07-31 revision). Seconds for the two clocks,
 		// milliseconds for the two spans, all written by Codex rather than
 		// derived from this line's timestamp.
-		StartedAt   int64 `json:"started_at"`
-		CompletedAt int64 `json:"completed_at"`
-		DurationMS  int64 `json:"duration_ms"`
-		TTFTMS      int64 `json:"time_to_first_token_ms"`
+		TurnID      string `json:"turn_id"`
+		StartedAt   int64  `json:"started_at"`
+		CompletedAt int64  `json:"completed_at"`
+		DurationMS  int64  `json:"duration_ms"`
+		TTFTMS      int64  `json:"time_to_first_token_ms"`
 		// Authoritative quota state reported by the server (ADR-0007).
 		RateLimits *rateLimits `json:"rate_limits"`
 	} `json:"payload"`
@@ -84,6 +90,9 @@ type entry struct {
 // position — which survives replay, because a replayed block keeps its original
 // order even though every line in it gets the flush timestamp.
 type openTurn struct {
+	// id is task_started's turn_id, carried down to the token_count lines so
+	// they can be given a dedup key (ADR-0020).
+	id  string
 	idx []int   // positions in ParseResult.Events
 	ts  []int64 // each event's own line timestamp, ms
 }
@@ -162,7 +171,7 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 			case "task_started":
 				// An unclosed predecessor is abandoned rather than merged: its
 				// events keep no interval instead of borrowing the next turn's.
-				turn = &openTurn{}
+				turn = &openTurn{id: e.Payload.TurnID}
 				continue
 			case "task_complete", "turn_aborted":
 				closeTurn(res.Events, turn, lineMS,
@@ -209,12 +218,15 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 			// gen_ms is not known yet: it is the turn's, and the turn is still
 			// open. closeTurn writes it back over these events when the
 			// closing record arrives (ADR-0009, 2026-07-31 revision).
+			turnID := ""
 			if turn != nil {
 				turn.idx = append(turn.idx, len(res.Events))
 				turn.ts = append(turn.ts, ts.UnixMilli())
+				turnID = turn.id
 			}
 			res.Events = append(res.Events, model.Event{
 				EventID:             eventID(ctx.rolloutID, e.Timestamp, seq, u),
+				DedupKey:            dedupKey(turnID, total),
 				DurationMS:          durationMS,
 				TS:                  ts.UnixMilli(),
 				Device:              device,
@@ -392,13 +404,73 @@ func deltaUsage(last, total, prevTotal *usage) (*usage, *usage) {
 }
 
 // eventID: token_count lines carry no message id, so identity is the rollout
-// file's UUID + timestamp + in-file sequence + usage payload. Resumed threads
-// get a new rollout id and Codex does not copy old token_count lines into new
-// rollouts, so cross-file duplication is not a concern; the hash guards
-// against re-reads of the same file after truncation.
+// file's UUID + timestamp + in-file sequence + usage payload. It identifies a
+// LOG LINE, and that is all it can identify: a forked thread copies the parent's
+// lines into a new rollout with new timestamps, so the two copies of one
+// generation necessarily land on different ids. dedupKey below is what catches
+// that; this derivation must never change, because every row already in the
+// database was written under it (ADR-0004).
 func eventID(rolloutID, ts string, seq int, u *usage) string {
 	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%d|%d|%d", rolloutID, ts, seq, u.InputTokens, u.CachedInput, u.OutputTokens, u.TotalTokens)))
 	return "cx:" + hex.EncodeToString(h[:12])
+}
+
+// dedupKey identifies the GENERATION, so that the same one recorded in two
+// rollout files is counted once (ADR-0020).
+//
+// Resuming or forking a thread — and spawning a subagent, which is the same
+// mechanism — copies the parent's entire history into the new rollout verbatim.
+// Measured over 610 local rollouts: 845 of 33,445 usage events are such copies
+// (3.12% of output tokens), the copies never disagree with the original on a
+// single usage field, and the only thing rewritten is the line timestamp, which
+// becomes the fork's flush instant.
+//
+// So the key is built from the two things the copy preserves and eventID cannot
+// use: the turn's id, and the thread's running total at that point.
+//
+//   - the running total is what separates generations inside one thread. It only
+//     ever advances (the parser already skips token_count lines whose total
+//     stands still), so no two generations of a thread share one. Measured: zero
+//     same-file collisions, and all 647 collisions were cross-file copies.
+//   - turn_id is what separates threads. It is required to be a UUID, and that
+//     is the whole point: Codex's MCP sessions number turns with a per-session
+//     counter instead, so "2" belongs to 13 unrelated files on this machine.
+//     Keying on that would merge unrelated generations — an undercount, which is
+//     worse than the overcount being fixed because nothing reveals it. The 341
+//     events without a UUID turn id keep event_id-only dedup; not one of them is
+//     in a forked file, so nothing is lost.
+//
+// An empty key means "no second opinion", never "duplicate": if Codex changes
+// shape the mechanism degrades to today's behaviour rather than merging rows.
+func dedupKey(turnID string, total *usage) string {
+	if total == nil || !isUUID(turnID) {
+		return ""
+	}
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%d|%d|%d|%d|%d|%d", turnID,
+		total.InputTokens, total.CachedInput, total.CacheWriteInput,
+		total.OutputTokens, total.ReasoningTokens, total.TotalTokens)))
+	return "cxg:" + hex.EncodeToString(h[:12])
+}
+
+// isUUID reports whether s is a canonical lower-case UUID, the form Codex uses
+// for turn and rollout ids.
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch {
+		case i == 8 || i == 13 || i == 18 || i == 23:
+			if s[i] != '-' {
+				return false
+			}
+		case s[i] >= '0' && s[i] <= '9':
+		case s[i] >= 'a' && s[i] <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // builtinOpenAIProvider is Codex's own provider id. It is matched exactly,

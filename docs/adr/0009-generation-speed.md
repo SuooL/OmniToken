@@ -298,6 +298,11 @@ rollout id,而 `event_id` 由 rollout id + 时间戳 + 序号构成 —— 也�
 这是计数正确性问题,不是速度问题,改它必然要动 `event_id` 的生成依据(ADR-0004 铁律),
 必须单独立 ADR 评估。速度这一轮不受影响:回放的 turn 本来就被排除在区间之外。
 
+**已由 [ADR-0020](0020-codex-resume-duplicate-events.md) 处理,其中两点更正本节**:
+触发复制的是**分叉**(人工 fork 与 subagent 派生),不限于恢复会话;而且**没有**动
+`event_id` —— 改动 `event_id` 的依据会让历史全库重复,所以改为在它之上加第二把
+去重键。全量 610 个 rollout 实测 845/33,445 条是副本(output 的 3.12%)。
+
 ### 与幂等铁律的边界
 
 不变:新增的 `gen_ms` / `ttft_ms` 都是**派生列,不参与 `event_id`**,ADR-0004 的
