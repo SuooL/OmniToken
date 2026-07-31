@@ -119,7 +119,7 @@ const Heatmap = {
 
     el.innerHTML =
       `<div data-chart="calendar-activity"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"` +
-      ` style="display:block;width:100%;height:auto;max-width:${W}px"` +
+      ` style="display:block;width:100%;height:auto"` +
       ` aria-label="近 ${total} 天活动日历热力图,${esc(summary)}">` +
       `${months}${rails}${grid}${legend}</svg></div>` + readableTable;
     this.attachTooltip(el);
