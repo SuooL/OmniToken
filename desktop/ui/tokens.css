@@ -95,6 +95,17 @@
   --series-3: var(--rose);
   --series-4: var(--amber);
 
+  /* Billing channels (ADR-0018). Four categories that must never read as a
+     sequence: they are different billing relationships, not degrees of one
+     thing, so the hues are drawn from separate families rather than one ramp.
+     `unknown` is deliberately the desaturated one — it is the absence of
+     evidence, and it should not compete with the three real channels for
+     attention while still being plainly visible as its own slice. */
+  --channel-subscription: var(--teal);
+  --channel-api:          var(--violet);
+  --channel-relay:        var(--amber);
+  --channel-unknown:      #6b7594;
+
   /* Consumption meters run their own scale, separate from the chart palette.
      Fixed steps rather than a gradient: the reader needs "is this fine or
      not", not a hue to interpolate. Saturated on purpose — these are the one
