@@ -10,14 +10,36 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 // Provider values produced by ProbeClaudeAuth, matching the Provider taxonomy
 // in internal/model (ADR-0005 real vs equivalent cost split).
 const (
-	AuthAnthropicOAuth = "anthropic-oauth"
-	AuthAnthropicAPI   = "anthropic-api"
+	AuthAnthropicOAuth = model.ProviderAnthropicOAuth
+	AuthAnthropicAPI   = model.ProviderAnthropicAPI
 )
+
+// ClaudeAuthProbe is what the machine-level probe can establish about the local
+// Claude Code install. The two fields answer different questions and a caller
+// needs both (ADR-0018 §3 and §4):
+//
+//   - Provider: how this machine pays on the first-party endpoint. Only ever
+//     applied to events already known to have reached that endpoint.
+//   - EndpointOverride: the endpoint is rerouted (Bedrock/Vertex/custom base
+//     URL). Under an override, "no Anthropic request id" stops distinguishing a
+//     relay from first-party managed hosting, so events that would otherwise be
+//     called relay must fall back to unknown. Judging nothing is cheaper than
+//     judging wrong.
+//
+// The two are mutually exclusive: an override stops the cascade before any
+// credential is inspected, which is why Provider is empty whenever
+// EndpointOverride is set.
+type ClaudeAuthProbe struct {
+	Provider         string
+	EndpointOverride bool
+}
 
 // Environment variables that mean Claude Code bills through an API key.
 var apiKeyVars = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
@@ -52,55 +74,53 @@ var (
 // "" immediately: that traffic is already classified by model fingerprint.
 // Callers should cache results via NewCachedProber; secrets are never read
 // into return values, logs, or errors — only existence is tested.
-func ProbeClaudeAuth() string {
+func ProbeClaudeAuth() string { return ProbeClaude().Provider }
+
+// ProbeClaude runs the cascade described on ProbeClaudeAuth and reports both
+// findings: the billing channel, and whether the endpoint is rerouted at all.
+// The rerouted case used to be indistinguishable from "found nothing" because
+// both returned ""; ADR-0018 §4 needs them apart, since one means "stay silent"
+// and the other means "actively downgrade the relay verdict to unknown".
+func ProbeClaude() ClaudeAuthProbe {
 	// 1. Running claude processes carry the environment that actually billed.
-	if res, decided := probeProcesses(); decided {
-		return res
-	}
 	// 2. The collector usually runs as the same user on the same machine.
-	if res, decided := decide(classifyEnvEntries(probeEnviron())); decided {
-		return res
-	}
-	// 3. Persistent configuration and credentials.
-	if res, decided := probeSettings(); decided {
-		return res
+	// 3. Persistent configuration, then stored credentials.
+	for _, level := range []func() (override, apiKey bool){
+		probeProcesses,
+		func() (bool, bool) { return classifyEnvEntries(probeEnviron()) },
+		probeSettings,
+	} {
+		override, apiKey := level()
+		if override {
+			return ClaudeAuthProbe{EndpointOverride: true}
+		}
+		if apiKey {
+			return ClaudeAuthProbe{Provider: AuthAnthropicAPI}
+		}
 	}
 	if probeOAuthCredentials() {
-		return AuthAnthropicOAuth
+		return ClaudeAuthProbe{Provider: AuthAnthropicOAuth}
 	}
-	return ""
+	return ClaudeAuthProbe{}
 }
 
-// NewCachedProber wraps ProbeClaudeAuth with a TTL cache, since each probe may
-// scan the process table. Negative ("") results are cached too.
-func NewCachedProber(ttl time.Duration) func() string {
+// NewCachedProber wraps ProbeClaude with a TTL cache, since each probe may
+// scan the process table. Inconclusive results are cached too.
+func NewCachedProber(ttl time.Duration) func() ClaudeAuthProbe {
 	var (
 		mu  sync.Mutex
-		val string
+		val ClaudeAuthProbe
 		at  time.Time
 	)
-	return func() string {
+	return func() ClaudeAuthProbe {
 		mu.Lock()
 		defer mu.Unlock()
 		if !at.IsZero() && time.Since(at) < ttl {
 			return val
 		}
-		val = ProbeClaudeAuth()
+		val = ProbeClaude()
 		at = time.Now()
 		return val
-	}
-}
-
-// decide maps the (override, apiKey) evidence pair onto a probe outcome.
-// Overrides win: mislabeling rerouted traffic is worse than staying silent.
-func decide(override, apiKey bool) (string, bool) {
-	switch {
-	case override:
-		return "", true
-	case apiKey:
-		return AuthAnthropicAPI, true
-	default:
-		return "", false
 	}
 }
 
@@ -132,16 +152,13 @@ func contains(list []string, s string) bool {
 }
 
 // probeProcesses inspects the environment of running claude processes owned
-// by the current user. Returns decided=false when no claude process is found
+// by the current user. Both results are false when no claude process is found
 // or none carries a conclusive variable.
-func probeProcesses() (string, bool) {
-	var override, apiKey bool
+func probeProcesses() (override, apiKey bool) {
 	if probeGOOS == "linux" {
-		override, apiKey = scanLinuxProcs()
-	} else {
-		override, apiKey = scanPSOutput()
+		return scanLinuxProcs()
 	}
-	return decide(override, apiKey)
+	return scanPSOutput()
 }
 
 // scanPSOutput parses `ps eww -o command -u $USER` lines: the command and its
@@ -213,26 +230,26 @@ func scanLinuxProcs() (override, apiKey bool) {
 }
 
 // probeSettings checks the env block of ~/.claude/settings.json.
-func probeSettings() (string, bool) {
+func probeSettings() (override, apiKey bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", false
+		return false, false
 	}
 	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
-		return "", false
+		return false, false
 	}
 	var settings struct {
 		Env map[string]string `json:"env"`
 	}
 	if json.Unmarshal(raw, &settings) != nil {
-		return "", false
+		return false, false
 	}
 	entries := make([]string, 0, len(settings.Env))
 	for k, v := range settings.Env {
 		entries = append(entries, k+"="+v)
 	}
-	return decide(classifyEnvEntries(entries))
+	return classifyEnvEntries(entries)
 }
 
 // probeOAuthCredentials tests for stored subscription (OAuth) credentials:
