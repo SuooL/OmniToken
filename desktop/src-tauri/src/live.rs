@@ -189,15 +189,11 @@ enum ActivityKind {
 struct PopoverConnection {
     kind: ConnectionKind,
     generated_at_ms: Option<i64>,
-    age_ms: Option<i64>,
-    is_stale: bool,
-    error: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
 struct ActivityView {
     kind: ActivityKind,
-    text: String,
     rate: Option<f64>,
     session_count: usize,
     contributing_devices: usize,
@@ -284,14 +280,6 @@ fn short_repository(repository: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("—")
         .to_string()
-}
-
-fn compact_rate(rate: f64) -> String {
-    if (rate - rate.round()).abs() < 0.05 {
-        format!("{rate:.0}")
-    } else {
-        format!("{rate:.1}")
-    }
 }
 
 /// The sources that get a quota card, in display order. The same two
@@ -414,17 +402,15 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
         .collect()
 }
 
-fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i64) -> PopoverView {
+/// Projects a live payload into what the popover renders.
+///
+/// Deliberately free of wall-clock input: data age is derived in the webview
+/// from `generated_at_ms`, and staleness is carried by `connection.kind`. A
+/// `now` parameter here would only invite a second, disagreeing answer.
+fn popover_view(payload: Option<&Value>, connection: &ConnectionState) -> PopoverView {
     let generated_at_ms = payload
         .and_then(|data| data.get("generated_at"))
         .and_then(Value::as_i64);
-    let age_ms = generated_at_ms.map(|generated| now_ms.saturating_sub(generated));
-    let is_stale = payload.is_some()
-        && matches!(
-            connection.kind,
-            ConnectionKind::Stale | ConnectionKind::Offline | ConnectionKind::Unauthorized
-        );
-
     let speed = payload.and_then(|data| data.get("speed"));
     let rate = speed
         .and_then(|speed| speed.get("tps"))
@@ -457,11 +443,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         let rate = rate.unwrap_or_default();
         ActivityView {
             kind: ActivityKind::Active,
-            text: format!(
-                "近 10m {} t/s · {} 个贡献会话",
-                compact_rate(rate),
-                speed_sessions.len()
-            ),
             rate: Some(rate),
             session_count: speed_sessions.len(),
             contributing_devices,
@@ -469,7 +450,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
     } else if open_count > 0 {
         ActivityView {
             kind: ActivityKind::Unknown,
-            text: format!("{open_count} 个会话已打开 · 速度未知"),
             rate,
             session_count: open_count,
             contributing_devices,
@@ -477,7 +457,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
     } else if rate.is_some() {
         ActivityView {
             kind: ActivityKind::Idle,
-            text: "近 10m 无已测生成".to_string(),
             rate,
             session_count: 0,
             contributing_devices,
@@ -485,7 +464,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
     } else {
         ActivityView {
             kind: ActivityKind::Unknown,
-            text: "活动未知".to_string(),
             rate: None,
             session_count: 0,
             contributing_devices,
@@ -577,9 +555,6 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         connection: PopoverConnection {
             kind: connection.kind.clone(),
             generated_at_ms,
-            age_ms,
-            is_stale,
-            error: connection.error.clone(),
         },
         activity,
         quotas: quota_views(payload),
@@ -907,7 +882,7 @@ fn apply(app: &tauri::AppHandle, endpoint: &str, payload: &Value, mode: Mode) {
                     Update {
                         mode: snapshot.connection.kind.as_str(),
                         connection: &snapshot.connection,
-                        view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                        view: popover_view(snapshot.data(), &snapshot.connection),
                         data: snapshot.data(),
                     },
                 );
@@ -961,7 +936,7 @@ fn publish_failure(app: &tauri::AppHandle, endpoint: &str, kind: ConnectionKind,
                 Update {
                     mode: snapshot.connection.kind.as_str(),
                     connection: &snapshot.connection,
-                    view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                    view: popover_view(snapshot.data(), &snapshot.connection),
                     data: snapshot.data(),
                 },
             );
@@ -980,7 +955,7 @@ fn publish_endpoint_change(app: &tauri::AppHandle, endpoint: &str) {
                 Update {
                     mode: snapshot.connection.kind.as_str(),
                     connection: &snapshot.connection,
-                    view: popover_view(snapshot.data(), &snapshot.connection, now_ms()),
+                    view: popover_view(snapshot.data(), &snapshot.connection),
                     data: snapshot.data(),
                 },
             );
@@ -1437,7 +1412,7 @@ mod tests {
         );
     }
 
-    fn view_for(payload: Option<&Value>, kind: ConnectionKind, now_ms: i64) -> PopoverView {
+    fn view_for(payload: Option<&Value>, kind: ConnectionKind) -> PopoverView {
         popover_view(
             payload,
             &ConnectionState {
@@ -1445,7 +1420,6 @@ mod tests {
                 last_success_at_ms: Some(1_000),
                 error: None,
             },
-            now_ms,
         )
     }
 
@@ -1477,10 +1451,11 @@ mod tests {
             "burn": {"per_minute":3100}
         });
 
-        let view = view_for(Some(&payload), ConnectionKind::Live, 13_000);
+        let view = view_for(Some(&payload), ConnectionKind::Live);
 
         assert_eq!(view.activity.kind, ActivityKind::Active);
-        assert_eq!(view.activity.text, "近 10m 68 t/s · 4 个贡献会话");
+        assert_eq!(view.activity.rate, Some(68.0));
+        assert_eq!(view.activity.session_count, 4);
         assert_eq!(view.activity.contributing_devices, 4);
         assert_eq!(view.sessions.len(), 3);
         assert_eq!(view.sessions[0].tool, "Claude");
@@ -1520,7 +1495,7 @@ mod tests {
             "burn": {"per_minute":3100}
         });
 
-        let view = view_for(Some(&payload), ConnectionKind::Live, 13_000);
+        let view = view_for(Some(&payload), ConnectionKind::Live);
         let encoded = serde_json::to_value(&view).expect("popover view serializes");
         let fields = encoded.as_object().expect("popover view is an object");
 
@@ -1540,6 +1515,27 @@ mod tests {
                 "sessions",
                 "sessions_more",
             ]
+        );
+
+        // The nested objects need pinning too. #64 checked only the top level,
+        // and four unread fields survived inside `connection` and `activity`
+        // for two more milestones because a key set one level down is invisible
+        // to a top-level assertion.
+        let connection = encoded["connection"]
+            .as_object()
+            .expect("connection is an object");
+        let mut connection_keys: Vec<&str> = connection.keys().map(String::as_str).collect();
+        connection_keys.sort_unstable();
+        assert_eq!(connection_keys, ["generated_at_ms", "kind"]);
+
+        let activity = encoded["activity"]
+            .as_object()
+            .expect("activity is an object");
+        let mut activity_keys: Vec<&str> = activity.keys().map(String::as_str).collect();
+        activity_keys.sort_unstable();
+        assert_eq!(
+            activity_keys,
+            ["contributing_devices", "kind", "rate", "session_count"]
         );
 
         let quota = encoded["quotas"][0]
@@ -1579,7 +1575,7 @@ mod tests {
     // ── official quota card ───────────────────────────────────────────────
 
     fn quotas_of(payload: &Value) -> Vec<QuotaView> {
-        view_for(Some(payload), ConnectionKind::Live, 13_000).quotas
+        view_for(Some(payload), ConnectionKind::Live).quotas
     }
 
     /// Claude's 5-hour window is opportunistic — it exists only while Claude Code
@@ -1752,9 +1748,7 @@ mod tests {
     /// not draw two cards claiming the provider reported nothing.
     #[test]
     fn no_payload_produces_no_quota_cards() {
-        assert!(view_for(None, ConnectionKind::Offline, 13_000)
-            .quotas
-            .is_empty());
+        assert!(view_for(None, ConnectionKind::Offline).quotas.is_empty());
     }
 
     #[test]
@@ -1769,10 +1763,11 @@ mod tests {
             "burn":{"per_minute":0}
         });
 
-        let view = view_for(Some(&payload), ConnectionKind::Polling, 11_000);
+        let view = view_for(Some(&payload), ConnectionKind::Polling);
 
         assert_eq!(view.activity.kind, ActivityKind::Idle);
-        assert_eq!(view.activity.text, "近 10m 无已测生成");
+        assert_eq!(view.activity.rate, Some(0.0)); // 已测到的零,不是「无数据」
+        assert_eq!(view.activity.session_count, 0);
         assert_eq!(view.connection.kind, ConnectionKind::Polling);
     }
 
@@ -1787,9 +1782,9 @@ mod tests {
             "burn":{}
         });
 
-        let view = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+        let view = view_for(Some(&payload), ConnectionKind::Live);
         assert_eq!(view.activity.kind, ActivityKind::Unknown);
-        assert_eq!(view.activity.text, "活动未知");
+        assert_eq!(view.activity.rate, None); // 无读数,与上面的已测零区分
     }
 
     /// Quota payloads must stay harmless to the popover: it neither renders them
@@ -1821,7 +1816,7 @@ mod tests {
             }],
             "burn":{"per_minute":0}
         });
-        let view = view_for(Some(&unknown_reset), ConnectionKind::Live, 11_000);
+        let view = view_for(Some(&unknown_reset), ConnectionKind::Live);
 
         assert_eq!(view.activity.kind, ActivityKind::Idle);
         assert_eq!(view.connection.kind, ConnectionKind::Live);
@@ -1840,20 +1835,21 @@ mod tests {
             "burn":{"per_minute":10}
         });
 
-        let view = view_for(Some(&payload), ConnectionKind::Stale, 100_000);
+        let view = view_for(Some(&payload), ConnectionKind::Stale);
 
         assert_eq!(view.connection.kind, ConnectionKind::Stale);
-        assert_eq!(view.connection.age_ms, Some(90_000));
-        assert!(view.connection.is_stale);
+        // 年龄由前端从 generated_at_ms 现算,所以载荷只需原样带出它;
+        // 陈旧与否由 kind 表达,不再单独发一个布尔。
+        assert_eq!(view.connection.generated_at_ms, Some(10_000));
         assert_eq!(view.activity.kind, ActivityKind::Active);
     }
 
     #[test]
     fn unknown_view_and_open_process_without_speed_are_not_idle() {
-        let unknown = view_for(None, ConnectionKind::Offline, 100_000);
+        let unknown = view_for(None, ConnectionKind::Offline);
         assert_eq!(unknown.activity.kind, ActivityKind::Unknown);
-        assert_eq!(unknown.activity.text, "活动未知");
-        assert_eq!(unknown.connection.age_ms, None);
+        assert_eq!(unknown.activity.rate, None);
+        assert_eq!(unknown.connection.generated_at_ms, None);
 
         let payload = json!({
             "generated_at": 10_000,
@@ -1864,8 +1860,9 @@ mod tests {
             "windows":[],
             "burn":{}
         });
-        let open = view_for(Some(&payload), ConnectionKind::Live, 11_000);
+        let open = view_for(Some(&payload), ConnectionKind::Live);
         assert_eq!(open.activity.kind, ActivityKind::Unknown);
-        assert_eq!(open.activity.text, "1 个会话已打开 · 速度未知");
+        assert_eq!(open.activity.session_count, 1); // 进程数进得来,速度进不来
+        assert_eq!(open.activity.rate, None);
     }
 }
