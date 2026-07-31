@@ -422,7 +422,7 @@ mod ui_contract_tests {
         for hook in [
             r#"id="freshness""#,
             r#"id="current-speed""#,
-            "近 10m 已测总吞吐",
+            "已测总吞吐",
             r#"id="claude-5h""#,
             r#"id="codex-5h""#,
             r#"id="speed-lanes""#,

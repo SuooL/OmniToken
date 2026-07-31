@@ -100,13 +100,13 @@ async function fitWindow() {
 function renderFreshness() {
   const connection = latestLive && latestLive.connection;
   const kind = connection && connection.kind || "offline";
-  const generatedAt = connection && connection.generated_at_ms
-    || latestTelemetry && latestTelemetry.generated_at_ms;
   $("connection-state").dataset.mode = kind;
   const telemetryStale = !!(latestTelemetry && latestTelemetry.is_stale);
+  // Channel only. While the stream is healthy the age is always "1s 前", so
+  // spelling it out here is a number that never moves; when it stops being
+  // healthy the footer says the age, where it actually carries information.
   $("connection-state").textContent =
-    `${CONNECTION_LABEL[kind] || kind}${telemetryStale ? " · 历史数据陈旧" : ""} · ` +
-    `${generatedAt ? relTime(generatedAt) : "年龄未知"}`;
+    `${CONNECTION_LABEL[kind] || kind}${telemetryStale ? " · 历史数据陈旧" : ""}`;
 
   const online = latestLive && latestLive.device_online;
   const total = latestLive && latestLive.device_total;
@@ -131,7 +131,7 @@ function renderHero() {
     ? "会话未知"
     : activity.kind === "unknown"
       ? `${activity.session_count} 个打开会话 · 活跃未知`
-      : `${activity.session_count} 个近 10m 贡献会话`;
+      : `${activity.session_count} 个贡献会话`;
   $("contributing-devices").textContent = activity
     ? `${activity.contributing_devices} 台贡献设备`
     : "设备未知";
@@ -417,5 +417,5 @@ if (!invoke || !listen) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { coverageLabel };
+  module.exports = { coverageLabel, onLive };
 }
