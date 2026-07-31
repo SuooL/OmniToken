@@ -195,6 +195,27 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 本机交付 | ✅ 完成 | `make check`、`make desktop-check`、Tauri app bundle、签名校验与真实数据库九路由验收通过；本机 Hub 与 `/Applications/OmniToken.app` 已升级并重启 |
 | A2 遗留清理 | ✅ 完成 | A2 换掉弹窗主位后，`PopoverView` 仍在算并序列化 `risk` / `quota_summary` / `quotas_more` / `quota_reset_minutes` / `burn_per_minute`,而 `desktop/ui/app.js` 一处都不读 —— 只有单测还在断言它们。已删除,并补一条序列化断言防止再长回来。配额的三个真实去处(托盘图标 `tray_readings`、菜单栏数字、`Alerts` 预警)都不经 `popover_view`,不受影响。requirements 的 F24 描述同步改为 A2 实际形态 |
 
+## M9 — 计费通道、设备身份与 Codex 速度(2026-07-31 起)
+
+用户复盘提出六条调整,查证后其中两条的事实与原判断不符,详见
+[实施计划](superpowers/plans/2026-07-31-provenance-and-codex-speed.md)。
+决策见 [ADR-0018](adr/0018-billing-channel-classification.md)、
+[ADR-0019](adr/0019-device-identity-merge.md) 与 ADR-0009 的 2026-07-31 修订。
+
+两条被查证推翻的既有判断:
+
+- **`provider` 列不可信**。判 Bedrock 的唯一依据是 model ID 含 `anthropic.claude`,
+  而本机没有任何 Bedrock 配置 —— 那 3,172 条是中转商采用 Bedrock 风格命名。
+  中转商也会用裸名(`claude-opus-4-6` 有 443/995 无 `requestId`),所以按模型名
+  分类在原理上就不成立。改用逐事件 `requestId`。
+- **Codex 速度可以测**。ADR-0009 只考察了日志行时间戳,遗漏了 Codex 自记的
+  `task_complete` 权威计时,以及按文件位置(而非时间戳)括 turn 可绕开回放。
+  实测覆盖率 38.5% → 84.4%,并集口径从离谱的 222.8 回到合理的 34.7 tok/s。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 设计定稿(ADR-0018/0019 + ADR-0009 修订) | ✅ 完成 | 三份 ADR 并行起草后调和:0018 与 0019 都自称「第三处覆盖」,CLAUDE.md 的铁律据此重构为「自动(判据在系统内)三处 + 人工发起(判据在系统外)一处」 |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试

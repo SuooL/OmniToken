@@ -22,3 +22,5 @@ ADR 标注 supersedes,不改写历史。
 | [0015](0015-device-attribution.md) | 设备归属:自报优先于旁观的单向覆盖,以及按主机的采集起点 | 已采纳 |
 | [0016](0016-read-endpoint-auth.md) | 读接口鉴权由监听地址推导,默认监听改回 loopback(修订 0008) | 已采纳 |
 | [0017](0017-additive-speed-contributions.md) | 速度分解:共享时间轴上的可加和来源/会话贡献(补充 0009) | 已采纳 |
+| [0018](0018-billing-channel-classification.md) | 计费通道三分类:订阅/官方 API/第三方,判据为逐事件 requestId | 已采纳 |
+| [0019](0019-device-identity-merge.md) | 设备身份合并:用户显式发起的覆盖,与自动覆盖的边界 | 已采纳 |
