@@ -322,6 +322,43 @@ func TestQuietInstrumentResponsiveAndAccessibleContracts(t *testing.T) {
 	}
 }
 
+// The merge is irreversible, so its safety lives in the markup as much as in
+// the handler: collapsed by default, apart from the reversible rename, and
+// spelling out what cannot be taken back (ADR-0019 §6).
+func TestDeviceMergeCardCannotBeUsedByAccident(t *testing.T) {
+	source := embeddedAsset(t, "settingsview.js")
+	for _, contract := range []string{
+		`data-settings-group="device-merge"`, // its own group, not the rename card's
+		`<details class="merge-panel"`,       // collapsed until asked for
+		"不可撤销",
+		"备份", // the confirmation names the way out: back up the DB first
+		"按设备分组的历史图表会改变形状", // the one visible change that is not a loss
+		"mergeSubmission(",
+		`data-act="merge-preview"`,
+		`data-act="merge-run"`,
+		"/api/v1/devices/merge/preview",
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("device merge card missing %q", contract)
+		}
+	}
+	if strings.Contains(source, `<details class="merge-panel" open`) {
+		t.Error("the merge tool must be collapsed by default")
+	}
+	// The card renders after the rename card and before the preferences one, so
+	// the two device operations are never adjacent controls in one group.
+	render := source[strings.Index(source, "  render() {"):]
+	if !strings.Contains(render[:strings.Index(render, "},")], "this.deviceCard() + this.mergeCard()") {
+		t.Error("merge must be its own card rendered beside, not inside, device renaming")
+	}
+	style := embeddedAsset(t, "style.css")
+	for _, contract := range []string{".merge-panel", ".merge-run:disabled", ".merge-warnings"} {
+		if !strings.Contains(style, contract) {
+			t.Errorf("merge card styling missing %q", contract)
+		}
+	}
+}
+
 func TestStateDecisionHelpersInNode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -566,6 +603,44 @@ test('route empty predicates reflect meaningful data', () => {
   const models = load('modelsview.js');
   assert.equal(run(models, 'modelsIsEmpty({by_source:[]})'), true);
   assert.equal(run(models, 'modelsIsEmpty({by_source:[{total_tokens:1}]})'), false);
+});
+
+test('a device merge cannot be submitted until the source name is typed out', () => {
+  const context = load('settingsview.js', {Api: {token: '', adminToken: ''}, esc: String});
+  const base = 'mergeSubmission({from:"JasonHudeMacBook-Pro.local",to:"suool-mac",plan:{events_moved:1},confirm:';
+  assert.equal(json(context, 'mergeSubmission({from:"",to:"suool-mac",plan:{},confirm:""})').ok, false);
+  assert.equal(json(context, 'mergeSubmission({from:"a",to:"a",plan:{},confirm:"a"})').ok, false);
+  // No preview, no merge: the confirmation has to be typed against numbers.
+  assert.equal(json(context, 'mergeSubmission({from:"a",to:"b",plan:null,confirm:"a"})').ok, false);
+  assert.equal(json(context, base + '""})').ok, false);
+  assert.equal(json(context, base + '"suool-mac"})').ok, false);
+  assert.equal(json(context, base + '"jasonhudemacbook-pro.local"})').ok, false);
+  const good = json(context, base + '"JasonHudeMacBook-Pro.local"})');
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.value, {
+    from: 'JasonHudeMacBook-Pro.local', to: 'suool-mac', confirm: 'JasonHudeMacBook-Pro.local',
+  });
+});
+
+test('changing either side of a merge throws the previewed plan away', () => {
+  const context = load('settingsview.js', {Api: {token: '', adminToken: ''}, esc: String});
+  run(context, 'SettingsView._merge = {open:true,from:"a",to:"b",plan:{events_moved:9},warnings:["w"],confirm:"a",busy:false,error:""};');
+  run(context, 'SettingsView.refreshMergeInteractive = function() {};');
+  run(context, 'SettingsView.updateDraft({matches: (s) => s.indexOf("merge-side") >= 0, dataset: {side: "to"}, value: "c"})');
+  assert.equal(run(context, 'SettingsView._merge.to'), 'c');
+  assert.equal(run(context, 'SettingsView._merge.plan'), null);
+  assert.equal(run(context, 'SettingsView._merge.confirm'), '');
+});
+
+test('the merge request carries the admin credential, never the read one', async () => {
+  const context = load('api.js', {localStorage: {getItem() { return ''; }}});
+  let request = null;
+  run(context, 'Api.token = "read-secret"; Api.adminToken = "admin-secret";');
+  vm.runInContext('fetch = async (url, init) => { request = {url, method: init.method, authorization: new Headers(init.headers).get("Authorization")}; return {ok: true, status: 200}; };', context);
+  await run(context, 'Api.post("/api/v1/devices/merge", {from:"a",to:"b",confirm:"a"})');
+  request = run(context, 'request');
+  assert.equal(request.method, 'POST');
+  assert.equal(request.authorization, 'Bearer admin-secret');
 });
 
 test('registered liveness ages without a new SSE payload', () => {

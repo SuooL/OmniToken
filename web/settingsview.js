@@ -37,14 +37,38 @@ function buildPricingPayload(rows) {
   return { ok: true, value };
 }
 
+// mergeSubmission is the client-side half of ADR-0019's confirmation rules,
+// kept pure so it can be tested without a DOM. It refuses everything the server
+// refuses, in the same terms, so the button is disabled before a doomed request
+// is ever sent — and the confirmation is compared byte for byte, exactly as the
+// server does it. Anything looser here would train the user to expect the
+// forgiving version and then surprise them with a 400.
+function mergeSubmission(merge) {
+  const from = String((merge && merge.from) || "");
+  const to = String((merge && merge.to) || "");
+  if (!from || !to) return { ok: false, error: "请先选择要合并的两个设备" };
+  if (from === to) return { ok: false, error: "两侧不能是同一个设备" };
+  if (!merge.plan) return { ok: false, error: "请先预览影响,确认要改写的行数" };
+  if (String(merge.confirm || "") !== from) {
+    return { ok: false, error: `请原样输入被合并设备的完整名称:${from}` };
+  }
+  return { ok: true, value: { from, to, confirm: from } };
+}
+
 const SettingsView = {
   _rows: [],       // pricing overrides being edited: {model, in, out, cr, cw}
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
+  _merges: [],     // audit log of past identity merges (read-only, ADR-0019)
+  _local: {},      // {device, hostname, duplicate_identity} for this machine
   _loaded: false,
   _draft: { pricing: null, devices: null, readToken: null, adminToken: null },
   _revision: { pricing: 0, devices: 0, tokens: 0 },
   _saving: { pricing: false, devices: false },
+  // The merge tool's own state. `plan` is whatever the server last previewed;
+  // it is thrown away the moment either side changes, so a confirmation can
+  // never be typed against numbers computed for a different pair.
+  _merge: { open: false, from: "", to: "", plan: null, warnings: [], confirm: "", busy: false, error: "" },
 
   enter() {
     this.load();
@@ -102,6 +126,8 @@ const SettingsView = {
       cw: po[m].cache_write_per_mtok || 0,
     }));
     this._labels = (settings && settings.device_labels) || {};
+    this._merges = (settings && settings.device_merges) || [];
+    this._local = (settings && settings.local_identity) || {};
     this._devices = (devices && devices.rows) || [];
     // Devices that only exist as a saved label (retired machine) stay editable.
     const known = new Set(this._devices.map((d) => d.key));
@@ -113,7 +139,7 @@ const SettingsView = {
   render() {
     const root = document.getElementById("view-settings");
     root.innerHTML =
-      this.tokenCard() + this.pricingCard() + this.deviceCard() +
+      this.tokenCard() + this.pricingCard() + this.deviceCard() + this.mergeCard() +
       this.preferencesCard() + this.dangerCard();
     this.bind(root);
   },
@@ -181,6 +207,129 @@ const SettingsView = {
         <div class="data-table">${body}</div>
         <div class="save-note" data-note="devices">&nbsp;</div>
       </section>`;
+  },
+
+  // ---- device identity merge (ADR-0019) ----------------------------------
+  //
+  // Deliberately not part of the rename card above. Renaming changes a label
+  // and is undone by clearing a box; merging rewrites which device the stored
+  // rows belong to and cannot be undone at all. Two operations that different
+  // must not look alike or sit in the same group of controls — so this one is
+  // collapsed by default, marked as a danger surface, and asks for the source
+  // device's full name to be typed out before it will run.
+
+  mergeCard() {
+    const devices = this._devices.slice()
+      .sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0))
+      .map((d) => d.key)
+      .filter((key) => key);
+    const options = (selected) =>
+      `<option value=""${selected ? "" : " selected"}>请选择…</option>` +
+      devices.map((key) => `<option value="${esc(key)}"${key === selected ? " selected" : ""}>${
+        esc(key)}${this._labels[key] ? ` · ${esc(this._labels[key])}` : ""}</option>`).join("");
+    return `
+      <section class="instrument-card settings-danger" id="card-device-merge"
+               data-settings-group="device-merge" data-settings-scope="section">
+        <div class="card-head">
+          <h2>设备身份合并</h2>
+          <span class="chip">不可撤销 · 管理凭据</span>
+        </div>
+        <p class="subtle">同一台机器出现两个身份时,把 source 名下已入库的行改写为 target。
+          <b>只改归属,不改任何用量计数</b>:合并前后 token 与事件总数逐字相等。
+          合并<b>无法撤销</b>,执行前请先备份数据库(单文件 SQLite,<code>cp ~/.omnitoken/omnitoken.db 备份路径</code> 即可)。
+          按设备分组的历史图表会改变形状 —— 总量不变,分组变了。</p>
+        ${this.mergeIdentityHint()}
+        <details class="merge-panel"${this._merge.open ? " open" : ""}>
+          <summary>展开合并工具</summary>
+          <div class="filter-row merge-picker">
+            <label>被合并(source)
+              <select class="merge-side" data-side="from" aria-label="被合并的设备">${options(this._merge.from)}</select>
+            </label>
+            <label>合并到(target)
+              <select class="merge-side" data-side="to" aria-label="合并到的设备">${options(this._merge.to)}</select>
+            </label>
+            <button class="ghost-btn" data-act="merge-preview">预览影响</button>
+          </div>
+          <div id="merge-interactive">${this.mergeInteractive()}</div>
+        </details>
+        ${this.mergeHistory()}
+        <div class="save-note" data-note="merge">&nbsp;</div>
+      </section>`;
+  },
+
+  // The hint is a fact, not a guess: the server saw self-reported events under
+  // both this machine's configured name and its hostname (ADR-0019 §7.3).
+  // Nothing is merged automatically — the button only fills the two selects.
+  mergeIdentityHint() {
+    const duplicate = this._local.duplicate_identity;
+    if (!duplicate) return "";
+    return `
+      <div class="merge-hint" role="note">
+        <span>本机同时以 <b>${esc(this._local.device || "")}</b> 与 <b>${esc(duplicate)}</b>
+          自报过事件,很可能是同一台机器被记成了两个身份。</span>
+        <button class="ghost-btn" data-act="merge-prefill">填入这两个身份</button>
+      </div>`;
+  },
+
+  mergeInteractive() {
+    const merge = this._merge;
+    if (merge.error) {
+      return `<p class="subtle merge-error">${esc(merge.error)}</p>`;
+    }
+    if (!merge.plan) {
+      return `<p class="subtle">选择两侧设备后点击「预览影响」。预览数字由服务端计算,
+        与真正执行的语句同源;只看不改。</p>`;
+    }
+    const plan = merge.plan;
+    const stat = (side, label) => `<tr>
+        <td>${label}<br><span class="sub2">${esc(side.device || "")}</span></td>
+        <td>${full(side.events || 0)}</td>
+        <td>${compact(side.total_tokens || 0)}</td>
+        <td>${side.first_ts ? new Date(side.first_ts).toLocaleDateString("zh-CN") : "—"}</td>
+        <td>${side.last_ts ? relTime(side.last_ts) : "—"}</td>
+        <td>${full(side.quota_snapshots || 0)}</td>
+      </tr>`;
+    const warnings = (merge.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("");
+    return `
+      <div class="data-table merge-impact">
+        <table><thead><tr>
+          <th>身份</th><th>事件</th><th>tokens</th><th>首次</th><th>最近</th><th>配额快照</th>
+        </tr></thead><tbody>${stat(plan.from, "被合并")}${stat(plan.to, "合并到")}</tbody></table>
+      </div>
+      <p class="subtle">将改写 <b>${full(plan.events_moved || 0)}</b> 条事件的归属、
+        迁移 <b>${full(plan.quota_moved || 0)}</b> 条配额快照并丢弃
+        <b>${full(plan.quota_dropped || 0)}</b> 条同键重复观测,
+        丢弃 <b>${full(plan.live_rows_dropped || 0)}</b> 行实时进程状态(下一轮上报会重建)。
+        事件一条都不会减少。</p>
+      ${warnings ? `<ul class="merge-warnings">${warnings}</ul>` : ""}
+      <div class="filter-row merge-confirm-row">
+        <label>输入 <code>${esc(merge.from)}</code> 以确认
+          <input class="form-input" id="merge-confirm" type="text" spellcheck="false"
+                 autocomplete="off" value="${esc(merge.confirm)}" placeholder="${esc(merge.from)}">
+        </label>
+        <button class="ghost-btn merge-run" data-act="merge-run"${
+          mergeSubmission(merge).ok ? "" : " disabled"}>执行合并(不可撤销)</button>
+      </div>`;
+  },
+
+  mergeHistory() {
+    if (!this._merges.length) {
+      return `<p class="subtle">合并历史:还没有执行过任何合并。</p>`;
+    }
+    const rows = this._merges.slice().reverse().map((m) => `<tr>
+        <td>${esc(m.from || "")} → ${esc(m.to || "")}</td>
+        <td>${m.at ? new Date(m.at).toLocaleString("zh-CN", { hour12: false }) : "—"}</td>
+        <td>${full(m.events || 0)}</td>
+        <td>${full(m.quota_snapshots || 0)} / ${full(m.quota_dropped || 0)}</td>
+        <td>${esc(m.actor || "")}</td>
+      </tr>`).join("");
+    return `
+      <div class="data-table merge-history">
+        <table><thead><tr>
+          <th>合并</th><th>时间</th><th>事件</th><th>配额 迁移/丢弃</th><th>发起</th>
+        </tr></thead><tbody>${rows}</tbody></table>
+      </div>
+      <p class="subtle">合并历史只增不减 —— 合并不可撤销,这份记录是事后唯一的对照物。</p>`;
   },
 
   // ---- scoped credentials ------------------------------------------------
@@ -261,8 +410,21 @@ const SettingsView = {
         this.saveDevices();
       } else if (act === "save-tokens") {
         this.saveTokens();
+      } else if (act === "merge-prefill") {
+        // Fills the pickers and nothing else: the hint may not act on itself.
+        this._merge.from = this._local.duplicate_identity || "";
+        this._merge.to = this._local.device || "";
+        this.invalidateMergePlan();
+        this._merge.open = true;
+        this.render();
+      } else if (act === "merge-preview") {
+        this.previewMerge();
+      } else if (act === "merge-run") {
+        this.runMerge();
       }
     };
+    const panel = root.querySelector("#card-device-merge details");
+    if (panel) panel.addEventListener("toggle", () => { this._merge.open = panel.open; });
   },
 
   pricingDraft() {
@@ -287,6 +449,18 @@ const SettingsView = {
     } else if (target.matches("input.label")) {
       this.devicesDraft()[target.dataset.host] = target.value;
       this._revision.devices += 1;
+    } else if (target.matches("select.merge-side")) {
+      this._merge[target.dataset.side] = target.value;
+      // A plan describes one specific pair. Changing either side must void it,
+      // or the typed confirmation would be checked against stale numbers.
+      this.invalidateMergePlan();
+      this.refreshMergeInteractive();
+    } else if (target.id === "merge-confirm") {
+      // Only the run button's enabled state depends on this; re-rendering here
+      // would move focus out of the box the user is typing in.
+      this._merge.confirm = target.value;
+      const run = document.querySelector("#view-settings .merge-run");
+      if (run) run.disabled = !mergeSubmission(this._merge).ok;
     } else if (target.id === "settings-read-token") {
       this._draft.readToken = target.value;
       this._revision.tokens += 1;
@@ -350,6 +524,82 @@ const SettingsView = {
       }
     } finally {
       this._saving.devices = false;
+    }
+  },
+
+  invalidateMergePlan() {
+    this._merge.plan = null;
+    this._merge.warnings = [];
+    this._merge.confirm = "";
+    this._merge.error = "";
+  },
+
+  refreshMergeInteractive() {
+    const host = document.getElementById("merge-interactive");
+    if (host) host.innerHTML = this.mergeInteractive();
+  },
+
+  // previewMerge asks the server what the merge would do. The numbers shown are
+  // never computed here: the user decides on figures produced by the same code
+  // that will run the statements (ADR-0019 §6.2).
+  async previewMerge() {
+    const { from, to } = this._merge;
+    if (!from || !to) return this.note("merge", false, "请先选择要合并的两个设备");
+    if (from === to) return this.note("merge", false, "两侧不能是同一个设备");
+    this.note("merge", true, "正在计算影响…");
+    const res = await this.postMerge("/api/v1/devices/merge/preview", { from, to });
+    if (!res.ok) {
+      this.invalidateMergePlan();
+      this._merge.error = res.error;
+      this.refreshMergeInteractive();
+      return this.note("merge", false, res.error);
+    }
+    this._merge.plan = res.body.plan;
+    this._merge.warnings = res.body.warnings || [];
+    this._merge.confirm = "";
+    this._merge.error = "";
+    this.refreshMergeInteractive();
+    this.note("merge", true, "以上为服务端计算的影响;确认无误后输入被合并设备全名执行。");
+  },
+
+  async runMerge() {
+    if (this._merge.busy) return this.note("merge", false, "合并进行中,请等待当前请求完成");
+    const submission = mergeSubmission(this._merge);
+    if (!submission.ok) return this.note("merge", false, submission.error);
+    this._merge.busy = true;
+    try {
+      this.note("merge", true, "正在合并…");
+      const res = await this.postMerge("/api/v1/devices/merge", submission.value);
+      if (!res.ok) return this.note("merge", false, res.error);
+      const applied = res.body.plan || {};
+      const from = submission.value.from;
+      this.invalidateMergePlan();
+      this._merge.from = "";
+      // Everything on the page (device list, history, hint) has just changed.
+      await this.load();
+      this.note("merge", true,
+        `已把 ${from} 并入 ${submission.value.to}:改写 ${full(applied.events_moved || 0)} 条事件归属,` +
+        `token 计数未变。此操作不可撤销,已记入合并历史。`);
+    } finally {
+      this._merge.busy = false;
+    }
+  },
+
+  // postMerge normalizes the three outcomes the panel must tell apart: a
+  // missing admin credential, a rejection the server explained in words, and a
+  // transport failure.
+  async postMerge(path, body) {
+    try {
+      const res = await Api.post(path, body);
+      if (res.status === 401) {
+        return { ok: false, error: "未授权:设备合并需要管理 token,请在访问凭据卡片填写后重试" };
+      }
+      if (!res.ok) {
+        return { ok: false, error: (await res.text()).trim() || `HTTP ${res.status}` };
+      }
+      return { ok: true, body: await res.json() };
+    } catch (e) {
+      return { ok: false, error: "请求失败:" + e.message };
     }
   },
 

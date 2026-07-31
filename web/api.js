@@ -205,6 +205,23 @@ const Api = {
     });
   },
 
+  // post is put's sibling for administrative actions that are not idempotent —
+  // today the device identity merge (ADR-0019). It carries the admin credential
+  // only, for the same reason: the read token buys queries, never a rewrite of
+  // stored attribution. Like put it returns the raw Response so the caller can
+  // tell 401 from 400 and show the server's message verbatim.
+  post(path, body) {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    if (this.adminToken) {
+      headers.set("Authorization", "Bearer " + this.adminToken);
+    }
+    return fetch(this.url(path), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  },
+
   // EventSource cannot carry a header, so the token rides as a query parameter
   // when there is one. Same credential, only channel the API allows — and the
   // server accepts it on this endpoint alone.

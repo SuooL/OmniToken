@@ -55,7 +55,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-rescan]
+  omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-name NAME] [-rescan]
   omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
@@ -67,6 +67,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "config file (JSON)")
 	listen := fs.String("listen", "", "listen address override")
+	name := fs.String("name", "", "device name override (default: device_name in config, else hostname)")
 	rescan := fs.Bool("rescan", false, "re-read all local logs from the start once, backfilling derived fields")
 	fs.Parse(args)
 
@@ -89,6 +90,7 @@ func runServe(args []string) {
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
+	logDeviceIdentity(cfg.ResolveDeviceName(*name))
 	srv, err := server.New(cfg)
 	if err != nil {
 		log.Fatalf("init: %v", err)
@@ -148,14 +150,12 @@ func runAgent(args []string) {
 		fmt.Fprintln(os.Stderr, "agent: server URL is required (-server flag, OMNITOKEN_SERVER env, or \"server\" in "+*configPath+")")
 		os.Exit(2)
 	}
-	deviceName := pick(*name, "OMNITOKEN_NAME", fc.Name)
-	if deviceName == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			log.Fatalf("hostname: %v", err)
-		}
-		deviceName = h
-	}
+	// The same chain `serve` uses, through the same function (ADR-0019 §7).
+	// This used to stop at agent.json's `name` and fall straight to the
+	// hostname, which is how one Mac ended up in the database twice.
+	identity := server.LocalDeviceName(*name, fc.Name, defaultConfigPath())
+	logDeviceIdentity(identity)
+	deviceName := identity.Name
 	claudeDirs := fc.ClaudeDirs
 	if *dirs != "" {
 		claudeDirs = strings.Split(*dirs, ",")
@@ -261,13 +261,9 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	if admin == "" {
 		return fmt.Errorf("admin credential is required")
 	}
-	displayName := pick(*name, "OMNITOKEN_NAME", fc.Name)
-	if displayName == "" {
-		displayName, err = os.Hostname()
-		if err != nil {
-			return fmt.Errorf("hostname: %w", err)
-		}
-	}
+	// Enrolling under a different name than the one the agent reports with would
+	// register a second identity on purpose; both come from the same chain.
+	displayName := server.LocalDeviceName(*name, fc.Name, defaultConfigPath()).Name
 	candidate, err := agent.PrepareEnrollment(
 		fc,
 		strings.TrimSuffix(hub, "/"),
@@ -392,4 +388,20 @@ func selfPath() string {
 
 func defaultConfigPath() string {
 	return filepath.Join(server.DataDir(), "config.json")
+}
+
+// logDeviceIdentity says out loud when this machine's name was not configured
+// but adopted (ADR-0019 §7.2). The hostname fallback is kept deliberately —
+// a headless server should not refuse to start over a display string — so the
+// remaining defence is that the user hears about it here, rather than by
+// noticing one machine listed twice in the panel weeks later.
+func logDeviceIdentity(identity server.DeviceIdentity) {
+	switch identity.Source {
+	case server.DeviceNameFromHostname:
+		log.Printf("device: 未配置 device_name,使用主机名 %q。"+
+			"若这台机器已用别的名字入过库,面板上会出现两个身份 —— 可在设置页合并(ADR-0019)",
+			identity.Name)
+	case server.DeviceNameLastResort:
+		log.Printf("device: 未配置 device_name 且读不到主机名,退回 %q", identity.Name)
+	}
 }

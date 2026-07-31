@@ -27,6 +27,10 @@ type Server struct {
 	bcast                 *broadcaster
 	now                   func() time.Time
 	streamRefreshInterval time.Duration
+	// hostname is os.Hostname with a seam for tests. It is consulted only to
+	// tell the user their machine is in the database under two names
+	// (ADR-0019 §7.3) — never to decide attribution.
+	hostname func() (string, error)
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -94,6 +98,10 @@ func (s *Server) Run() error {
 		return err
 	}
 
+	// Said once at startup, before the panel is even open: this machine is in
+	// the database under two names (ADR-0019 §7.3).
+	s.logDuplicateLocalIdentity()
+
 	go s.runCollectors()
 	s.startProxy()
 
@@ -117,6 +125,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
 	mux.HandleFunc("POST /api/v2/heartbeat", s.handleHeartbeatV2)
 	mux.HandleFunc("POST /api/v2/devices/{device_id}/revoke", s.adminAuth(s.handleRevokeDeviceV2))
+	// Device identity merge (ADR-0019). Admin-only, and reachable from nowhere
+	// else: no collector, parser or ingest path may fold two identities together
+	// on its own, because nothing in the data can prove they are one machine.
+	mux.HandleFunc("POST /api/v1/devices/merge/preview", s.adminAuth(s.handleDeviceMergePreview))
+	mux.HandleFunc("POST /api/v1/devices/merge", s.adminAuth(s.handleDeviceMerge))
 	// Every read goes through readAuth. It is a no-op on a loopback-only
 	// server, so wrapping them all costs nothing in the common case and means
 	// adding an endpoint cannot accidentally leave one open.
