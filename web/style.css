@@ -3,11 +3,10 @@
 /* OmniToken panel — an instrument, not a report.
    Colour, type and radius come from tokens.css, which the menubar popover
    shares verbatim (ADR-0014). Everything below is this surface's own layout.
-   Only the shell dimensions live here: they size a 1520px page and mean
+   Only the shell dimensions live here: they size a 1600px page and mean
    nothing in a 340px popover. */
 .viz-root {
-  --rail: 208px;
-  --gutter: clamp(16px, 2vw, 32px);
+  --gutter: clamp(14px, 1.4vw, 22px);
   --source-claude-gradient: linear-gradient(180deg, var(--source-claude), var(--source-claude-deep));
   --source-codex-gradient: linear-gradient(180deg, var(--source-codex), var(--source-codex-deep));
   --source-api-gradient: linear-gradient(180deg, var(--source-api), var(--source-api-deep));
@@ -16,7 +15,7 @@
 html { background: #090b15; }
 body {
   min-height: 100vh;
-  padding: 28px;
+  padding: 12px;
   background:
     radial-gradient(circle at 12% 0, #262258 0, transparent 25%),
     radial-gradient(circle at 90% 0, #0c354e 0, transparent 30%),
@@ -35,20 +34,18 @@ body {
 body::before { content: none; }
 .viz-root { position: relative; z-index: 1; }
 
-/* Full-bleed shell: a rail for navigation, the rest for content. The old
-   centred 1100px column wasted everything past a laptop and made the page read
-   as a document. Width is spent on more columns, never on longer lines — see
-   .grid-auto, which adds columns rather than stretching them. */
+/* A compact top shell gives charts the full viewport width. Width is spent on
+   more columns, never on longer lines — see .grid-auto. */
 .viz-root {
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.4;
   color: var(--text-primary);
-  width: min(1440px, 100%);
-  min-height: calc(100vh - 56px);
+  width: min(1600px, 100%);
+  min-height: calc(100vh - 24px);
   margin: 0 auto;
   display: grid;
-  grid-template-columns: var(--rail) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   overflow: clip;
   background: linear-gradient(155deg, var(--surface-1), var(--surface-2));
   border: 1px solid rgba(var(--line-rgb), 0.19);
@@ -57,18 +54,25 @@ body::before { content: none; }
 }
 
 .rail {
-  border-right: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
-  padding: 20px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
   position: sticky;
   top: 0;
-  height: 100vh;
-  overflow-y: auto;
+  z-index: 20;
+  height: auto;
+  width: 100%;
+  max-width: 100%;
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
-.brand { display: flex; align-items: baseline; gap: 8px; padding: 0 8px; }
+.brand { display: flex; align-items: baseline; gap: 8px; padding: 0 4px; flex: 0 0 auto; }
 .brand h1 {
   font-family: var(--font-body);
   font-size: 15px; font-weight: 800; letter-spacing: -0.02em;
@@ -86,23 +90,33 @@ body::before { content: none; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
-.tabs { display: flex; flex-direction: column; gap: 2px; }
-.tabs .tab-group {
-  font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;
-  color: var(--text-muted); padding: 12px 8px 4px;
+.tabs {
+  display: flex;
+  min-width: 0;
+  margin-left: auto;
+  flex-direction: row;
+  gap: 2px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  scroll-padding-inline: 24px;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tabs a {
   color: var(--text-secondary); text-decoration: none;
   font-size: 13px; padding: 7px 10px; border-radius: 8px;
-  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  scroll-margin-inline: 16px;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .tabs a:hover { background: var(--surface-2); color: var(--text-primary); }
 .tabs a[aria-current] {
-  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.20), transparent 78%);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.18), rgba(var(--accent-rgb), 0.05));
   color: var(--text-primary); font-weight: 600;
-  border-left-color: var(--accent);
-  box-shadow: -1px 0 10px -2px rgba(var(--accent-rgb), 0.55);
+  border-bottom-color: var(--accent);
+  box-shadow: 0 5px 12px -8px rgba(var(--accent-rgb), 0.70);
 }
 
 .content { padding: 22px var(--gutter) 40px; min-width: 0; }
@@ -127,20 +141,6 @@ body::before { content: none; }
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   gap: 14px;
-}
-
-@media (max-width: 860px) {
-  .viz-root { grid-template-columns: minmax(0, 1fr); }
-  .rail {
-    position: static; height: auto; flex-direction: row; align-items: center;
-    gap: 10px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border);
-    padding: 10px 12px;
-  }
-  .tabs { flex-direction: row; gap: 2px; }
-  .tabs .tab-group { display: none; }
-  .tabs a { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
-  .tabs a[aria-current] { border-left: 0; border-bottom-color: var(--accent); }
-  .content { width: 100%; overflow-x: clip; }
 }
 
 /* Glass, not paper. A translucent panel over the ambient wash, lifted by an
@@ -372,32 +372,10 @@ a.ghost-btn { text-decoration: none; }
 .tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 
 /* ---- narrow screens ----------------------------------------------------
-   The header packs a title, nine nav tabs and a refresh stamp into one flex
-   row; below ~640px that row alone is wider than the viewport and drags the
-   whole page into horizontal scrolling. Stack it, and let the tabs scroll
-   sideways on their own — nine tabs wrapped onto three lines costs more
-   vertical space than a phone screen can spare. */
+   Keep all nine routes on one scrollable row rather than wrapping them into
+   several lines and displacing the data below. */
 @media (max-width: 640px) {
-  .viz-root { padding: 16px 12px 32px; }
-
-  header { flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 14px; }
-  header > :first-child { flex: 1 1 auto; min-width: 0; }
-  h1 { font-size: 18px; }
-
-  .tabs {
-    order: 3;
-    width: 100%;
-    margin-left: 0;
-    overflow-x: auto;
-    /* Room for the scroll strip and a bigger tap target without the tabs
-       looking cramped against the card below. */
-    padding-bottom: 4px;
-    scrollbar-width: none;
-  }
-  .tabs::-webkit-scrollbar { display: none; }
   .tabs a { flex: 0 0 auto; padding: 8px 12px; }
-
-  .refresh { order: 2; }
 
   /* Title, legend and buttons compete for one row; let them stack instead of
      squeezing a button down to two wrapped characters. */
@@ -530,9 +508,13 @@ a.ghost-btn { text-decoration: none; }
 .tabs a[data-icon="settings"] { --ic: var(--text-secondary); }
 .tabs a[aria-current] .ico { color: var(--ic); filter: drop-shadow(0 0 6px var(--ic)); }
 .tabs a[aria-current] {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--ic) 22%, transparent), transparent 78%);
-  border-left-color: var(--ic);
-  box-shadow: -1px 0 10px -2px color-mix(in srgb, var(--ic) 55%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ic) 20%, transparent),
+    color-mix(in srgb, var(--ic) 5%, transparent)
+  );
+  border-bottom-color: var(--ic);
+  box-shadow: 0 5px 12px -8px color-mix(in srgb, var(--ic) 70%, transparent);
 }
 .card-head h2 { display: flex; align-items: center; gap: 8px; }
 .card-head h2 .ico { width: 14px; height: 14px; color: var(--accent); }
@@ -602,10 +584,16 @@ button:focus-visible {
   outline-color: var(--accent);
 }
 
+/* The route row scrolls horizontally on compact widths. Keep its keyboard
+   focus ring inside each link so the scroll viewport cannot clip it. */
+.tabs a:focus-visible {
+  outline-offset: -2px;
+}
+
 @media (max-width: 860px) {
-  body { padding: 10px; }
+  body { padding: 8px; }
   .viz-root {
-    min-height: calc(100vh - 20px);
+    min-height: calc(100vh - 16px);
     grid-template-columns: minmax(0, 1fr);
   }
   .rail {
@@ -618,6 +606,7 @@ button:focus-visible {
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
   }
+  .content { width: 100%; overflow-x: clip; }
   .brand { flex: 0 0 auto; }
   .tabs {
     min-width: 0;

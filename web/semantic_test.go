@@ -202,7 +202,7 @@ func TestSemanticBehaviorInNode(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	for _, name := range []string{"charts.js", "details.js", "live.js", "heatmap.js", "telemetry.js"} {
+	for _, name := range []string{"app.js", "charts.js", "details.js", "live.js", "heatmap.js", "telemetry.js"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(semanticAsset(t, name)), 0o600); err != nil {
 			t.Fatalf("write %s companion asset: %v", name, err)
 		}
@@ -222,6 +222,69 @@ function load(name, extra = {}) {
   return context;
 }
 function run(context, expression) { return vm.runInContext(expression, context); }
+
+function bootApp(hash) {
+  const routes = ['overview', 'live', 'speed', 'reports', 'details', 'devices', 'models', 'cache', 'settings'];
+  const nodes = Object.fromEntries(routes.map((route) => [
+    'view-' + route,
+    {hidden: true},
+  ]));
+  nodes['page-title'] = {textContent: ''};
+  nodes['page-sub'] = {textContent: ''};
+  nodes['main-content'] = {focus() {}};
+  nodes['hub-health'] = {className: '', innerHTML: ''};
+  const anchors = routes.map((route) => ({
+    dataset: {view: route, icon: route},
+    textContent: route[0].toUpperCase() + route.slice(1),
+    attrs: {},
+    setAttribute(name, value) { this.attrs[name] = value; },
+    removeAttribute(name) { delete this.attrs[name]; },
+    insertAdjacentHTML() {},
+    scrollIntoView() {},
+  }));
+  const view = {
+    load() {}, invalidate() {}, start() {}, stop() {}, enter() {}, leave() {},
+    applyRoute() {}, lastData: null,
+  };
+  const document = {
+    getElementById(id) { return nodes[id] || null; },
+    querySelectorAll(selector) {
+      return selector.startsWith('#nav a') ? anchors : [];
+    },
+    querySelector(selector) {
+      if (selector === '.auth-banner') return null;
+      if (selector === '.viz-root') return {insertAdjacentHTML() {}};
+      const match = selector.match(/^#nav a\[data-view="([^"]+)"\]$/);
+      return match ? anchors.find((anchor) => anchor.dataset.view === match[1]) : null;
+    },
+  };
+  const context = load('app.js', {
+    document, location: {hash}, Overview: view, Live: view, Reports: view,
+    Details: view, CacheView: view, SpeedView: view, DevicesView: view,
+    ModelsView: view, SettingsView: view,
+    Api: {loadToken() {}, url: (path) => path, token: ''},
+    fetch: async () => ({json: async () => ({auth_required: false})}),
+    icon: () => '', addEventListener() {},
+    matchMedia: () => ({matches: false, addEventListener() {}}),
+    setInterval: () => 1, clearInterval() {},
+    requestAnimationFrame: (callback) => callback(),
+    resizeChartsIn() {}, ChartRegistry: {resizeWithin() {}},
+  });
+  return {context, nodes, anchors};
+}
+
+test('router defaults empty and unknown hashes to Overview and honors explicit routes', () => {
+  for (const hash of ['', '#does-not-exist']) {
+    const {nodes, anchors} = bootApp(hash);
+    assert.equal(nodes['view-overview'].hidden, false);
+    assert.equal(anchors.find((anchor) => anchor.dataset.view === 'overview').attrs['aria-current'], 'page');
+    assert.equal(anchors.filter((anchor) => anchor.attrs['aria-current'] === 'page').length, 1);
+  }
+  const {nodes, anchors} = bootApp('#live');
+  assert.equal(nodes['view-live'].hidden, false);
+  assert.equal(nodes['view-overview'].hidden, true);
+  assert.equal(anchors.find((anchor) => anchor.dataset.view === 'live').attrs['aria-current'], 'page');
+});
 
 test('session rows expose a durable hash route and route state restores it', () => {
   const context = load('details.js', {

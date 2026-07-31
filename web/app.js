@@ -52,7 +52,7 @@ const Views = {
 let currentView = null;
 
 function parseRouteHash(hash) {
-  const raw = (hash || "#live").replace(/^#/, "");
+  const raw = (hash || "#overview").replace(/^#/, "");
   const split = raw.indexOf("?");
   return {
     name: split < 0 ? raw : raw.slice(0, split),
@@ -61,10 +61,10 @@ function parseRouteHash(hash) {
 }
 
 function route() {
-  // Lands on live: the panel's job is now what the machines are doing, with
-  // the retrospective views a click away.
+  // Overview is the product landing page; live operation remains one direct
+  // navigation step away.
   const parsed = parseRouteHash(location.hash);
-  const next = Views[parsed.name] ? parsed.name : "live";
+  const next = Views[parsed.name] ? parsed.name : "overview";
   if (next === currentView) {
     if (next === "details") Details.applyRoute(parsed.params);
     return;

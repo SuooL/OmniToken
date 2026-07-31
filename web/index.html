@@ -15,21 +15,17 @@
       <span class="dot-live" aria-hidden="true"></span>
       <h1>OmniToken</h1>
     </div>
-    <!-- Grouped by what you came to find out, not by page count. Speed and
-         live usage lead; quota sits under "额度" as a secondary concern. -->
+    <!-- Overview is the landing page. All routes remain one direct click away
+         in the compact top navigation. -->
     <div class="tabs" id="nav">
-      <span class="tab-group">正在发生</span>
+      <a href="#overview" data-view="overview" data-icon="overview">总览</a>
       <a href="#live" data-view="live" data-icon="live">实时</a>
       <a href="#speed" data-view="speed" data-icon="speed">速度</a>
-      <span class="tab-group">回顾</span>
-      <a href="#overview" data-view="overview" data-icon="overview">总览</a>
       <a href="#reports" data-view="reports" data-icon="reports">报表</a>
       <a href="#details" data-view="details" data-icon="details">明细</a>
-      <span class="tab-group">切面</span>
       <a href="#devices" data-view="devices" data-icon="devices">设备</a>
       <a href="#models" data-view="models" data-icon="models">模型</a>
       <a href="#cache" data-view="cache" data-icon="cache">缓存</a>
-      <span class="tab-group">其它</span>
       <a href="#settings" data-view="settings" data-icon="settings">设置</a>
     </div>
   </nav>
@@ -37,8 +33,8 @@
   <div class="content" id="main-content" tabindex="-1">
   <div class="page-head">
     <div>
-      <h2 id="page-title">实时</h2>
-      <p class="subtitle" id="page-sub">跨设备 LLM 用量监控</p>
+      <h2 id="page-title">总览</h2>
+      <p class="subtitle" id="page-sub">累计与趋势</p>
     </div>
     <div class="page-utilities">
       <div class="hub-health" id="hub-health" aria-live="polite">
