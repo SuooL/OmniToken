@@ -82,6 +82,21 @@ internal/agent        推送 + 中继
 
 **不要直接推 `dev` 或 `main`**,两条分支都有保护。
 
+### Agent 开发流程
+
+Agent 执行 non-trivial 功能、跨层重构或 bug 修复时，必须主动完成以下流程，
+不得等用户逐次提醒：
+
+1. 开始前运行 `git status`、确认上游基线和现有 worktree，保护用户已有未提交改动。
+2. 从最新 `origin/dev` 创建隔离 worktree。人工分支沿用 `feature/<描述>`；
+   Codex 客户端创建的分支使用其规定的 `codex/<描述>` 前缀。
+3. 复杂改动先提交设计/实现计划；行为变更严格执行测试先行，确认测试因缺少目标行为而失败后再写生产代码。
+4. 每个独立可审查阶段在受影响测试通过后形成 focused commit，不把无关修改混入。
+5. 声称完成前必须运行本文件规定的完整 gate；涉及 `desktop/` 时额外运行
+   `make desktop-check` 和实际 Tauri bundle 构建，涉及 Web 时进行真实浏览器验收。
+6. 最后审查 `git diff origin/dev...HEAD`、确认无 secrets/生成垃圾/越界改动，
+   推送当前分支并创建目标为 `dev` 的 PR；不得直接提交或推送到 `dev/main`。
+
 ```sh
 git switch dev && git pull
 git switch -c feature/你的改动
