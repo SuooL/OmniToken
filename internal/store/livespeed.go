@@ -1,6 +1,27 @@
 package store
 
-import "time"
+import (
+	"sort"
+	"time"
+
+	"github.com/suool/omnitoken/internal/model"
+)
+
+// SpeedContribution is one additive breakdown row. ContributionTPS uses the
+// parent LiveSpeed window's global active-time denominator; NativeTPS uses only
+// this group's merged generation intervals.
+type SpeedContribution struct {
+	Key             string  `json:"key"`
+	OutputTokens    int64   `json:"output_tokens"`
+	ActiveMS        int64   `json:"active_ms"`
+	ContributionTPS float64 `json:"contribution_tps"`
+	NativeTPS       float64 `json:"native_tps"`
+}
+
+type speedContributionAcc struct {
+	outputTokens int64
+	spans        []span
+}
 
 // SessionSpeed is one generation stream's throughput over the live window.
 //
@@ -16,7 +37,11 @@ type SessionSpeed struct {
 	OutputTokens int64   `json:"output_tokens"`
 	ActiveMS     int64   `json:"active_ms"`
 	TPS          float64 `json:"tps"`
-	LastTS       int64   `json:"last_ts"`
+	// ContributionTPS uses the machine-wide active-time denominator, so all
+	// session contributions reconcile exactly to LiveSpeed.TPS. TPS above
+	// remains the session's native speed for wire compatibility.
+	ContributionTPS float64 `json:"contribution_tps"`
+	LastTS          int64   `json:"last_ts"`
 	// Spans are this stream's merged generation intervals, [startMS, endMS]
 	// pairs, so the live view can draw when it was actually producing rather
 	// than only how much it produced.
@@ -36,15 +61,19 @@ type SessionSpeed struct {
 // machine throughput, while each stream is still doing 50. Both numbers are
 // reported because they answer different questions (ADR-0009).
 type LiveSpeed struct {
-	WindowSeconds int            `json:"window_seconds"`
-	WindowStartMS int64          `json:"window_start_ms"`
-	WindowEndMS   int64          `json:"window_end_ms"`
-	OutputTokens  int64          `json:"output_tokens"`
-	ActiveMS      int64          `json:"active_ms"`
-	TPS           float64        `json:"tps"`
-	Sessions      []SessionSpeed `json:"sessions"`
-	// Spans is the union across every stream — the track that shows why three
-	// sessions at 50 tok/s each is not 150 unless they took turns.
+	WindowSeconds int                 `json:"window_seconds"`
+	WindowStartMS int64               `json:"window_start_ms"`
+	WindowEndMS   int64               `json:"window_end_ms"`
+	OutputTokens  int64               `json:"output_tokens"`
+	ActiveMS      int64               `json:"active_ms"`
+	TPS           float64             `json:"tps"`
+	Sessions      []SessionSpeed      `json:"sessions"`
+	Sources       []SpeedContribution `json:"sources"`
+	Devices       []SpeedContribution `json:"devices"`
+	Models        []SpeedContribution `json:"models"`
+	// Spans is the union across every stream — the shared wall-clock track that
+	// distinguishes three concurrent 50 tok/s sessions (150 aggregate) from
+	// three sequential 50 tok/s sessions (50 aggregate).
 	Spans [][2]int64 `json:"spans"`
 }
 
@@ -61,12 +90,16 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		WindowStartMS: startMS,
 		WindowEndMS:   endMS,
 		Sessions:      []SessionSpeed{},
+		Sources:       []SpeedContribution{},
+		Devices:       []SpeedContribution{},
+		Models:        []SpeedContribution{},
 		Spans:         [][2]int64{},
 	}
 
 	q := `SELECT session_id, device, repo, model, source, output_tokens, gen_ms, ts
 	      FROM events
-	      WHERE ts >= ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0`
+	      WHERE ts >= ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0
+	        AND source != 'codex'`
 	args := []any{startMS, endMS}
 	if device != "" {
 		q += ` AND device = ?`
@@ -83,6 +116,9 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		spans []span
 	}
 	bySession := map[string]*acc{}
+	bySource := map[string]*speedContributionAcc{}
+	byDevice := map[string]*speedContributionAcc{}
+	byModel := map[string]*speedContributionAcc{}
 	var all []span
 
 	for rows.Next() {
@@ -118,11 +154,24 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 			a.LastTS, a.Model = ts, mdl
 		}
 
+		addSpeedContribution(bySource, speedSourceKey(src), outTok, span{start, end})
+		addSpeedContribution(byDevice, dev, outTok, span{start, end})
+		addSpeedContribution(byModel, model.CanonicalModel(mdl), outTok, span{start, end})
+
 		out.OutputTokens += outTok
 		all = append(all, span{start, end})
 	}
 	if err := rows.Err(); err != nil {
 		return out, err
+	}
+
+	machine := mergeSpans(all)
+	out.Spans = exportSpans(machine)
+	for _, sp := range machine {
+		out.ActiveMS += sp.end - sp.start
+	}
+	if out.ActiveMS > 0 {
+		out.TPS = float64(out.OutputTokens) * 1000 / float64(out.ActiveMS)
 	}
 
 	for _, a := range bySession {
@@ -134,19 +183,60 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		if a.ActiveMS > 0 {
 			a.TPS = float64(a.OutputTokens) * 1000 / float64(a.ActiveMS)
 		}
+		if out.ActiveMS > 0 {
+			a.ContributionTPS = float64(a.OutputTokens) * 1000 / float64(out.ActiveMS)
+		}
 		out.Sessions = append(out.Sessions, a.SessionSpeed)
 	}
 	sortSessionsByTokens(out.Sessions)
-
-	machine := mergeSpans(all)
-	out.Spans = exportSpans(machine)
-	for _, sp := range machine {
-		out.ActiveMS += sp.end - sp.start
-	}
-	if out.ActiveMS > 0 {
-		out.TPS = float64(out.OutputTokens) * 1000 / float64(out.ActiveMS)
-	}
+	out.Sources = buildSpeedContributions(bySource, out.ActiveMS)
+	out.Devices = buildSpeedContributions(byDevice, out.ActiveMS)
+	out.Models = buildSpeedContributions(byModel, out.ActiveMS)
 	return out, nil
+}
+
+func speedSourceKey(source string) string {
+	switch source {
+	case "claude-code", "codex":
+		return source
+	default:
+		return "api"
+	}
+}
+
+func addSpeedContribution(groups map[string]*speedContributionAcc, key string, outputTokens int64, interval span) {
+	group := groups[key]
+	if group == nil {
+		group = &speedContributionAcc{}
+		groups[key] = group
+	}
+	group.outputTokens += outputTokens
+	group.spans = append(group.spans, interval)
+}
+
+func buildSpeedContributions(groups map[string]*speedContributionAcc, globalActiveMS int64) []SpeedContribution {
+	out := make([]SpeedContribution, 0, len(groups))
+	for key, group := range groups {
+		merged := mergeSpans(group.spans)
+		row := SpeedContribution{Key: key, OutputTokens: group.outputTokens}
+		for _, sp := range merged {
+			row.ActiveMS += sp.end - sp.start
+		}
+		if row.ActiveMS > 0 {
+			row.NativeTPS = float64(row.OutputTokens) * 1000 / float64(row.ActiveMS)
+		}
+		if globalActiveMS > 0 {
+			row.ContributionTPS = float64(row.OutputTokens) * 1000 / float64(globalActiveMS)
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ContributionTPS == out[j].ContributionTPS {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].ContributionTPS > out[j].ContributionTPS
+	})
+	return out
 }
 
 func exportSpans(spans []span) [][2]int64 {
