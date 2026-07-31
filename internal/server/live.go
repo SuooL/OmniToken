@@ -230,7 +230,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 // point: burn rate is defined once, so the popover and the Live page cannot
 // drift into reporting different numbers for the same ten minutes.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.livePayload(time.Now())
+	payload, err := s.livePayload(s.currentTime())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -247,13 +247,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	// The server-wide write deadline protects every bounded response from slow
+	// readers. SSE is the one intentional exception: it owns the connection
+	// until the client leaves and emits a bounded state-bearing refresh below.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("X-Accel-Buffering", "no")
 
 	send := func(event string) error {
-		payload, err := s.livePayload(time.Now())
+		payload, err := s.livePayload(s.currentTime())
 		if err != nil {
 			return err
 		}
@@ -267,17 +271,23 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ch, cancel := s.bcast.Subscribe()
 	defer cancel()
-	heartbeat := time.NewTicker(30 * time.Second)
-	defer heartbeat.Stop()
+	refreshInterval := s.streamRefreshInterval
+	if refreshInterval <= 0 {
+		refreshInterval = 30 * time.Second
+	}
+	refresh := time.NewTicker(refreshInterval)
+	defer refresh.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-heartbeat.C:
-			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
+		case <-refresh.C:
+			// A comment proves transport liveness but leaves fleet state frozen.
+			// Recompute the payload so last-seen thresholds age even when no
+			// collector mutation occurs.
+			if err := send("live"); err != nil {
 				return
 			}
-			fl.Flush()
 		case <-ch:
 			time.Sleep(time.Second) // coalesce bursts; pending signals collapse
 			select {

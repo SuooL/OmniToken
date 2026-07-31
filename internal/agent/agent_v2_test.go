@@ -347,6 +347,53 @@ func TestSendHeartbeatIncludesIdentityCapabilitiesProcessAndOutboxStats(t *testi
 	}
 }
 
+func TestHeartbeatLoopRunsIndependentlyOnItsOwnTicker(t *testing.T) {
+	requests := make(chan model.Heartbeat, 2)
+	agent := v2TestAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/heartbeat" {
+			t.Fatalf("path = %q, want heartbeat", r.URL.Path)
+		}
+		var heartbeat model.Heartbeat
+		if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil {
+			t.Fatal(err)
+		}
+		requests <- heartbeat
+		w.WriteHeader(http.StatusOK)
+	})
+	agent.bootID = outboxBootID
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		agent.runHeartbeatLoop(ticks)
+		close(done)
+	}()
+
+	select {
+	case first := <-requests:
+		if first.Sequence != 1 {
+			t.Fatalf("initial heartbeat sequence = %d, want 1", first.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat loop did not report immediately")
+	}
+
+	ticks <- time.Now()
+	select {
+	case second := <-requests:
+		if second.Sequence != 2 {
+			t.Fatalf("tick heartbeat sequence = %d, want 2", second.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat loop did not report on its independent ticker")
+	}
+	close(ticks)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat loop did not stop when ticker closed")
+	}
+}
+
 func TestRunOnceDoesNotSendResidentHeartbeat(t *testing.T) {
 	heartbeatRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

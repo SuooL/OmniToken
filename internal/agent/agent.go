@@ -34,6 +34,8 @@ const (
 	relayV1IngestBodyMax  int64 = 64 << 20
 	relayHeartbeatBodyMax int64 = 1 << 20
 	relayTokenHeader            = "X-OmniToken-Relay-Token"
+	heartbeatInterval           = 30 * time.Second
+	outboxIdleInterval          = time.Second
 )
 
 type Config struct {
@@ -191,6 +193,15 @@ func (a *Agent) RunOnce() (int, error) {
 		// while durable capacity remains.
 		_, _ = a.drainOutbox()
 	}
+	n, err := a.scanOnce()
+	if err != nil || !a.isV2() {
+		return n, err
+	}
+	_, err = a.drainOutbox()
+	return n, err
+}
+
+func (a *Agent) scanOnce() (int, error) {
 	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs)
 	sink := func(events []model.Event) error {
 		collect.RefineProvider(events, a.probe) // local logs only (F9)
@@ -210,10 +221,6 @@ func (a *Agent) RunOnce() (int, error) {
 	if err == nil {
 		a.lastScanAt.Store(a.currentTime().UnixMilli())
 	}
-	if err != nil || !a.isV2() {
-		return n, err
-	}
-	_, err = a.drainOutbox()
 	return n, err
 }
 
@@ -259,18 +266,29 @@ func (a *Agent) Run() error {
 			log.Printf("proxy: %v", err)
 		}()
 	}
+	if a.isV2() {
+		a.startUploadLoop()
+		a.startHeartbeatLoop()
+	}
 	backoff := retryBackoff{base: time.Second, max: time.Minute, jitter: a.jitter}
 	for {
-		n, err := a.RunOnce()
+		var n int
+		var err error
+		if a.isV2() {
+			// Resident v2 collection only appends durable work. Upload and
+			// heartbeat have independent workers, so a slow Hub cannot stall
+			// filesystem scanning or make a healthy agent appear offline.
+			n, err = a.scanOnce()
+		} else {
+			n, err = a.RunOnce()
+		}
 		if err != nil {
 			log.Printf("agent: report failed (will retry): %v", err)
 		} else if n > 0 {
 			log.Printf("agent: reported %d events", n)
 		}
 		var statusErr error
-		if a.isV2() {
-			statusErr = a.sendHeartbeat()
-		} else {
+		if !a.isV2() {
 			statusErr = a.reportProcs()
 		}
 		if statusErr != nil {
@@ -283,6 +301,46 @@ func (a *Agent) Run() error {
 		backoff.Reset()
 		a.sleep(a.cfg.Interval)
 	}
+}
+
+func (a *Agent) startHeartbeatLoop() {
+	ticker := time.NewTicker(heartbeatInterval)
+	go func() {
+		defer ticker.Stop()
+		a.runHeartbeatLoop(ticker.C)
+	}()
+}
+
+// runHeartbeatLoop is deliberately independent of scanning and uploading.
+// It reports immediately at startup and then at each heartbeat tick.
+func (a *Agent) runHeartbeatLoop(ticks <-chan time.Time) {
+	for {
+		if err := a.sendHeartbeat(); err != nil {
+			log.Printf("agent: heartbeat failed: %v", err)
+		}
+		if _, ok := <-ticks; !ok {
+			return
+		}
+	}
+}
+
+func (a *Agent) startUploadLoop() {
+	go func() {
+		backoff := retryBackoff{base: time.Second, max: time.Minute, jitter: a.jitter}
+		for {
+			err := a.uploadOldest()
+			switch {
+			case errors.Is(err, ErrOutboxEmpty):
+				backoff.Reset()
+				time.Sleep(outboxIdleInterval)
+			case err != nil:
+				log.Printf("agent: upload failed (will retry): %v", err)
+				time.Sleep(backoff.Next())
+			default:
+				backoff.Reset()
+			}
+		}
+	}()
 }
 
 func (a *Agent) push(events []model.Event) error {

@@ -264,16 +264,20 @@ v1 `/api/v1/ingest` 在迁移期继续工作，因此可以逐台迁移，不需
 - **Enrollment**：在目标设备本机运行 `omnitoken agent enroll`。通过受保护通道提供
   enrollment 授权，核对 hub 地址和证书；生成的 `device_id` 与 credential 只属于该
   设备。
-- **Rotation**：先签发新 credential，原子更新 agent 的受保护配置或环境文件，重启
-  agent 并确认新 credential 已产生 heartbeat/ack，最后撤销旧 credential。不要先
-  撤销再更新，否则会把仍在 outbox 中的数据暂时锁在设备上。
+- **Planned rotation**：先让当前 credential 把 outbox 排空，再以新的
+  identity/credential enrollment 并切换 agent，确认新 identity 已产生
+  heartbeat/ack，最后撤销旧 identity。不要先撤销再切换，否则会把旧 identity 的
+  未确认 batch 锁在设备上。
 - **Revocation**：设备遗失、重装、credential 泄漏或退役时，立即从 hub 的管理入口
-  按 `device_id` 撤销。预期结果是该 credential 的 ingest 和 heartbeat 都返回
-  401/403，且 hub 不发生数据变更。
+  调用 `POST /api/v2/devices/{device_id}/revoke`，通过 `Authorization: Bearer
+  <ADMIN_TOKEN>` 提交 admin credential。预期结果是响应 `status: revoked`，此后该
+  credential 的 ingest 和 heartbeat 都返回 401/403，且 hub 不发生数据变更。紧急
+  泄漏场景先撤销，再以新 identity enrollment；旧 outbox 需从可信源日志按明确
+  `since` 边界重建。
 
-不要直接编辑 SQLite 中的 token hash 或 revocation 字段。管理命令的精确参数以当前
-版本的 `omnitoken --help` / `omnitoken agent enroll --help` 为准；自动化时通过
-权限为 `0600` 的环境文件或 secret store 传递授权，不使用命令行明文参数。
+不要直接编辑 SQLite 中的 token hash 或 revocation 字段。自动化调用管理 API 时，
+从权限为 `0600` 的环境文件或 secret store 构造 Authorization header，不把明文
+credential 放进 URL、日志或持久化 shell history。
 
 ```sh
 OMNITOKEN_ADMIN_TOKEN='<ADMIN_SECRET>' \
@@ -382,9 +386,9 @@ durable outbox 只保证**未确认传输**在断网/重启后可重试，不是
 备份 agent 的 stable identity、配置和 outbox 数据库时先停止 agent，或使用 SQLite
 一致性备份。不要把同一份 identity 恢复到两台同时运行的机器。
 
-若 identity 或 credential 已确认泄漏，先在 hub 撤销，再以新身份 enrollment。若只
-丢失 outbox，但源日志仍存在，可在明确 `since` 边界后重新扫描；`event_id` 会去重，
-但错误的历史边界可能造成错误设备归属，因此不要盲目全量 rescan。
+若 identity 或 credential 已确认泄漏，先调用 Hub 的 device revoke API，再以新身份
+enrollment。若只丢失 outbox，但源日志仍存在，可在明确 `since` 边界后重新扫描；
+`event_id` 会去重，但错误的历史边界可能造成错误设备归属，因此不要盲目全量 rescan。
 
 ## 故障与恢复预期
 

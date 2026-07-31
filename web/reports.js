@@ -10,6 +10,7 @@ const Reports = {
   granularity: "daily",
   days: 30,
   _rendered: false,
+  _loadGeneration: 0,
 
   enter() {
     if (!this._rendered) {
@@ -19,7 +20,9 @@ const Reports = {
     this.load();
   },
 
-  leave() {},
+  leave() {
+    this._loadGeneration += 1;
+  },
 
   apiPath(format) {
     return `/api/v1/reports?granularity=${this.granularity}&days=${this.days}&format=${format}`;
@@ -95,13 +98,17 @@ const Reports = {
 
   async load() {
     this.syncControls();
+    const loadID = ++this._loadGeneration;
+    const path = this.apiPath("json");
     const status = document.getElementById("reports-status");
     status.hidden = true;
     try {
-      const d = await Api.get(this.apiPath("json"));
+      const d = await Api.get(path);
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       if (d.granularity === "session") this.renderSessions(d.rows || []);
       else this.renderPeriods(d.rows || []);
     } catch (e) {
+      if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       status.textContent = "加载失败:服务不可达,请稍后重试";
       status.hidden = false;
     }

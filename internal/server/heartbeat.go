@@ -79,6 +79,37 @@ func (s *Server) handleEnrollV2(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, record)
 }
 
+// handleRevokeDeviceV2 is the operational emergency stop for a leaked device
+// credential. The route is admin-scoped and timestamps revocation at the Hub,
+// so clients cannot forge lifecycle ordering with their own clocks.
+func (s *Server) handleRevokeDeviceV2(w http.ResponseWriter, r *http.Request) {
+	if s.cfg == nil || s.cfg.AdminToken == "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken-admin"`)
+		writeIngestV2Error(w, http.StatusUnauthorized, "admin_credential_not_configured")
+		return
+	}
+	deviceID := r.PathValue("device_id")
+	if !validCanonicalUUID(deviceID) {
+		writeIngestV2Error(w, http.StatusBadRequest, "invalid_device_id")
+		return
+	}
+	revokedAt := s.currentTime().UnixMilli()
+	if err := s.store.RevokeDevice(deviceID, revokedAt); err != nil {
+		if errors.Is(err, store.ErrDeviceNotFound) {
+			writeIngestV2Error(w, http.StatusNotFound, "device_not_found")
+			return
+		}
+		writeIngestV2Error(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	s.bcast.Notify()
+	writeJSON(w, map[string]any{
+		"device_id":  deviceID,
+		"status":     "revoked",
+		"revoked_at": revokedAt,
+	})
+}
+
 func (s *Server) handleHeartbeatV2(w http.ResponseWriter, r *http.Request) {
 	var heartbeat model.Heartbeat
 	if err := decodeStrictJSON(w, r, heartbeatV2BodyMax, &heartbeat); err != nil {

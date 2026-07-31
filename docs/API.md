@@ -4,7 +4,7 @@
 
 - `token`:迁移期 v1 ingest;
 - `read_token`:非 loopback 的查询、面板和 SSE;
-- `admin_token`:enrollment 与 settings 写入;
+- `admin_token`:enrollment、device revocation 与 settings 写入;
 - 每台 v2 agent 的 `device_token`:只代表该 `device_id`,用于 ingest/heartbeat。
 
 旧配置只写 `token` 时仍会回落为 read/admin credential,方便平滑升级;新部署应使用
@@ -109,6 +109,14 @@ ACK;相同 `batch_id` 不同 payload 返回 `409`;身份/撤销失败返回 `401
 进程快照以及 outbox backlog。客户端的 `sent_at` 只用于诊断;在线/延迟/离线状态只由
 Hub 接收请求时写入的 `last_seen_at` 计算,因此错误或恶意客户端时钟不能伪造在线状态。
 成功响应包含 `protocol_version/device_id/received_at`。
+
+### POST /api/v2/devices/{device_id}/revoke
+
+使用 admin credential 撤销指定设备。路径中的 `device_id` 必须是 canonical UUID；
+成功响应包含 `device_id/status/revoked_at`，其中时间由 Hub 生成。撤销会立即使该设备
+credential 的 v2 ingest 与 heartbeat 返回未授权，且不会删除既有历史数据。未知设备
+返回 `404`，非法 ID 返回 `400`。该操作不接受 read token、legacy ingest token 或
+device credential。
 
 ## 查询
 

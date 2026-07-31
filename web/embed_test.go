@@ -24,6 +24,18 @@ func TestReportsUseAuthenticatedDownloadAPI(t *testing.T) {
 	if !strings.Contains(source, "downloadAPI(") {
 		t.Fatal("report exports must call downloadAPI so bearer authentication reaches the download request")
 	}
+	for _, contract := range []string{
+		"_loadGeneration:",
+		"const loadID = ++this._loadGeneration",
+		"this._loadGeneration += 1",
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("report async-generation contract missing %q", contract)
+		}
+	}
+	if got := strings.Count(source, "isCurrentGeneration(this._loadGeneration, loadID)"); got < 2 {
+		t.Errorf("reports guards %d async paths, want success and catch", got)
+	}
 
 	start := strings.Index(source, `id="reports-export"`)
 	if start < 0 {

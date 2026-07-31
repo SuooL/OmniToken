@@ -167,10 +167,10 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 |---|---|---|
 | 读接口鉴权(ADR-0016) | ✅ 完成 | 默认 listen 改为 `127.0.0.1:8787`;非 loopback 必须同时具备 legacy ingest、read、admin 三类 credential,缺一即拒绝启动。`?access_token=` 只在 SSE 上接受 |
 | 面板与桌面端 scoped token | ✅ 完成 | Web 分离 read/admin draft 与持久化边界;桌面端只存 read token。401 时设置页仍可进入并修复 credential |
-| v2 device registry + enrollment | ✅ 完成 | stable UUID、per-device SHA-256 credential、admin-only enrollment、rename 不换 identity、revocation 同时阻断 ingest/heartbeat;agent config 原子 `0600` 写入且 secret 不进 argv/output |
+| v2 device registry + enrollment | ✅ 完成 | stable UUID、per-device SHA-256 credential、admin-only enrollment 与 device revoke API、rename 不换 identity、revocation 同时阻断 ingest/heartbeat;agent config 原子 `0600` 写入且 secret 不进 argv/output |
 | acknowledged transactional ingest | ✅ 完成 | 16 MiB strict envelope、device binding、batch receipt/idempotent replay、事务 apply、精确 ACK 四元组。非法 batch 不 mutation,并发相同 batch 只产生一份 receipt/通知 |
 | durable outbox + cursor ledger | ✅ 完成 | agent SQLite WAL FIFO;sequence allocation 与 insert 同事务;ACK limit+1 严格解码;scan 固定 in-flight byte boundary/逐批 delivery key,小容量与重启下不会反复卡首批,quota enqueue 失败不推进 offset |
-| heartbeat liveness | ✅ 完成 | server receive time 决定 online/stale/offline;未来客户端时钟不能伪造在线。Devices/Live 合并 registry、legacy usage 与 backlog;Web 用 Hub age + monotonic elapsed 本地降级,revoked offline 不会被改善 |
+| heartbeat liveness | ✅ 完成 | 独立 heartbeat worker 不受 scan/outbox 上传阻塞；server receive time 决定 online/stale/offline，未来客户端时钟不能伪造在线。Devices/Live 合并 registry、legacy usage 与 backlog；SSE 每 30s 重算状态，Web 另用 Hub age + monotonic elapsed 本地降级，revoked offline 不会被改善 |
 | transport/relay hardening | ✅ 完成 | remote plaintext HTTP 默认拒绝并需显式 opt-in;relay 逐跳独立 header credential且保留最终 device Authorization,route allowlist/body limits/timeouts;Hub/SSH scheduler具备 timeout、elapsed cadence 与 jitter |
 | 设备归属(ADR-0015) | ✅ 完成 | 实测:SSH 拉取 macmini 的 46,303 条事件里 **42,784 条(92%)已存在于本机名下** —— 根因不是 id 冲突,是两台机器日志同步(539/543 个 codex rollout 文件连 UUID 都一样)。只计一次是对的(混合库 0 重复 event_id),错的是归属退化成「先扫到的胜」。改为自报优先的单向覆盖:`observed → self` 可改,反向不可,`self` 之间先到者胜(**启发式**,ADR 里写明)。计数列一行不碰 |
 | 采集起点 `since` | ✅ 完成 | `ssh_hosts[].since`,早于该时刻的不入库。接一台老机器不该把可能是副本的多年历史当成它的工作补进来。畸形日期在配置加载时直接报错 —— 静默退化成「无窗口」会导入用户明确要跳过的历史,而那不可撤销 |

@@ -486,8 +486,10 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState, now_ms: i
         .iter()
         .map(|device| DeviceView {
             name: device
-                .get("device")
+                .get("display_name")
                 .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .or_else(|| device.get("device").and_then(Value::as_str))
                 .unwrap_or("—")
                 .to_string(),
             state: device
@@ -1420,7 +1422,7 @@ mod tests {
             },
             "processes": {"sessions":[]},
             "devices": [
-                {"device":"macmini","state":"active","has_procs":true,"running":1},
+                {"device":"018f2d5a-7b31-7d98-bf8e-3c2f35a1a001","display_name":"macmini","state":"active","has_procs":true,"running":1},
                 {"device":"workstation","state":"active","has_procs":true,"running":1},
                 {"device":"server","state":"idle","has_procs":false,"running":0},
                 {"device":"laptop","state":"stale","has_procs":true,"running":0}
@@ -1443,6 +1445,7 @@ mod tests {
         assert_eq!(view.sessions[0].rate, 48.0);
         assert_eq!(view.sessions_more, 1);
         assert_eq!(view.devices_more, 1);
+        assert_eq!(view.devices[0].name, "macmini");
         assert!(view.risk.is_none());
         assert!(view
             .quota_summary

@@ -20,12 +20,13 @@ import (
 )
 
 type Server struct {
-	cfg    *Config
-	store  *store.Store
-	state  *collect.State
-	prices *pricing.Table
-	bcast  *broadcaster
-	now    func() time.Time
+	cfg                   *Config
+	store                 *store.Store
+	state                 *collect.State
+	prices                *pricing.Table
+	bcast                 *broadcaster
+	now                   func() time.Time
+	streamRefreshInterval time.Duration
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -115,6 +116,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v2/enroll", s.handleEnrollV2)
 	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
 	mux.HandleFunc("POST /api/v2/heartbeat", s.handleHeartbeatV2)
+	mux.HandleFunc("POST /api/v2/devices/{device_id}/revoke", s.adminAuth(s.handleRevokeDeviceV2))
 	// Every read goes through readAuth. It is a no-op on a loopback-only
 	// server, so wrapping them all costs nothing in the common case and means
 	// adding an endpoint cannot accidentally leave one open.
@@ -151,11 +153,8 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		// SSE connections intentionally have no total write deadline. Idle
-		// keep-alives are still bounded, and each request must finish headers
-		// and its body within the limits above.
-		WriteTimeout: 0,
-		IdleTimeout:  2 * time.Minute,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 }
 
