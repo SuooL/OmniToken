@@ -178,6 +178,22 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | macmini 实接 | ✅ 完成 | agent + SSH 反向隧道(落地端口 47871,避开 macOS 临时端口区间),服务端维持 `127.0.0.1:8787` 零暴露。两端 launchd 常驻。实测:两台设备均 active、均为进程上报方(SSH 拉取给不了进程真值),0 重复 event_id |
 | macOS 常驻 runbook | ✅ 完成 | launchd 两个 job + 验证清单 + 完整卸载步骤;`-L`/`-R` 给出选择规则而不是并列摆出 |
 
+## M8 — Telemetry Studio A2(2026-07-30)
+
+用户再次把产品重心收敛到“实际用了多少、现在/近期多快、由谁贡献”，并明确要求 Web
+与菜单栏以图形表达为主。实现合同见
+[ADR-0017](adr/0017-additive-speed-contributions.md)，完整设计与执行记录见
+[Telemetry Studio A2 计划](superpowers/plans/2026-07-30-telemetry-studio-a2.md)。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 可加和速度口径 | ✅ 完成 | 总吞吐与来源/设备/模型/会话贡献统一使用全局活跃时间并集作分母，保证 `aggregate_tps = Σ contribution_tps`；自身活跃速度作为不可加和的 `native_tps` 下钻。窗口边界按重叠时长分摊 token |
+| 有界遥测 API | ✅ 完成 | `GET /api/v1/telemetry?range=1h\|5h\|24h` 返回今日完整模型构成、滚动 5h Claude/Codex/Other 用量、独立来源速度桶、覆盖率与未测来源；Codex 用量可见但不伪造速度 |
+| Web 九页 A2 | ✅ 完成 | 总览、实时、速度、报表、明细、设备、模型、缓存、设置全部接入统一图表生命周期与状态模型；来源速度使用独立零基线，今日模型不再只显示前三名 |
+| 菜单栏 A2 | ✅ 完成 | 420px 宽、可滚动自适应弹窗；主位改为近 10m 已测总吞吐，增加 Claude/Codex 5h、60m 来源 lanes、1h 峰值/活跃占比、今日全部模型和可加和贡献者。M6 的撞墙预测主位由此被取代 |
+| 可靠性与安全 | ✅ 完成 | telemetry last-good 按 endpoint 隔离，401 清除旧数值，并发刷新拒绝旧快照覆盖；图表实例清理脱离 DOM 的 canvas/observer；未知、空值、陈旧状态分开表达 |
+| 本机交付 | ✅ 完成 | `make check`、`make desktop-check`、Tauri app bundle、签名校验与真实数据库九路由验收通过；本机 Hub 与 `/Applications/OmniToken.app` 已升级并重启 |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试
