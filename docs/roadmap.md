@@ -193,6 +193,7 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 菜单栏 A2 | ✅ 完成 | 420px 宽、可滚动自适应弹窗；主位改为近 10m 已测总吞吐，增加 Claude/Codex 5h、60m 来源 lanes、1h 峰值/活跃占比、今日全部模型和可加和贡献者。M6 的撞墙预测主位由此被取代 |
 | 可靠性与安全 | ✅ 完成 | telemetry last-good 按 endpoint 隔离，401 清除旧数值，并发刷新拒绝旧快照覆盖；图表实例清理脱离 DOM 的 canvas/observer；未知、空值、陈旧状态分开表达 |
 | 本机交付 | ✅ 完成 | `make check`、`make desktop-check`、Tauri app bundle、签名校验与真实数据库九路由验收通过；本机 Hub 与 `/Applications/OmniToken.app` 已升级并重启 |
+| A2 遗留清理 | ✅ 完成 | A2 换掉弹窗主位后，`PopoverView` 仍在算并序列化 `risk` / `quota_summary` / `quotas_more` / `quota_reset_minutes` / `burn_per_minute`,而 `desktop/ui/app.js` 一处都不读 —— 只有单测还在断言它们。已删除,并补一条序列化断言防止再长回来。配额的三个真实去处(托盘图标 `tray_readings`、菜单栏数字、`Alerts` 预警)都不经 `popover_view`,不受影响。requirements 的 F24 描述同步改为 A2 实际形态 |
 
 ## 工程事项(持续)
 
