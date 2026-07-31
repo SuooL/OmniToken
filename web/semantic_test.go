@@ -326,6 +326,19 @@ test('heatmap renders a keyboard-readable per-day table alongside the svg', () =
   assert.match(heat.innerHTML, />3<\/td>/);
 });
 
+test('365-day heatmap uses the full width offered by its card', () => {
+  const heat = {innerHTML: ''};
+  const context = load('heatmap.js', {
+    document: {documentElement: {getAttribute: () => null}, getElementById: () => null},
+    matchMedia: () => ({matches: false}),
+    cssVar: () => '#ddd', compact: String, full: String, esc: String,
+  });
+  context.heat = heat;
+  run(context, 'Heatmap.attachTooltip = () => {}; Heatmap.render(heat, [], 365)');
+  assert.match(heat.innerHTML, /<svg[^>]*style="display:block;width:100%;height:auto"/);
+  assert.doesNotMatch(heat.innerHTML, /max-width:/);
+});
+
 test('A4 heatmap keeps the dark ramp on a light OS color scheme', () => {
   const context = load('heatmap.js', {
     document: {documentElement: {getAttribute: () => null}, getElementById: () => null},
