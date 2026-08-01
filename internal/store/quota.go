@@ -114,13 +114,21 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 // Readings with no boundary (resets_at = 0) sort last, so a source that does
 // report one is preferred — and when nothing reports one, the rule falls back
 // to time on its own.
+//
+// Windows are compared at minute resolution because a boundary can be derived
+// rather than stated: Codex reports "resets in N seconds", so every observation
+// computes a slightly different instant. Comparing raw milliseconds read that
+// jitter as a newer window and let a stale reading win by being 5ms "later" —
+// on real data, an 88% reading from 00:45 beat a 96% one from 01:39 of the same
+// weekly window. A minute is far finer than the hours between real windows and
+// far coarser than the jitter.
 func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
 	rows, err := s.db.Query(
 		`SELECT device, source, limit_id, scope, window_minutes,
 		        used_percent, resets_at, observed_at, plan_type
 		 FROM (SELECT *, ROW_NUMBER() OVER (
 		         PARTITION BY device, source, scope, window_minutes
-		         ORDER BY resets_at DESC, observed_at DESC) AS rn
+		         ORDER BY resets_at / 60000 DESC, observed_at DESC) AS rn
 		       FROM quota_snapshots WHERE observed_at >= ?)
 		 WHERE rn = 1
 		 ORDER BY window_minutes, device`,

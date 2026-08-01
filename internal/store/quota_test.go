@@ -250,3 +250,44 @@ func TestLatestQuotasFallsBackToTimeWhenNoWindowBoundaryIsReported(t *testing.T)
 		t.Fatalf("got %+v, want the newest (55%%)", latest)
 	}
 }
+
+// A window boundary that is derived rather than stated jitters, and the jitter
+// must not be read as a newer window.
+//
+// Codex reports "resets in N seconds", so every observation computes a slightly
+// different absolute instant — readings milliseconds apart on the same window
+// produced resets_at values that differ by a few milliseconds. Comparing those
+// raw let a stale reading win by being 5ms "later": on real data the pick was a
+// 88% reading from 00:45 over a 96% reading from 01:39, both of the same weekly
+// window. Window identity is therefore compared at minute resolution — far
+// finer than the hours that separate real windows, far coarser than the jitter.
+func TestLatestQuotasIgnoresSubMinuteJitterInDerivedResetTimes(t *testing.T) {
+	s, err := Open(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixMilli()
+	resets := now + 3*24*60*60*1000
+	mk := func(pct float64, resets, obs int64) model.QuotaSnapshot {
+		return model.QuotaSnapshot{Device: "mac", Source: "codex", LimitID: "codex",
+			Scope: "primary", WindowMinutes: 10080, UsedPercent: pct, ResetsAt: resets, ObservedAt: obs}
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{
+		mk(96, resets, now),           // the newest look at this window
+		mk(88, resets+5, now-3000000), // an older look whose resets_at is 5ms later
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("want 1 row, got %d: %+v", len(latest), latest)
+	}
+	if latest[0].UsedPercent != 96 {
+		t.Errorf("got %.0f%%, want 96%% — sub-minute jitter is not a new window", latest[0].UsedPercent)
+	}
+}
