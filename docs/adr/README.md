@@ -29,3 +29,4 @@ ADR 标注 supersedes,不改写历史。
 | [0022](0022-card-head-hierarchy.md) | 卡片头部:标题在前、口径作后缀;热力图按容器定格子而非拉伸 | 已采纳 |
 | [0023](0023-windows-process-table.md) | Windows 进程表:Toolhelp32 + 读 PEB 拿命令行,读不到就不报(落实 0012) | 已采纳 |
 | [0024](0024-caliber-notes-behind-info.md) | 口径说明收进 `i` 提示框,行动指引留在原地 | 已采纳 |
+| [0025](0025-quota-capacity-estimate.md) | 订阅额度容量估计:跨窗口峰值取样,样本不足不给数 | 已采纳 |

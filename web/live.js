@@ -230,10 +230,13 @@ const Live = {
       : `<span class="empty">近 10 分钟无活跃会话</span>`;
   },
 
-  // 5-hour window cards, one per billing channel (server: buildWindowCards).
-  // Subscription windows use the provider's real reset boundary when known;
-  // the metered channels have no window at all, so they are a rolling
-  // look-back and say so — and they get no bar (ADR-0018 §7).
+  // Quota window cards (server: buildWindowCards): per subscription source, the
+  // 5-hour window and — when the provider reports one — the weekly window, plus
+  // one rolling card per metered billing channel.
+  //
+  // Subscription windows use the provider's real reset boundary when known; the
+  // metered channels have no window at all, so they are a rolling look-back and
+  // say so — and they get no bar (ADR-0018 §7).
   renderWindows(windows) {
     const el = document.getElementById("window-row");
     if (!windows.length) { el.innerHTML = ""; return; }
@@ -268,11 +271,22 @@ const Live = {
         ? `${compact(w.rate_per_minute)}/min · 按此速率窗口结束约 ${compact(w.projected_tokens)}` +
           (w.projected_percent ? `(≈${Math.min(999, w.projected_percent).toFixed(0)}%)` : "")
         : "";
+      // What is left in the window, learned from past windows (ADR-0025).
+      // The card leads with the remainder because that is the question being
+      // asked; the total is the smaller half of the same line. The `推断` chip
+      // is what keeps it separable from the authoritative percentage above it —
+      // the rule is that an inferred number is always marked as one.
+      const room = w.remaining_tokens
+        ? `<div class="sub">还能用 约 ${compact(w.remaining_tokens)} ` +
+          `<span class="chip">推断</span>` +
+          `<span class="extra"> · 窗口约 ${compact(w.capacity_tokens)}</span></div>`
+        : "";
       return `
       <div class="stat-tile">
         <div class="label">${esc(w.label)} ${badge}</div>
         <div class="value">${w.tokens ? compact(w.tokens) : "0"}</div>
         <div class="sub">${bits.join(" · ")}</div>
+        ${room}
         ${proj ? `<div class="sub proj${w.projected_percent >= 100 ? " over" : ""}">${esc(proj)}</div>` : ""}
         ${w.note ? `<div class="sub">${esc(w.note)}</div>` : ""}
         ${metered ? "" : `<div class="meter"><div class="meter-fill ${severity(pct)}" style="width:${pct.toFixed(1)}%"></div></div>`}
