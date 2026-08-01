@@ -130,6 +130,7 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 |---|---|---|
 | 生成速度口径修正(ADR-0009) | ✅ 完成 | 见上;并集口径 + 实时速度 + 跨分片 turn 起点 |
 | 面板视觉重做 | ✅ 完成 | Quiet Instrument 设计系统:system sans 正文 + tabular/mono 数字、平面分析卡、Live/Speed 局部玻璃层、sticky mobile nav、active-scroll 状态、`focus-visible` 与 reduced-motion。九路由在 1440×1000 / 390×844 实测无横向溢出 |
+| 窗口可用额度估计(F11 扩展) | ✅ 完成 | ADR-0025。官方只给百分比,不给额度。实测朴素的「已用 tokens ÷ 已用百分比」不成立:同一个 5h 窗口内每 1% 对应 2.3M~10.9M(差 8 倍),换四种 token 口径都没救回来。改为每个窗口在其百分比峰值处取一个样本、跨窗口累积,峰值门槛 30%(实测把离散度从 40.7% 砍到 26.0%),取 25 分位,样本少于 3 个不给数。只取最近 30 个窗口,换套餐会自己跟上。顺带补上周窗口卡 |
 | 实时会话地面真值(F25) | ✅ 完成 | ADR-0012:agent 读本机进程表,`live_sessions` 表按 (device,pid) 覆盖写入,TTL 90s;Live 页区分「开着但空闲」「已关闭」「无进程数据」。实测本机识别出 1 个 claude 会话,并排除了 `codex app-server` / `codex mcp-server` 这类常驻服务进程 |
 | Windows 进程表(F25 补齐) | ✅ 完成 | ADR-0023:Toolhelp32 枚举 + 读 PEB 拿命令行(WMI 实测 4.5s/449 进程,超过采集间隔,弃用)。此前 Windows 返回空报告,把「观测不了」谎报成「没有会话」——mypc 有 2 个 claude 会话在跑而面板显示 0。顺带修掉分隔符只认 `/`、带引号路径被空白切断、npm shim 与它启动的二进制被重复计数 |
 | 其余八页逐页重做 | 大体完成 | 速度页整页重做;模型页与设备页的图表统一到 ECharts(ADR-0010),去掉约 150 行手绘 SVG 与它们各自的 tooltip 实现;卡片标题不再被图例挤成两行。九个页面在 999 / 1440 / 1728px 逐页体检:横向溢出为 0,无破版。热力图保留手绘 SVG —— 日历格子不是 ECharts calendar 擅长的形状,且它本就没有坐标轴可省。剩下的是主观视觉细节,无已知缺陷 |

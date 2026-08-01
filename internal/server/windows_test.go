@@ -27,7 +27,7 @@ func TestFiveHourQuotaKeepsTheTightestReadingPerSource(t *testing.T) {
 		{Source: "claude-code", Device: "laptop", WindowMinutes: 300, UsedPercent: 8, ResetsAt: resets},
 	}
 
-	got := tightestFiveHourQuota(quotas, now)
+	got := tightestQuota(quotas, now, 300)
 
 	w, ok := got["claude-code"]
 	if !ok {
@@ -59,7 +59,7 @@ func TestFiveHourQuotaIsIndependentOfArrivalOrder(t *testing.T) {
 		{Source: "codex", WindowMinutes: 300, UsedPercent: 12, ResetsAt: resets},
 	}
 
-	if a, d := tightestFiveHourQuota(ascending, now)["codex"], tightestFiveHourQuota(descending, now)["codex"]; a.pct != d.pct {
+	if a, d := tightestQuota(ascending, now, 300)["codex"], tightestQuota(descending, now, 300)["codex"]; a.pct != d.pct {
 		t.Errorf("order changed the answer: %v vs %v", a.pct, d.pct)
 	}
 }
@@ -76,7 +76,7 @@ func TestFiveHourQuotaIgnoresOtherWindowsAndExpiredOnes(t *testing.T) {
 		{Source: "claude-code", WindowMinutes: 300, UsedPercent: 31, ResetsAt: now.Add(time.Hour).UnixMilli()},
 	}
 
-	if w := tightestFiveHourQuota(quotas, now)["claude-code"]; w.pct != 31 {
+	if w := tightestQuota(quotas, now, 300)["claude-code"]; w.pct != 31 {
 		t.Errorf("used_percent = %v, want 31 — the only live 5h reading", w.pct)
 	}
 }

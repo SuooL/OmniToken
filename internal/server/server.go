@@ -103,6 +103,7 @@ func (s *Server) Run() error {
 	s.logDuplicateLocalIdentity()
 
 	go s.runCollectors()
+	go s.backfillCapacity()
 	s.startProxy()
 
 	if s.cfg.Token == "" {
