@@ -110,16 +110,77 @@ func parsePS(out string, loc *time.Location) []procInfo {
 
 // toolFor maps a command line to a source name, or "" if it is not an agent CLI.
 func toolFor(command string) string {
-	if isServerMode(command) {
+	args := splitArgs(command)
+	if isServerMode(args) || isShellWrapper(args) {
 		return ""
 	}
 	switch {
-	case commandRuns(command, "claude"):
+	case commandRuns(args, "claude"):
 		return claudecode.Source
-	case commandRuns(command, "codex"):
+	case commandRuns(args, "codex"):
 		return codex.Source
 	}
 	return ""
+}
+
+// splitArgs breaks a command line into argv tokens, honouring double quotes.
+//
+// Whitespace alone is enough on Unix, where ps prints an unquoted command. It
+// is not enough on Windows, where the interesting paths live under
+// `C:\Program Files\` and are therefore always quoted: splitting a quoted path
+// on its space pushes the real second argument out of the two-token window
+// commandRuns looks at, and the shim below stops being recognisable.
+//
+// Quotes are dropped rather than kept, so a token is the path itself and can be
+// compared to a program name directly.
+func splitArgs(command string) []string {
+	var (
+		args    []string
+		current strings.Builder
+		quoted  bool
+	)
+	flush := func() {
+		if current.Len() > 0 {
+			args = append(args, current.String())
+			current.Reset()
+		}
+	}
+	for _, r := range command {
+		switch {
+		case r == '"':
+			quoted = !quoted
+		case !quoted && (r == ' ' || r == '\t'):
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return args
+}
+
+// shells are the interpreters that start a program without being one.
+var shells = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ash": true,
+	"ksh": true, "fish": true, "cmd": true, "wscript": true, "cscript": true,
+	"powershell": true, "pwsh": true,
+}
+
+// isShellWrapper rejects a shell that has an agent CLI's name on its command
+// line, because the CLI it is about to run is a separate process that this scan
+// picks up on its own.
+//
+// This is what Windows adds. Every npm-installed CLI there is launched through
+// a shim — `sh.exe /c/Users/x/AppData/Roaming/npm/claude` — and MSYS sh stays
+// alive as the parent of the claude.exe it spawns, so both are in the process
+// table at once and a single session gets counted twice. Dropping the shim
+// loses nothing: it was seen next to its own child on mypc, one second apart.
+//
+// The rule holds on Unix too and is not restricted to Windows, since the
+// argument for it never mentions the platform: an open Claude Code session
+// spawns a shell per tool call, and each one names `.claude` in a path.
+func isShellWrapper(args []string) bool {
+	return len(args) > 0 && shells[programName(args[0])]
 }
 
 // serverSubcommands are the modes in which an agent CLI is a background server
@@ -142,8 +203,8 @@ var serverSubcommands = map[string]bool{
 // Either would pin a permanent "codex is running" to the panel — precisely the
 // uninformative signal this feature exists to replace. An interactive session
 // (`codex`, `codex exec`, `claude`) still counts.
-func isServerMode(command string) bool {
-	for _, f := range strings.Fields(command) {
+func isServerMode(args []string) bool {
+	for _, f := range args {
 		if serverSubcommands[f] {
 			return true
 		}
@@ -156,17 +217,38 @@ func isServerMode(command string) bool {
 // Only the first two arguments are considered, which is what makes
 // `node /path/to/codex.js` match while leaving a stray mention of the name in a
 // later flag alone.
-func commandRuns(command, name string) bool {
-	fields := strings.Fields(command)
-	if len(fields) > 2 {
-		fields = fields[:2]
+func commandRuns(args []string, name string) bool {
+	if len(args) > 2 {
+		args = args[:2]
 	}
-	for _, f := range fields {
+	for _, f := range args {
 		if tokenIsBinary(f, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// pathParts splits an argv token into path segments.
+//
+// Both separators are honoured on every platform rather than switching on
+// runtime.GOOS: a Windows command line reaches this code through an agent's
+// payload as readily as through the local scan, and MSYS hands out `/c/Users`
+// paths on the very machine whose native ones use backslashes — the same shim
+// line carries one of each.
+func pathParts(token string) []string {
+	return strings.FieldsFunc(token, func(r rune) bool { return r == '/' || r == '\\' })
+}
+
+// programName is the last path segment of an argv token — the file that would
+// actually be executed.
+func programName(token string) string {
+	parts := pathParts(token)
+	if len(parts) == 0 {
+		return ""
+	}
+	base := parts[len(parts)-1]
+	return strings.TrimSuffix(base, ".exe")
 }
 
 // tokenIsBinary matches one argv token against a binary name.
@@ -185,7 +267,10 @@ func commandRuns(command, name string) bool {
 // processes live under a `Codex Framework.framework` path whose last segment is
 // `Codex`, and the capital is the only thing separating them from the CLI.
 func tokenIsBinary(token, name string) bool {
-	parts := strings.Split(token, "/")
+	parts := pathParts(token)
+	if len(parts) == 0 {
+		return false
+	}
 	base := parts[len(parts)-1]
 	if base == name ||
 		strings.TrimSuffix(base, ".exe") == name ||
