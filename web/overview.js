@@ -184,7 +184,8 @@ const Overview = {
     return `
       <section class="chart-card" aria-labelledby="overview-channel-title">
         <div class="card-head">
-          <h2 id="overview-channel-title">计费通道构成<span class="eyebrow">近 30 天 · 只有「订阅」受配额窗口约束</span></h2>
+          <h2 id="overview-channel-title">计费通道构成<span class="eyebrow">近 30 天 · 只有「订阅」受配额窗口约束</span>${infoTip(
+            "未知通道既不并入订阅,也不按比例摊分到其它通道 —— <b>证据不足时不猜</b>(ADR-0018)。")}</h2>
           <span class="subtle">${esc(coverage)}</span>
         </div>
         ${total ? `<div class="composition-strip" aria-label="计费通道构成">` + rows.map((row) =>
@@ -202,7 +203,6 @@ const Overview = {
             </tr>`).join("")}</tbody>
           </table>
         </div>
-        <p class="subtle">未知通道既不并入订阅,也不按比例摊分到其它通道 —— 证据不足时不猜(ADR-0018)。</p>
       </section>`;
   },
 

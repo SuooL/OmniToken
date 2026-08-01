@@ -291,6 +291,45 @@ func TestContributorsTableDropsTheRedundantSourceColumn(t *testing.T) {
 	}
 }
 
+// Methodology belongs behind the `i`, not in the card body (ADR-0024).
+//
+// The rule these assert is the one from the ADR: a note that explains *how a
+// number is computed* folds; a note that states *what you are looking at*, or
+// that tells you to go do something, stays visible. The longest of the folded
+// ones ran six lines and pushed the table it described below the fold.
+func TestMethodologyNotesAreFoldedBehindTheInfoTip(t *testing.T) {
+	if !strings.Contains(embeddedAsset(t, "index.html"), `src="infotip.js"`) {
+		t.Fatal("infotip.js must be loaded by the panel shell")
+	}
+	speed := embeddedAsset(t, "speedview.js")
+	if got := strings.Count(speed, "infoTip("); got < 4 {
+		t.Errorf("speed view folds %d notes, want its four caliber notes", got)
+	}
+	if !strings.Contains(embeddedAsset(t, "overview.js"), "infoTip(") {
+		t.Error("the billing-channel caliber note must be folded")
+	}
+	// A caliber note left as body text is the thing this replaces.
+	for _, stale := range []string{
+		`<p class="subtle">贡献速度使用共享分母`,
+		`<p class="subtle">代理在请求两端打点`,
+		`speed-curve-legend`,
+		`speed-model-note`,
+	} {
+		if strings.Contains(speed, stale) {
+			t.Errorf("speed view still renders %q as body text", stale)
+		}
+	}
+}
+
+// An empty state is a call to action, not a caliber note. Folding "here is how
+// to turn this on" behind an icon is how it goes unread.
+func TestEmptyStateInstructionsStayVisible(t *testing.T) {
+	speed := embeddedAsset(t, "speedview.js")
+	if !strings.Contains(speed, "暂无本地代理数据。配置 agent 的") {
+		t.Error("the proxy setup instruction must stay in the empty state, not move behind an icon")
+	}
+}
+
 func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 	source := embeddedAsset(t, "settingsview.js")
 	for _, contract := range []string{
