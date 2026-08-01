@@ -468,7 +468,10 @@ mod ui_contract_tests {
     #[test]
     fn ui_contract_leaves_the_transparent_window_background_undrawn() {
         let config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
-        let panel = &config["app"]["windows"][0];
+        let panel = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == "panel"))
+            .expect("tauri.conf.json must define the panel window");
 
         assert_eq!(panel["transparent"], true);
         assert!(
