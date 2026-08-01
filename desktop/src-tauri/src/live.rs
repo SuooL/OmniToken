@@ -17,7 +17,7 @@
 //! stops shows a stale timestamp, whereas a frozen stream shows a plausible
 //! number forever.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -470,6 +470,27 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState) -> Popove
         }
     };
 
+    // Identity → display name, resolved once for every list in this view.
+    //
+    // The server resolves names on the device list only (deviceNames); every
+    // other list it sends — sessions here, quotas, process rows — carries the
+    // bare identity, which for an enrolled device is a UUID.
+    let display_names: HashMap<&str, &str> = payload
+        .and_then(|data| data.get("devices"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|device| {
+            let identity = device.get("device").and_then(Value::as_str)?;
+            let name = device
+                .get("display_name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())?;
+            Some((identity, name))
+        })
+        .collect();
+
     let mut sessions: Vec<SessionView> = speed_sessions
         .iter()
         .map(|session| SessionView {
@@ -485,6 +506,7 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState) -> Popove
                 .get("device")
                 .and_then(Value::as_str)
                 .filter(|device| !device.is_empty())
+                .map(|device| *display_names.get(device).unwrap_or(&device))
                 .unwrap_or("—")
                 .to_string(),
             contribution_rate: session.get("contribution_tps").and_then(Value::as_f64),
@@ -1467,6 +1489,40 @@ mod tests {
         assert_eq!(view.device_online, 3);
         assert_eq!(view.device_total, 4);
         assert_eq!(view.devices[0].name, "macmini");
+    }
+
+    /// A session row is keyed by the identity that owns the events, which for
+    /// an enrolled device is a UUID. The device list beside it is the only
+    /// place the resolved name arrives, so the same resolution the device rows
+    /// already do has to reach the session rows — otherwise the popover prints
+    /// a machine's name in one list and 36 characters of hex in the other.
+    #[test]
+    fn session_rows_use_the_same_display_name_as_device_rows() {
+        let payload = json!({
+            "generated_at": 10_000,
+            "speed": {
+                "tps": 40.0,
+                "sessions": [
+                    {"source":"claude-code","repo":"org/kidctfm","model":"opus","device":"5a1bc564-e0a7-4a9d-8f8d-4f82ec60e0a3","tps":40.0,"contribution_tps":40.0},
+                    {"source":"codex","repo":"org/other","model":"gpt-5","device":"hzsmini","tps":10.0,"contribution_tps":5.0}
+                ]
+            },
+            "processes": {"sessions":[]},
+            "devices": [
+                {"device":"5a1bc564-e0a7-4a9d-8f8d-4f82ec60e0a3","display_name":"mypc","state":"active","has_procs":true,"running":2},
+                {"device":"hzsmini","state":"idle","has_procs":true,"running":0}
+            ],
+            "quotas": [],
+            "windows": [],
+            "burn": {"per_minute":100}
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live);
+
+        assert_eq!(view.sessions[0].device, "mypc");
+        // An identity with no display name is already its own best label.
+        assert_eq!(view.sessions[1].device, "hzsmini");
+        assert_eq!(view.devices[0].name, "mypc");
     }
 
     /// The A2 popover renders speed, 5h usage, today's models, contributors,

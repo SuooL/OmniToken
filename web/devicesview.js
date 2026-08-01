@@ -105,12 +105,18 @@ const DevicesView = {
     document.getElementById("devices-table-title").textContent = `设备明细 · 近 ${days} 天`;
     document.getElementById("devices-tiles").innerHTML = this.tiles(summary, days);
     document.getElementById("devices-table").innerHTML = this.table(summary);
-    this.throughputChart(((((d.live || {}).speed) || {}).devices) || []);
+    // The throughput rows come from the live payload, which is keyed by
+    // identity alone; the summary beside them is the only place the resolved
+    // name arrives, so it supplies the axis labels.
+    this.throughputChart(((((d.live || {}).speed) || {}).devices) || [], summary);
     this.chart(matrix, series);
   },
 
-  throughputChart(rows) {
+  throughputChart(rows, summary = []) {
     const el = document.getElementById("devices-throughput-chart");
+    const names = new Map(summary
+      .filter((r) => r.display_name)
+      .map((r) => [r.device, r.display_name]));
     rows = [...rows].filter((row) => row.contribution_tps > 0)
       .sort((a, b) => b.contribution_tps - a.contribution_tps);
     if (!rows.length) {
@@ -121,7 +127,10 @@ const DevicesView = {
       titleText: "当前设备吞吐贡献",
       grid: {left: 12, right: 48, top: 8, bottom: 8, containLabel: true},
       xAxis: {type: "value", min: 0, splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted")}},
-      yAxis: {type: "category", inverse: true, data: rows.map((row) => row.key || row.device), axisLabel: {color: cssVar("--text-secondary")}},
+      yAxis: {type: "category", inverse: true, data: rows.map((row) => {
+        const identity = row.key || row.device;
+        return names.get(identity) || identity;
+      }), axisLabel: {color: cssVar("--text-secondary")}},
       series: [{
         type: "bar", barMaxWidth: 18, data: rows.map((row) => row.contribution_tps),
         itemStyle: {color: cssVar("--status-healthy"), borderRadius: [0, 4, 4, 0]},
