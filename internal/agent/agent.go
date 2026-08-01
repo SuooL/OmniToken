@@ -431,12 +431,41 @@ func (a *Agent) enqueueEnvelope(envelope model.IngestEnvelopeV2) error {
 }
 
 func (a *Agent) enqueueEvents(events []model.Event) error {
-	envelopes, err := a.partitionEventEnvelopes(events)
+	envelopes, err := a.partitionEventEnvelopes(collapseRepeatedEventIDs(events))
 	if err != nil {
 		return err
 	}
 	_, err = a.outbox.EnqueueManyNext(envelopes)
 	return err
+}
+
+// collapseRepeatedEventIDs keeps the first observation of each event_id, because
+// an envelope carrying the same id twice is rejected whole
+// (model.ValidateIngestEnvelope) and one scan legitimately produces such pairs.
+//
+// A single Claude Code generation is written as several JSONL lines — one per
+// content block — and every one of them repeats the same message.id, requestId
+// and usage, so the parser derives the same event_id for all of them by design
+// (ADR-0004). On this developer's own logs that is 18,308 of 26,848 ids. The
+// server's local collector never noticed: it inserts by event_id and the repeat
+// is ignored there. The v2 agent refused the batch instead, and since a batch
+// that never enqueues never advances an offset, that failure was not a dropped
+// scan but a permanent one — the same lines were re-read and re-refused forever.
+//
+// Collapsing here rather than loosening the envelope keeps "one id, one row" a
+// protocol invariant the Hub can rely on. First-wins matches the store's insert,
+// so a log line reaching the Hub by two routes still yields one row either way.
+func collapseRepeatedEventIDs(events []model.Event) []model.Event {
+	seen := make(map[string]struct{}, len(events))
+	collapsed := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if _, repeated := seen[event.EventID]; repeated {
+			continue
+		}
+		seen[event.EventID] = struct{}{}
+		collapsed = append(collapsed, event)
+	}
+	return collapsed
 }
 
 func (a *Agent) partitionEventEnvelopes(events []model.Event) ([]model.IngestEnvelopeV2, error) {
