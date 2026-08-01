@@ -157,7 +157,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		// Last model wins: a session can switch models, and what it is running
 		// now is more useful on a live view than what it started with.
 		if ts >= a.LastTS {
-			a.LastTS, a.Model = ts, mdl
+			a.LastTS, a.Model = ts, model.CanonicalModel(mdl)
 		}
 
 		addSpeedContribution(bySource, speedSourceKey(src), allocatedTokens, span{start, end})

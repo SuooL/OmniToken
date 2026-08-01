@@ -13,9 +13,15 @@ import (
 // should be whole. The channel is not lost — it lives in the event's provider
 // field, which is where that question belongs.
 //
-// Only vendor routing prefixes are stripped. The family name stays: `claude-`
-// and `gpt-` say what something is, and a list of bare version numbers would
-// be harder to read, not easier.
+// A pinned release date is the same story told by the vendor rather than the
+// router: `claude-haiku-4-5-20251001` is what the alias `claude-haiku-4-5`
+// resolves to, and one database held three rows for that single model once the
+// Bedrock prefix was counted too.
+//
+// Vendor routing and pinned dates are stripped; nothing else is. The family
+// name stays — `claude-` and `gpt-` say what something is, and a list of bare
+// version numbers would be harder to read, not easier — and so does the model
+// number, which a looser date rule would happily eat.
 //
 // These names are never written to the database. Pricing keys off the id the
 // tool actually reported, and rewriting history to match a display preference
@@ -44,6 +50,14 @@ var (
 	bedrockRegion = regexp.MustCompile(`^(us|eu|apac|jp|au|ca|sa|global)\.`)
 	// Bedrock version suffixes: claude-x-v1:0 → claude-x
 	bedrockVersion = regexp.MustCompile(`-v\d+(:\d+)?$`)
+	// A pinned release date, in the two shapes the vendors write it:
+	// claude-haiku-4-5-20251001 and gpt-4o-2024-08-06. The alias without it
+	// points at exactly this snapshot, so they are one model.
+	//
+	// The shape has to be exact. A model number looks the same as a date to a
+	// looser rule — `claude-opus-4-5` ends in a dash and digits too, and eating
+	// that would merge every Opus 4 into one row.
+	releaseDate = regexp.MustCompile(`-(\d{8}|\d{4}-\d{2}-\d{2})$`)
 )
 
 // CanonicalModel reduces a reported model id to the name shown and grouped by.
@@ -63,6 +77,9 @@ func CanonicalModel(id string) string {
 		m = m[i+1:]
 	}
 	m = bedrockVersion.ReplaceAllString(m, "")
+	// After the version suffix, so a Bedrock id carrying both
+	// (claude-sonnet-4-20250514-v1:0) loses them in the order they were added.
+	m = releaseDate.ReplaceAllString(m, "")
 	if m == "" {
 		return id // never turn a real id into nothing
 	}

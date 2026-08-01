@@ -8,7 +8,7 @@ func TestCanonicalModelStripsVendorRouting(t *testing.T) {
 		"claude-opus-4-8":                            "claude-opus-4-8",
 		"anthropic.claude-opus-4-8":                  "claude-opus-4-8",
 		"us.anthropic.claude-opus-4-8":               "claude-opus-4-8",
-		"us.anthropic.claude-sonnet-4-20250514-v1:0": "claude-sonnet-4-20250514",
+		"us.anthropic.claude-sonnet-4-20250514-v1:0": "claude-sonnet-4",
 		"anthropic/claude-opus-4-8":                  "claude-opus-4-8",
 		// Vertex pins a date; same model.
 		"claude-opus-4-8@20250514": "claude-opus-4-8",
@@ -16,6 +16,42 @@ func TestCanonicalModelStripsVendorRouting(t *testing.T) {
 	for in, want := range cases {
 		if got := CanonicalModel(in); got != want {
 			t.Errorf("CanonicalModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A pinned snapshot and its alias are one model. Anthropic's own ids carry the
+// release date (`claude-haiku-4-5-20251001`) while the tool may report the
+// alias (`claude-haiku-4-5`), and both turned up in the same database — three
+// rows for one model once the Bedrock prefix is counted.
+func TestCanonicalModelStripsPinnedReleaseDates(t *testing.T) {
+	cases := map[string]string{
+		"claude-haiku-4-5-20251001":           "claude-haiku-4-5",
+		"anthropic.claude-haiku-4-5-20251001": "claude-haiku-4-5",
+		"anthropic.claude-haiku-4-5":          "claude-haiku-4-5",
+		"claude-opus-4-5-20251101":            "claude-opus-4-5",
+		// OpenAI writes the same thing with separators.
+		"gpt-4o-2024-08-06": "gpt-4o",
+	}
+	for in, want := range cases {
+		if got := CanonicalModel(in); got != want {
+			t.Errorf("CanonicalModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A version is not a date. These differ from a pinned snapshot only in how many
+// digits follow the last dash, so the rule has to be exact about the shape or
+// it eats the model number itself.
+func TestCanonicalModelKeepsVersionNumbers(t *testing.T) {
+	for _, id := range []string{
+		"claude-opus-4-5",   // the alias the dates above fold onto
+		"claude-sonnet-4-6", // a minor version, not a year
+		"gpt-5.4",
+		"gpt-4o-2024", // too short to be a date
+	} {
+		if got := CanonicalModel(id); got != id {
+			t.Errorf("CanonicalModel(%q) = %q, want it unchanged", id, got)
 		}
 	}
 }

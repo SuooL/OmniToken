@@ -1,6 +1,10 @@
 package store
 
-import "time"
+import (
+	"time"
+
+	"github.com/suool/omnitoken/internal/model"
+)
 
 // Live-view queries (F10).
 
@@ -63,6 +67,9 @@ func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
 		if err := rows.Scan(&ls.SessionID, &ls.Device, &ls.Source, &ls.Repo, &ls.CWD, &ls.Model, &ls.LastTS, &ls.Tokens, &ls.Events); err != nil {
 			return nil, err
 		}
+		// The grouping key is the session, so this fold only renames what is
+		// shown — it cannot merge two rows the way it does in a GROUP BY view.
+		ls.Model = model.CanonicalModel(ls.Model)
 		out = append(out, ls)
 	}
 	return out, rows.Err()
