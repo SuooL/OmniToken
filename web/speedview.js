@@ -172,10 +172,19 @@ const SpeedView = {
   renderSourceLanes(snapshot) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
+    // A source only gets a lane if it actually generated something in this
+    // window. `measured_sources` says "speed is measurable for this source",
+    // which is not the same as "it ran" — an installed but idle Codex used to
+    // take half the chart's height to draw a flat zero, and squeezed the lane
+    // that had data into the other half.
+    const contributed = new Set(buckets.flatMap((bucket) =>
+      (bucket.sources || [])
+        .filter((row) => (row.contribution_tps || 0) > 0)
+        .map(speedSourceKey)));
     const keys = [...new Set([
       ...(speed.measured_sources || []),
       ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
-    ])];
+    ])].filter((key) => contributed.has(key));
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
@@ -189,7 +198,15 @@ const SpeedView = {
     const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
     ChartRegistry.set(el, {
       titleText: "速度页来源贡献",
-      grid: keys.map((_, i) => ({left: 58, right: 18, top: 12 + i * 92, height: 54})),
+      // Lanes divide the container instead of taking a fixed 54px each. With
+      // one source that fixed height used a fifth of a 280px card and packed
+      // every y tick into it until the labels overlapped into a smear; the
+      // overview and live views already size their lanes this way.
+      grid: keys.map((_, i) => ({
+        left: 58, right: 18,
+        top: 16 + i * (220 / keys.length),
+        height: Math.max(38, 170 / keys.length),
+      })),
       xAxis: keys.map((_, i) => ({
         type: "category", gridIndex: i, data: labels,
         axisLabel: {show: i === keys.length - 1, color: cssVar("--text-muted")},
@@ -198,6 +215,8 @@ const SpeedView = {
       yAxis: keys.map((key, i) => ({
         type: "value", gridIndex: i, min: 0, name: sourceLabelA2(key),
         nameTextStyle: {color: ChartRegistry.sourceColor(key)},
+        // Two intervals is what fits a lane without the labels colliding.
+        splitNumber: 2,
         splitLine: {lineStyle: {color: cssVar("--grid")}},
         axisLabel: {color: cssVar("--text-muted")},
       })),
