@@ -125,33 +125,36 @@ const SpeedView = {
         <section class="stat-row" id="speed-tiles"></section>
         <section class="chart-card">
           <div class="card-head">
-            <h2>来源速度贡献<span class="eyebrow">共享分母 contribution_tps · 非堆叠</span></h2>
+            <h2>来源速度贡献<span class="eyebrow">共享分母 contribution_tps · 非堆叠</span>${infoTip(
+              "贡献速度使用共享分母,因此各来源可以相加得到 <code>aggregate_tps</code>;" +
+              "<code>native_tps</code> 是来源自身活跃时的速度,仅用于下钻,<b>不能相加</b>。")}</h2>
             <span class="coverage-note" data-role="measured-coverage"></span>
           </div>
           <div id="speed-source-lanes" class="chart source-lanes" data-chart="speed-source-lanes"></div>
           <div id="speed-unmeasured"></div>
-          <p class="subtle">贡献速度使用共享分母，因此各来源可以相加得到 aggregate_tps；native_tps 是来源自身活跃时的速度，仅用于下钻，不能相加。</p>
         </section>
         <section class="card">
           <div class="card-head">
-            <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟</h2>
+            <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟 ${infoTip(
+              "速度 = 该分钟产出的 output tokens ÷ 该分钟内真正在生成的时间。" +
+              "断开处表示<b>没有生成</b>,不是速度为 0。")}</h2>
             <div class="head-tools"><span class="subtle" id="speed-curve-note"></span></div>
           </div>
           <div id="speed-curve" style="height:260px"></div>
-          <p class="subtle" id="speed-curve-legend"></p>
         </section>
         <section class="card">
           <div class="card-head">
-            <h2>按模型 · 近 <span id="speed-days">30</span> 天</h2>
+            <h2>按模型 · 近 <span id="speed-days">30</span> 天 <span id="speed-model-info"></span></h2>
             <span class="chip badge approx">并集口径 · 日志推算 + Codex turn 计时</span>
           </div>
-          <p class="subtle" id="speed-model-note"></p>
           <div class="bars" id="speed-bars"></div>
           <div class="data-table" id="speed-model-table"></div>
         </section>
         <section class="card">
           <div class="card-head">
-            <h2>本地代理(精确) · 近 <span id="speed-days-exact">30</span> 天</h2>
+            <h2>本地代理(精确) · 近 <span id="speed-days-exact">30</span> 天 ${infoTip(
+              "代理在请求两端打点,所以这里的耗时<b>就是</b>生成耗时,TTFT 是真实的首 token 延迟" +
+              " —— 不需要上面那套区间推算。同样已排除 输出 &lt; 8 tokens 的事件。")}</h2>
             <span class="chip badge exact">精确 · 代理实测</span>
           </div>
           <div id="speed-exact"></div>
@@ -265,12 +268,9 @@ const SpeedView = {
     if (!buckets.some((b) => b.active_ms > 0)) {
       el.innerHTML = `<p class="bars"><span class="empty">近 ${series.window_minutes || 60} 分钟没有生成。开始使用 Claude,曲线会实时出现。</span></p>`;
       note.textContent = "";
-      document.getElementById("speed-curve-legend").textContent = "";
       return;
     }
     note.textContent = `每 ${Math.round((series.bucket_ms || 60000) / 1000)} 秒一个点`;
-    document.getElementById("speed-curve-legend").textContent =
-      "速度 = 该分钟产出的 output tokens ÷ 该分钟内真正在生成的时间。断开处表示没有生成,不是速度为 0。";
 
     const chart = echartsFor(el);
     const hue = cssVar("--series-1");
@@ -356,10 +356,11 @@ const SpeedView = {
   },
 
   renderModels(rows) {
-    const note = document.getElementById("speed-model-note");
     const withData = rows.filter((r) => r.tps > 0);
     const hasCodex = withData.some((r) => (r.sources || []).includes("codex"));
-    note.innerHTML =
+    // Six lines of methodology that used to sit above the table and push it
+    // below the fold. Folded behind the title's `i` (ADR-0024).
+    document.getElementById("speed-model-info").innerHTML = infoTip(
       "速度 = Σ输出 tokens ÷ 生成区间并集,按「一条会话流」取并集后再跨流相加(ADR-0009)。" +
       "这里<b>不给逐条中位数</b>:日志推出来的区间里含着等首 token 的时间,长回答无所谓," +
       "几个 token 的工具决策则几乎全是等待,逐条比值会得出没有任何一次响应跑出过的数。" +
@@ -371,7 +372,7 @@ const SpeedView = {
           "所以比 Claude Code 低是口径差,不是模型慢一半。回放进新 rollout 的 turn 行时间戳是刷盘时刻," +
           "一律不计入,体现在覆盖率里。"
         : "") +
-      "覆盖率 = 有生成区间的事件占比;30 天前的日志已被 Claude Code 清理,那部分历史永远补不回来。";
+      "覆盖率 = 有生成区间的事件占比;30 天前的日志已被 Claude Code 清理,那部分历史永远补不回来。");
 
     const bars = document.getElementById("speed-bars");
     if (!withData.length) {
@@ -413,7 +414,6 @@ const SpeedView = {
       return `<p class="subtle">暂无本地代理数据。配置 agent 的 <code>proxy_listen</code>(如 <code>127.0.0.1:8899</code>)并把工具的 base_url 指向代理后,即可获得精确的生成耗时与 TTFT(首 token 延迟);详见 docs/configuration.md。</p>`;
     }
     return `
-      <p class="subtle">代理在请求两端打点,所以这里的耗时就是生成耗时,TTFT 是真实的首 token 延迟 —— 不需要上面那套区间推算。同样已排除 输出 &lt; 8 tokens 的事件。</p>
       <div class="data-table"><table><thead><tr>
         <th>模型</th><th>中位 tok/s</th><th>P90 tok/s</th><th>均值 tok/s</th>
         <th>中位 TTFT</th><th>均值 TTFT</th><th>样本数</th><th>输出 tokens</th>

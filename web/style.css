@@ -711,3 +711,33 @@ button:focus-visible {
     transition: none !important;
   }
 }
+
+/* Methodology notes folded behind an `i` (ADR-0024). The button sits inline
+   with a card title, so it is sized to the 11px eyebrow beside it rather than
+   to a control — it is punctuation, not an action. */
+.infotip-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+.infotip-btn {
+  width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border-strong); background: transparent;
+  color: var(--text-muted); font-size: 10px; line-height: 1;
+  font-family: var(--font-display); font-style: italic; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.infotip-btn:hover, .infotip-btn[aria-expanded="true"] {
+  color: var(--text-primary); border-color: var(--accent);
+}
+/* Anchored to the button and lifted above the chart canvases, which paint
+   their own stacking context. Width is capped in ch so a long note wraps to a
+   readable measure instead of the card's full width. */
+.infotip-pop {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+  width: max-content; max-width: min(46ch, 78vw);
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+  color: var(--text-secondary); font-size: 12px; line-height: 1.6;
+  text-align: left; white-space: normal; font-weight: 400;
+}
+.infotip-pop.flip { left: auto; right: 0; }
+.infotip-pop code { font-size: 11px; }
+.infotip-pop b { color: var(--text-primary); font-weight: 600; }
