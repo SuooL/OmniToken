@@ -388,6 +388,63 @@ func TestSendHeartbeatIncludesIdentityCapabilitiesProcessAndOutboxStats(t *testi
 	}
 }
 
+// A machine that cannot read its own process table is still a machine whose
+// liveness the panel needs. Before ADR-0023 the failing read aborted the whole
+// heartbeat, so a device that could not be observed was reported as one that
+// was not there — the panel showed it offline while its events kept arriving.
+func TestSendHeartbeatSurvivesAnUnreadableProcessTable(t *testing.T) {
+	var received model.Heartbeat
+	agent := v2TestAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"received_at": 123})
+	})
+	agent.procs = func(string, time.Time) (model.ProcReport, error) {
+		return model.ProcReport{}, errors.New("process table unavailable")
+	}
+
+	if err := agent.sendHeartbeat(); err != nil {
+		t.Fatalf("heartbeat failed because process state was unreadable: %v", err)
+	}
+	if received.DeviceID != outboxDeviceID || received.Sequence != 1 {
+		t.Fatalf("heartbeat = %#v", received)
+	}
+	// Omitted, not empty: an empty report is the claim "nothing is running
+	// here", which is the statement this device cannot make (ADR-0012).
+	if received.ProcessState != nil {
+		t.Fatalf("ProcessState = %#v, want omitted", received.ProcessState)
+	}
+}
+
+// The same distinction on the procs path: reporting an empty list would tell
+// the hub this device has no sessions open, and the panel would print
+// "无打开会话" for a machine it simply cannot see into.
+func TestReportProcsSendsNothingWhenTheProcessTableIsUnreadable(t *testing.T) {
+	posts := 0
+	agent := v2TestAgent(t, func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		_ = json.NewEncoder(w).Encode(map[string]any{"received_at": 123})
+	})
+	agent.procs = func(string, time.Time) (model.ProcReport, error) {
+		return model.ProcReport{}, errors.New("process table unavailable")
+	}
+
+	if err := agent.reportProcs(); err == nil {
+		t.Fatal("reportProcs returned nil, want the read error surfaced to the caller")
+	}
+	if posts != 0 {
+		t.Fatalf("posted %d envelopes, want 0", posts)
+	}
+	stats, err := agent.outbox.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.QueuedBatches != 0 {
+		t.Fatalf("queued %d batches, want 0", stats.QueuedBatches)
+	}
+}
+
 func TestHeartbeatLoopRunsIndependentlyOnItsOwnTicker(t *testing.T) {
 	requests := make(chan model.Heartbeat, 2)
 	agent := v2TestAgent(t, func(w http.ResponseWriter, r *http.Request) {
