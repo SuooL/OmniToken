@@ -131,6 +131,7 @@ candidatesTokenCount}`,新增 `internal/parser/gemini` 一个包即可覆盖两�
 | 生成速度口径修正(ADR-0009) | ✅ 完成 | 见上;并集口径 + 实时速度 + 跨分片 turn 起点 |
 | 面板视觉重做 | ✅ 完成 | Quiet Instrument 设计系统:system sans 正文 + tabular/mono 数字、平面分析卡、Live/Speed 局部玻璃层、sticky mobile nav、active-scroll 状态、`focus-visible` 与 reduced-motion。九路由在 1440×1000 / 390×844 实测无横向溢出 |
 | 实时会话地面真值(F25) | ✅ 完成 | ADR-0012:agent 读本机进程表,`live_sessions` 表按 (device,pid) 覆盖写入,TTL 90s;Live 页区分「开着但空闲」「已关闭」「无进程数据」。实测本机识别出 1 个 claude 会话,并排除了 `codex app-server` / `codex mcp-server` 这类常驻服务进程 |
+| Windows 进程表(F25 补齐) | ✅ 完成 | ADR-0023:Toolhelp32 枚举 + 读 PEB 拿命令行(WMI 实测 4.5s/449 进程,超过采集间隔,弃用)。此前 Windows 返回空报告,把「观测不了」谎报成「没有会话」——mypc 有 2 个 claude 会话在跑而面板显示 0。顺带修掉分隔符只认 `/`、带引号路径被空白切断、npm shim 与它启动的二进制被重复计数 |
 | 其余八页逐页重做 | 大体完成 | 速度页整页重做;模型页与设备页的图表统一到 ECharts(ADR-0010),去掉约 150 行手绘 SVG 与它们各自的 tooltip 实现;卡片标题不再被图例挤成两行。九个页面在 999 / 1440 / 1728px 逐页体检:横向溢出为 0,无破版。热力图保留手绘 SVG —— 日历格子不是 ECharts calendar 擅长的形状,且它本就没有坐标轴可省。剩下的是主观视觉细节,无已知缺陷 |
 | 速度页重做为实时曲线 | ✅ 完成 | 近 60 分钟滚动曲线(空闲画断点不画 0)+ 并集口径按模型 + 覆盖率;删掉 ADR-0009 判定为错的逐条比值口径 —— 真机对照 claude-opus-4-8:旧均值 137.4、旧求和 31.0、新口径 68.3,旧通道两个方向同时错 |
 | `-rescan` 回填入口 | ✅ 完成 | ADR-0009 承诺的全量重扫一直没有入口,gen_ms 只有 493/24,516 条。补上后实测回填至 93.5%,事件数与 token 数不变 |

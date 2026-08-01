@@ -150,7 +150,7 @@ const Live = {
     const rows = sessions.slice(0, 8).map((s, i) => `
       <div class="lane lane-${(i % 5) + 1}">
         <div class="who">${esc(s.repo ? repoLabel(s.repo).split("/").pop() : s.session_id.slice(0, 8))}
-          <span class="sub">${esc(s.device)} · 会话自身速度 ${Number(s.tps || 0).toFixed(1)} tok/s</span></div>
+          <span class="sub">${esc(this.deviceLabel(s.device))} · 会话自身速度 ${Number(s.tps || 0).toFixed(1)} tok/s</span></div>
         <div class="track">${blocks(s.spans)}</div>
         <div class="rate">${Number(s.contribution_tps ?? s.tps ?? 0).toFixed(1)}<span class="u"> 贡献 t/s</span></div>
       </div>`).join("");
@@ -171,9 +171,26 @@ const Live = {
       `窗口内 ${busy}% 的时间在生成 · 总吞吐按全局活跃时间计算；各行贡献使用同一分母，因此可以相加。`;
   },
 
+  // Identity → display name, rebuilt from every snapshot.
+  //
+  // `devices` is the only part of the payload the server resolves names for
+  // (deviceNames), and every other list here — sessions, lanes, process rows,
+  // reporters — is keyed by the same identity. Without this they print the raw
+  // key, which for a v2 device is a 36-character UUID.
+  deviceNames: {},
+
+  deviceLabel(identity) {
+    return this.deviceNames[identity] || identity;
+  },
+
   render() {
     const d = this.data;
     if (!d) return;
+
+    this.deviceNames = {};
+    for (const v of d.devices || []) {
+      if (v.device && v.display_name) this.deviceNames[v.device] = v.display_name;
+    }
 
     this.renderQuotas(d.quotas || []);
 
@@ -204,7 +221,7 @@ const Live = {
     const ses = d.sessions || [];
     sesEl.innerHTML = ses.length ? `<table><thead><tr><th>设备</th><th>项目</th><th>模型</th><th>tokens</th><th>最后活动</th></tr></thead><tbody>` +
       ses.map((s) => `<tr>
-        <td>${esc(s.device)}</td>
+        <td title="${esc(s.device || "")}">${esc(this.deviceLabel(s.device))}</td>
         <td title="${esc(s.cwd || "")}">${esc(this.trunc(repoLabel(s.repo, s.cwd), 36))}</td>
         <td>${esc(s.model)}</td>
         <td>${compact(s.tokens)}</td>
@@ -305,12 +322,12 @@ const Live = {
     }
     note.textContent = `${reporters.length} 台机器可见`;
     if (!sessions.length) {
-      el.innerHTML = `<span class="empty">${esc(reporters.map((r) => r.device).join("、"))} 上没有会话开着</span>`;
+      el.innerHTML = `<span class="empty">${esc(reporters.map((r) => this.deviceLabel(r.device)).join("、"))} 上没有会话开着</span>`;
       return;
     }
     el.innerHTML = `<table><thead><tr><th>设备</th><th>工具</th><th>已开启</th><th>PID</th></tr></thead><tbody>` +
       sessions.map((s) => `<tr>
-        <td>${esc(s.device)}</td>
+        <td title="${esc(s.device || "")}">${esc(this.deviceLabel(s.device))}</td>
         <td>${esc(sourceLabel(s.source))}</td>
         <td>${esc(since(s.started_at))}</td>
         <td class="extra">${s.pid}</td>

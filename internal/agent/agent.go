@@ -119,6 +119,8 @@ type Agent struct {
 	sleep  func(time.Duration)
 	jitter func() float64
 	now    func() time.Time
+	// procs is a seam for tests; nil means collect.LiveProcesses.
+	procs func(device string, now time.Time) (model.ProcReport, error)
 
 	heartbeatSequence atomic.Uint64
 	lastScanAt        atomic.Int64
@@ -235,7 +237,7 @@ func (a *Agent) reportProcs() error {
 	if a.isV2() {
 		device = a.cfg.DeviceID
 	}
-	report, err := collect.LiveProcesses(device, a.currentTime())
+	report, err := a.liveProcesses(device, a.currentTime())
 	if err != nil {
 		return err
 	}
@@ -362,6 +364,13 @@ func (a *Agent) isV2() bool {
 	return a.cfg.ProtocolVersion == model.IngestProtocolV2
 }
 
+func (a *Agent) liveProcesses(device string, now time.Time) (model.ProcReport, error) {
+	if a.procs != nil {
+		return a.procs(device, now)
+	}
+	return collect.LiveProcesses(device, now)
+}
+
 func (a *Agent) currentTime() time.Time {
 	if a.now != nil {
 		return a.now()
@@ -375,9 +384,18 @@ func (a *Agent) sendHeartbeat() error {
 		return err
 	}
 	now := a.currentTime()
-	processState, err := collect.LiveProcesses(a.cfg.DeviceID, now)
-	if err != nil {
-		return err
+	// A heartbeat says "this device is alive and here is its queue depth".
+	// Process state rides along because it is collected at the same cadence,
+	// but it is not what the heartbeat is for: a machine whose process table
+	// cannot be read still has to be able to say it is up, or the panel calls
+	// it offline while its events keep arriving (ADR-0023). Omitted rather
+	// than sent empty — an empty report claims nothing is running, which is a
+	// claim this device is in no position to make (ADR-0012).
+	var processState *model.ProcReport
+	if report, err := a.liveProcesses(a.cfg.DeviceID, now); err != nil {
+		log.Printf("heartbeat[procs]: %v", err)
+	} else {
+		processState = &report
 	}
 	capabilities := a.cfg.Capabilities
 	if len(capabilities) == 0 {
@@ -396,7 +414,7 @@ func (a *Agent) sendHeartbeat() error {
 		OldestQueuedAt:  stats.OldestQueuedAt,
 		LastScanAt:      a.lastScanAt.Load(),
 		LastUploadAt:    a.lastUploadAt.Load(),
-		ProcessState:    &processState,
+		ProcessState:    processState,
 	}
 	body, err := json.Marshal(heartbeat)
 	if err != nil {
