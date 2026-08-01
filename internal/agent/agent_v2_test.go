@@ -98,6 +98,47 @@ func TestV2PushSucceedsAfterDurableEnqueueWithoutNetwork(t *testing.T) {
 	}
 }
 
+// One generation is written as several log lines, so a scan legitimately hands
+// the sink the same event_id more than once. The envelope forbids that, and the
+// whole batch used to be refused — which meant no offset advanced and a v2 agent
+// on real Claude Code logs could never report anything at all.
+func TestV2PushCollapsesRepeatedEventIDsInsteadOfRefusingTheBatch(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	agent := &Agent{
+		cfg: Config{
+			ProtocolVersion: model.IngestProtocolV2,
+			DeviceID:        outboxDeviceID,
+			DeviceToken:     "device-secret",
+		},
+		outbox: outbox,
+		bootID: outboxBootID,
+		now:    func() time.Time { return time.UnixMilli(1_785_400_000_000) },
+	}
+	// The second line of one assistant message: same id, same tokens, later
+	// timestamp. First observation wins, exactly as the store's insert does.
+	events := []model.Event{
+		{EventID: "cc:msg_vrtx_01:", TS: 1, Device: outboxDeviceID, OutputTokens: 12, CWD: "first"},
+		{EventID: "cc:msg_vrtx_01:", TS: 2, Device: outboxDeviceID, OutputTokens: 12, CWD: "second"},
+		{EventID: "cc:msg_vrtx_02:", TS: 3, Device: outboxDeviceID, OutputTokens: 7},
+	}
+	if err := agent.push(events); err != nil {
+		t.Fatalf("push refused a batch with repeated event ids: %v", err)
+	}
+	got, err := outbox.PeekBatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("enqueued %d events, want 2 after collapse: %#v", len(got.Events), got.Events)
+	}
+	if got.Events[0].EventID != "cc:msg_vrtx_01:" || got.Events[0].CWD != "first" {
+		t.Fatalf("first observation not kept: %#v", got.Events[0])
+	}
+	if got.Events[1].EventID != "cc:msg_vrtx_02:" {
+		t.Fatalf("second event = %#v", got.Events[1])
+	}
+}
+
 func TestDefaultProtocolRetainsLegacyV1Endpoint(t *testing.T) {
 	var path string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
