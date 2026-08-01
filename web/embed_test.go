@@ -254,23 +254,40 @@ func TestFleetViewsRenderRegisteredIdentityLivenessAndBacklog(t *testing.T) {
 	}
 }
 
-// A session id is 36 characters and the contributors table has four columns in
-// half the page width. Printed whole it eats the row, and the one column that
-// carries the card's entire point — the contribution that adds up to the
-// headline tok/s (ADR-0017) — gets pushed past the card's edge and becomes
-// invisible. Every other view that shows a session id abbreviates it.
-func TestContributorsTableAbbreviatesSessionIdentifiers(t *testing.T) {
+// A session id is 36 characters of hex that identifies nothing to a human, and
+// printed whole it takes the row's whole width — pushing the one column that
+// carries the card's entire point (the contribution that adds up to the
+// headline tok/s, ADR-0017) past the card's edge, where it cannot be read.
+//
+// What a reader recognises is where the session runs and on which machine.
+func TestContributorsTableNamesSessionsByRepoAndDevice(t *testing.T) {
 	overview := embeddedAsset(t, "overview.js")
-	if !strings.Contains(overview, "sessionLabel(row)") {
-		t.Error("contributors table must render sessions through sessionLabel, not the raw id")
+	if !strings.Contains(overview, "this.sessionLabels(rows)") {
+		t.Error("contributors table must render sessions through sessionLabels, not the raw id")
+	}
+	for _, contract := range []string{"repoLabel(", "row.device"} {
+		if !strings.Contains(overview, contract) {
+			t.Errorf("sessionLabels must build its name from %s", contract)
+		}
+	}
+	// Two sessions in the same repo on the same machine would otherwise be two
+	// identical rows, so the id comes back for exactly those.
+	if !strings.Contains(overview, "collisions.has(label)") {
+		t.Error("sessionLabels must disambiguate rows whose repo and device match")
 	}
 	if !strings.Contains(overview, "slice(0, 8)") {
-		t.Error("sessionLabel must abbreviate the session id")
+		t.Error("the disambiguating id must be abbreviated")
 	}
-	// The repository is what makes the row identifiable at a glance; eight hex
-	// characters alone say only that two rows differ.
-	if !strings.Contains(overview, "repoLabel(") {
-		t.Error("sessionLabel must name the repository when the session has one")
+}
+
+// The model name already says which tool produced it — `claude-opus-5` cannot
+// have come from Codex — so a source column repeats its neighbour and costs the
+// width the numbers need.
+func TestContributorsTableDropsTheRedundantSourceColumn(t *testing.T) {
+	overview := embeddedAsset(t, "overview.js")
+	header := "<th>会话</th><th>模型</th><th>贡献 tok/s</th>"
+	if !strings.Contains(overview, header) {
+		t.Errorf("contributors table must have exactly the columns %q", header)
 	}
 }
 

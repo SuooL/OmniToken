@@ -321,29 +321,42 @@ const Overview = {
     });
   },
 
-  // What to call a session in a four-column table that gets half the page.
+  // What to call a session: where it is running, and on which machine.
   //
-  // The identifier is 36 characters and printed whole it takes the whole row,
-  // pushing the contribution column — the only reason this card exists — past
-  // the card's edge. The repository is what actually identifies the row to a
-  // reader; the first eight characters are kept beside it so two sessions in
-  // the same repo stay distinguishable, and the full id stays in the title.
-  sessionLabel(row) {
-    const id = row.session_id || row.key || "";
-    const short = id ? id.slice(0, 8) : "";
-    if (!row.repo) return short || "—";
-    return `${repoLabel(row.repo).split("/").pop()} ${short}`.trim();
+  // Those are the two things a reader recognises. The identifier is 36
+  // characters of hex that identifies nothing to a human, and printed whole it
+  // took the row's whole width — pushing the contribution column, the only
+  // reason this card exists, past the card's edge.
+  //
+  // The id comes back only when it has work to do. Two sessions in the same
+  // repo on the same machine would otherwise render as two identical rows, so
+  // those rows — and only those — get eight characters appended. The full id
+  // stays in the title either way.
+  sessionLabels(rows) {
+    const base = rows.map((row) => {
+      const repo = row.repo ? repoLabel(row.repo).split("/").pop() : "";
+      return [repo, row.device].filter(Boolean).join(" ");
+    });
+    const collisions = new Set(base.filter((label, i) => base.indexOf(label) !== i));
+    return base.map((label, i) => {
+      const id = rows[i].session_id || rows[i].key || "";
+      if (!label) return id ? id.slice(0, 8) : "—";
+      return collisions.has(label) && id ? `${label} ${id.slice(0, 8)}` : label;
+    });
   },
 
+  // The source column is gone: a model name already says which tool produced
+  // it — `claude-opus-5` cannot have come from Codex — so the column repeated
+  // its neighbour and cost width the numbers needed.
   renderContributors(rows) {
     const el = document.getElementById("overview-contributors");
     if (!rows.length) {
       el.innerHTML = `<p class="empty">近 10m 没有可测贡献者。</p>`;
       return;
     }
-    el.innerHTML = `<table><thead><tr><th>会话</th><th>来源</th><th>模型</th><th>贡献 tok/s</th></tr></thead><tbody>` +
-      rows.map((row) => `<tr><td title="${esc(row.session_id || row.key || "")}">${esc(this.sessionLabel(row))}</td>` +
-        `<td>${esc(sourceLabelA2(row.source))}</td>` +
+    const labels = this.sessionLabels(rows);
+    el.innerHTML = `<table><thead><tr><th>会话</th><th>模型</th><th>贡献 tok/s</th></tr></thead><tbody>` +
+      rows.map((row, i) => `<tr><td title="${esc(row.session_id || row.key || "")}">${esc(labels[i])}</td>` +
         `<td>${esc(row.model || "—")}</td><td>${Number(row.contribution_tps || 0).toFixed(1)}</td></tr>`).join("") +
       `</tbody></table>`;
   },
