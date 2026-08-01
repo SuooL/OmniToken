@@ -148,3 +148,105 @@ func TestLatestQuotasCollapsesAcrossChannels(t *testing.T) {
 		t.Error("per-model weekly scope was collapsed away")
 	}
 }
+
+// A reading of a window that has already reset must not displace a reading of
+// the window that is currently open, however recently it arrived.
+//
+// This is the shape it took on a real machine: several Claude Code sessions run
+// at once, each with its own status-line hook, and a long-lived one keeps
+// reporting the account state it captured hours ago — a 5h window whose
+// resets_at is already in the past. That reading is observed *now*, so ordering
+// by observed_at alone let it win, and the live view (which correctly drops
+// windows that have already reset) then had no five_hour row at all. The panel
+// alternated between showing the 5h number and "无官方 5h 数据" every couple of
+// seconds, depending on which session reported last.
+//
+// resets_at identifies *which window* a reading is about; observed_at only says
+// when someone looked. The window has to be compared first.
+func TestLatestQuotasPrefersTheOpenWindowOverAStaleOne(t *testing.T) {
+	s, err := Open(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixMilli()
+	current := now + 2*60*60*1000 // this window resets in two hours
+	expired := now - 2*60*60*1000 // that one reset two hours ago
+	mk := func(pct float64, resets, obs int64) model.QuotaSnapshot {
+		return model.QuotaSnapshot{Device: "mac", Source: "claude-code", LimitID: "claude-account",
+			Scope: "five_hour", WindowMinutes: 300, UsedPercent: pct, ResetsAt: resets, ObservedAt: obs}
+	}
+	// The stale reading is the most recent one, by a full second.
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{
+		mk(7, current, now),
+		mk(24, expired, now+1000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("want 1 row for one (device, source, scope, window), got %d: %+v", len(latest), latest)
+	}
+	if latest[0].ResetsAt != current || latest[0].UsedPercent != 7 {
+		t.Errorf("got %.0f%% resetting at %d, want the open window (7%%, %d)",
+			latest[0].UsedPercent, latest[0].ResetsAt, current)
+	}
+}
+
+// Within one window, the newest look still wins — that is the whole point of
+// polling, and the rule above must not freeze a window at its first reading.
+func TestLatestQuotasStillTakesTheNewestLookAtOneWindow(t *testing.T) {
+	s, err := Open(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixMilli()
+	resets := now + 60*60*1000
+	mk := func(pct float64, obs int64) model.QuotaSnapshot {
+		return model.QuotaSnapshot{Device: "mac", Source: "claude-code", LimitID: "claude-account",
+			Scope: "five_hour", WindowMinutes: 300, UsedPercent: pct, ResetsAt: resets, ObservedAt: obs}
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{mk(12, now), mk(19, now+5000)}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 || latest[0].UsedPercent != 19 {
+		t.Fatalf("got %+v, want the 19%% reading", latest)
+	}
+}
+
+// A source that reports no boundary at all must not be permanently outranked
+// by nothing: with every resets_at at zero the rule has to fall back to time.
+func TestLatestQuotasFallsBackToTimeWhenNoWindowBoundaryIsReported(t *testing.T) {
+	s, err := Open(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixMilli()
+	mk := func(pct float64, obs int64) model.QuotaSnapshot {
+		return model.QuotaSnapshot{Device: "mac", Source: "codex", LimitID: "codex",
+			Scope: "primary", WindowMinutes: 10080, UsedPercent: pct, ObservedAt: obs}
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{mk(40, now), mk(55, now+3000)}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 || latest[0].UsedPercent != 55 {
+		t.Fatalf("got %+v, want the newest (55%%)", latest)
+	}
+}

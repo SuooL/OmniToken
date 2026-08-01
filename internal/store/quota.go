@@ -9,8 +9,9 @@ import (
 )
 
 // Quota snapshots (ADR-0007): authoritative window state reported by the
-// provider. Stored as observations; queries take the LATEST per
-// (device, source, limit_id, window_minutes) and never sum.
+// provider. Stored as observations; queries take one reading per
+// (device, source, scope, window_minutes) — newest window first, then newest
+// look within it (see LatestQuotas) — and never sum.
 
 // scope MUST be part of the key: several scopes share one window length —
 // Claude reports seven_day, seven_day_opus and seven_day_sonnet all at
@@ -98,19 +99,31 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 //
 // scope stays in the grouping. Collapsing it is the ADR-0007 bug where
 // per-model weekly quota (seven_day:<model>) was silently dropped.
+// LatestQuotas takes one reading per (device, source, scope, window): the one
+// about the newest window, and within that window the newest look.
+//
+// The order of those two keys is the whole point. `resets_at` says *which
+// window* a reading is about; `observed_at` only says when someone looked. A
+// machine running several Claude Code sessions has several status-line hooks,
+// and a long-lived session keeps reporting the account state it captured hours
+// ago — a 5h window that has since reset. That reading is observed *now*, so
+// ordering by observed_at alone let it win; the live view then dropped it for
+// having already reset (correctly), and the panel showed no 5h quota at all
+// until the next session reported. The two alternated every couple of seconds.
+//
+// Readings with no boundary (resets_at = 0) sort last, so a source that does
+// report one is preferred — and when nothing reports one, the rule falls back
+// to time on its own.
 func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
 	rows, err := s.db.Query(
-		`SELECT q.device, q.source, q.limit_id, q.scope, q.window_minutes,
-		        q.used_percent, q.resets_at, q.observed_at, q.plan_type
-		 FROM quota_snapshots q
-		 JOIN (SELECT device, source, scope, window_minutes, MAX(observed_at) AS mx
-		       FROM quota_snapshots WHERE observed_at >= ?
-		       GROUP BY device, source, scope, window_minutes) m
-		   ON q.device = m.device AND q.source = m.source
-		  AND q.scope = m.scope
-		  AND q.window_minutes = m.window_minutes
-		  AND q.observed_at = m.mx
-		 ORDER BY q.window_minutes, q.device`,
+		`SELECT device, source, limit_id, scope, window_minutes,
+		        used_percent, resets_at, observed_at, plan_type
+		 FROM (SELECT *, ROW_NUMBER() OVER (
+		         PARTITION BY device, source, scope, window_minutes
+		         ORDER BY resets_at DESC, observed_at DESC) AS rn
+		       FROM quota_snapshots WHERE observed_at >= ?)
+		 WHERE rn = 1
+		 ORDER BY window_minutes, device`,
 		since.UnixMilli())
 	if err != nil {
 		return nil, err
