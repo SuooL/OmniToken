@@ -464,4 +464,19 @@ mod ui_contract_tests {
         assert!(panel["height"].as_u64().unwrap_or_default() >= 680);
         assert!(APP.contains("availableMonitor"));
     }
+
+    #[test]
+    fn ui_contract_leaves_the_transparent_window_background_undrawn() {
+        let config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+        let panel = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == "panel"))
+            .expect("tauri.conf.json must define the panel window");
+
+        assert_eq!(panel["transparent"], true);
+        assert!(
+            panel.get("windowEffects").is_none(),
+            "the CSS panel owns the background and corners; a native effect leaks outside them"
+        );
+    }
 }
