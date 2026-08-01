@@ -321,6 +321,20 @@ const Overview = {
     });
   },
 
+  // What to call a session in a four-column table that gets half the page.
+  //
+  // The identifier is 36 characters and printed whole it takes the whole row,
+  // pushing the contribution column — the only reason this card exists — past
+  // the card's edge. The repository is what actually identifies the row to a
+  // reader; the first eight characters are kept beside it so two sessions in
+  // the same repo stay distinguishable, and the full id stays in the title.
+  sessionLabel(row) {
+    const id = row.session_id || row.key || "";
+    const short = id ? id.slice(0, 8) : "";
+    if (!row.repo) return short || "—";
+    return `${repoLabel(row.repo).split("/").pop()} ${short}`.trim();
+  },
+
   renderContributors(rows) {
     const el = document.getElementById("overview-contributors");
     if (!rows.length) {
@@ -328,7 +342,8 @@ const Overview = {
       return;
     }
     el.innerHTML = `<table><thead><tr><th>会话</th><th>来源</th><th>模型</th><th>贡献 tok/s</th></tr></thead><tbody>` +
-      rows.map((row) => `<tr><td>${esc(row.session_id || row.key || "—")}</td><td>${esc(sourceLabelA2(row.source))}</td>` +
+      rows.map((row) => `<tr><td title="${esc(row.session_id || row.key || "")}">${esc(this.sessionLabel(row))}</td>` +
+        `<td>${esc(sourceLabelA2(row.source))}</td>` +
         `<td>${esc(row.model || "—")}</td><td>${Number(row.contribution_tps || 0).toFixed(1)}</td></tr>`).join("") +
       `</tbody></table>`;
   },

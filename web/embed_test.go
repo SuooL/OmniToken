@@ -254,6 +254,26 @@ func TestFleetViewsRenderRegisteredIdentityLivenessAndBacklog(t *testing.T) {
 	}
 }
 
+// A session id is 36 characters and the contributors table has four columns in
+// half the page width. Printed whole it eats the row, and the one column that
+// carries the card's entire point — the contribution that adds up to the
+// headline tok/s (ADR-0017) — gets pushed past the card's edge and becomes
+// invisible. Every other view that shows a session id abbreviates it.
+func TestContributorsTableAbbreviatesSessionIdentifiers(t *testing.T) {
+	overview := embeddedAsset(t, "overview.js")
+	if !strings.Contains(overview, "sessionLabel(row)") {
+		t.Error("contributors table must render sessions through sessionLabel, not the raw id")
+	}
+	if !strings.Contains(overview, "slice(0, 8)") {
+		t.Error("sessionLabel must abbreviate the session id")
+	}
+	// The repository is what makes the row identifiable at a glance; eight hex
+	// characters alone say only that two rows differ.
+	if !strings.Contains(overview, "repoLabel(") {
+		t.Error("sessionLabel must name the repository when the session has one")
+	}
+}
+
 func TestSettingsRevisionSnapshotsRawNumbersAndApiTokenBoundary(t *testing.T) {
 	source := embeddedAsset(t, "settingsview.js")
 	for _, contract := range []string{
