@@ -125,7 +125,6 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		entry := &out[index]
 		entry.DeviceID = record.DeviceID
-		entry.DisplayName = record.DisplayName
 		entry.IdentityStatus = "registered"
 		entry.Capabilities = append([]string(nil), record.Capabilities...)
 		entry.LastSeenAt = record.LastSeenAt
@@ -143,6 +142,17 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, heartbeatErr.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	// One resolution for every device-keyed view, applied last so a rename
+	// reaches registered and legacy identities alike (see deviceNames).
+	names, err := s.deviceNames()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for i := range out {
+		out[i].DisplayName = names.name(out[i].Device)
 	}
 
 	unpriced := make([]string, 0, len(unpricedSet))

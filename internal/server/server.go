@@ -423,7 +423,16 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	put("daily", daily, e)
 	for _, dim := range []string{"device", "model", "repo", "provider", "source"} {
 		rows, e := s.store.Breakdown(dim, rangeStart, end, 30)
-		put("by_"+dim, rows, e)
+		if dim != "device" {
+			put("by_"+dim, rows, e)
+			continue
+		}
+		if e != nil {
+			put("by_"+dim, rows, e)
+			continue
+		}
+		named, e := s.nameDeviceRows(rows)
+		put("by_"+dim, named, e)
 	}
 	// Billing channels (F9/ADR-0018). Derived from the stored provider at query
 	// time, always four rows including `unknown`, and they partition the range —
@@ -481,7 +490,16 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, map[string]any{"by": dim, "rows": rows})
+	if dim != "device" {
+		writeJSON(w, map[string]any{"by": dim, "rows": rows})
+		return
+	}
+	named, err := s.nameDeviceRows(rows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"by": dim, "rows": named})
 }
 
 func queryInt(r *http.Request, key string, def int) int {
