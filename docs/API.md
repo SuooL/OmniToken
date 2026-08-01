@@ -129,7 +129,9 @@ ADR-0006)、`work_matrix`(设备×repo)。
 
 ### GET /api/v1/breakdown?by=device|model|source|provider|repo|branch&days=30&limit=100
 
-单维度分布。
+单维度分布。`by=device` 时每行附 `display_name` —— 设置里的重命名优先,其次是设备
+enrollment 时的自报名,两者都没有则**省略字段**(v1 设备的 `key` 本身就是主机名,
+没有可补的东西)。`key` 始终是归属标识,筛选与合并都用它,不受重命名影响。
 
 ### GET /api/v1/blocks?days=7
 

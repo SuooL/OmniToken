@@ -140,7 +140,6 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		}
 		view := &devViews[index]
 		view.DeviceID = record.DeviceID
-		view.DisplayName = record.DisplayName
 		view.IdentityStatus = "registered"
 		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
 		view.LastSeenAt = record.LastSeenAt
@@ -156,6 +155,15 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		default:
 			view.State = "stale"
 		}
+	}
+	// Same resolution the devices page uses, so one machine cannot end up with
+	// two names depending on which page is open (see deviceNames).
+	names, err := s.deviceNames()
+	if err != nil {
+		return nil, err
+	}
+	for i := range devViews {
+		devViews[i].DisplayName = names.name(devViews[i].Device)
 	}
 	sessions, err := s.store.ActiveSessions(now.Add(-burnWindow))
 	if err != nil {

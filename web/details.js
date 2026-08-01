@@ -7,6 +7,10 @@ function detailsSessionHref(sessionID) {
 
 const Details = {
   filters: { device: "", source: "", model: "", repo: "", session: "", days: "7" },
+  // identity → display name, from the same breakdown that fills the filter.
+  // A v2 device is filed under a UUID, so without this every row, option and
+  // chip on this page reads as 36 characters of hex.
+  deviceNames: {},
   limit: 100,
   offset: 0,
   total: 0,
@@ -99,9 +103,18 @@ const Details = {
       try {
         const d = await Api.get(`/api/v1/breakdown?by=${by}&days=90`);
         const sel = document.getElementById(id);
+        if (by === "device") {
+          this.deviceNames = {};
+          for (const r of d.rows || []) {
+            if (r.key && r.display_name) this.deviceNames[r.key] = r.display_name;
+          }
+        }
+        // The option's value stays the identity — it is what /api/v1/events
+        // filters on; only the text the user reads is renamed.
         sel.innerHTML = sel.firstElementChild.outerHTML +
           (d.rows || []).filter((r) => r.key).map((r) =>
-            `<option value="${esc(r.key)}">${esc(by === "repo" ? repoLabel(r.key) : r.key)}</option>`
+            `<option value="${esc(r.key)}">${esc(
+              by === "repo" ? repoLabel(r.key) : by === "device" ? this.deviceLabel(r.key) : r.key)}</option>`
           ).join("");
         sel.value = this.filters[by];
       } catch (e) { /* keep the bare "全部" option */ }
@@ -182,7 +195,7 @@ const Details = {
     const num = (v) => `<td title="${full(v || 0)}">${compact(v || 0)}</td>`;
     return `<tr>
       <td title="${esc(t.toLocaleString("zh-CN", { hour12: false }))} · ${relTime(e.ts)}">${time}</td>
-      <td>${esc(e.device || "—")}</td>
+      <td title="${esc(e.device || "")}">${esc(e.device ? this.deviceLabel(e.device) : "—")}</td>
       <td>${esc(e.source || "—")}</td>
       <td>${esc(e.model || "—")}</td>
       <td title="${esc(e.cwd || "")}">${esc(this.trunc(repoLabel(e.repo, e.cwd), 28))}</td>
@@ -194,13 +207,18 @@ const Details = {
     </tr>`;
   },
 
+  deviceLabel(identity) {
+    return this.deviceNames[identity] || identity;
+  },
+
   renderChips() {
     const labels = {
       device: "设备", source: "来源", model: "模型", repo: "项目", days: "范围",
     };
     const chips = Object.entries(this.filters)
       .filter(([key, value]) => key !== "session" && value && !(key === "days" && value === "7"))
-      .map(([key, value]) => `<span class="chip">${labels[key]} ${esc(value)}</span>`);
+      .map(([key, value]) => `<span class="chip">${labels[key]} ${esc(
+        key === "device" ? this.deviceLabel(value) : value)}</span>`);
     if (this.filters.session) {
       chips.push(`<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
         <a id="d-clear-session" class="chip-x" href="#details" aria-label="清除会话过滤">×</a></span>`);

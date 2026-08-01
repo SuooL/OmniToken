@@ -180,6 +180,21 @@ const SettingsView = {
 
   // ---- device renaming ---------------------------------------------------
 
+  // selfReported is what a v2 device called itself at enrollment, which is what
+  // an empty rename box falls back to. Saying so matters most where the key is
+  // a UUID: "留空则用主机名" would be describing a v1 device.
+  selfReported(device) {
+    const name = device && device.display_name;
+    return name && name !== this._labels[device.key] ? name : "";
+  },
+
+  // nameOf is the server's resolution (typed label over self-reported name),
+  // read back off the breakdown rows rather than recomputed here.
+  nameOf(key) {
+    const row = this._devices.find((d) => d.key === key);
+    return (row && row.display_name) || this._labels[key] || "";
+  },
+
   deviceCard() {
     const labels = this._draft.devices || this._labels;
     const devices = this._devices.slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
@@ -188,10 +203,12 @@ const SettingsView = {
           <th>设备(主机名)</th><th>显示名</th><th>累计 tokens</th><th>最后活跃</th>
         </tr></thead><tbody>` +
         devices.map((d) => `<tr>
-          <td>${esc(d.key || "(未知)")}</td>
+          <td>${esc(d.key || "(未知)")}${this.selfReported(d)
+            ? `<br><span class="sub2">自报:${esc(this.selfReported(d))}</span>` : ""}</td>
           <td><input class="form-input label" type="text" maxlength="64"
                      data-host="${esc(d.key)}" value="${esc(labels[d.key] || "")}"
-                     placeholder="留空则用主机名"></td>
+                     placeholder="${this.selfReported(d)
+                       ? `留空则用 ${esc(this.selfReported(d))}` : "留空则用主机名"}"></td>
           <td>${compact(d.total_tokens || 0)}</td>
           <td>${d.last_seen ? relTime(d.last_seen) : "—"}</td>
         </tr>`).join("") + `</tbody></table>`
@@ -225,8 +242,13 @@ const SettingsView = {
       .filter((key) => key);
     const options = (selected) =>
       `<option value=""${selected ? "" : " selected"}>请选择…</option>` +
-      devices.map((key) => `<option value="${esc(key)}"${key === selected ? " selected" : ""}>${
-        esc(key)}${this._labels[key] ? ` · ${esc(this._labels[key])}` : ""}</option>`).join("");
+      devices.map((key) => {
+        // The value stays the identity — merging is keyed by it — but a bare
+        // UUID in this list is unpickable, so the resolved name rides along.
+        const name = this.nameOf(key);
+        return `<option value="${esc(key)}"${key === selected ? " selected" : ""}>${
+          esc(key)}${name ? ` · ${esc(name)}` : ""}</option>`;
+      }).join("");
     return `
       <section class="instrument-card settings-danger" id="card-device-merge"
                data-settings-group="device-merge" data-settings-scope="section">
