@@ -74,6 +74,13 @@ func snapshotPIDs() ([]uint32, error) {
 // agent has no business reading and which are never an agent CLI the user
 // started. A 32-bit process would be dropped too: its PEB has a different
 // layout, and no agent CLI ships as one.
+//
+// One real session does get dropped, measured on mypc rather than reasoned
+// about: a CLI started inside an OpenSSH login. sshd runs as SYSTEM and hands
+// its user sessions a session-0 high-integrity token, while the agent runs from
+// a scheduled task at medium integrity, and mandatory integrity control does
+// not let the second read the first — OpenProcess fails outright. Sessions
+// opened locally on the machine are unaffected. See ADR-0023.
 func inspect(pid uint32) (procInfo, bool) {
 	handle, err := windows.OpenProcess(
 		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, pid)
