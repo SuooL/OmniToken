@@ -138,6 +138,6 @@ jobs:
             --target main \
             --title "${{ steps.version.outputs.next }}" \
             --notes-file release-notes.md \
-            dist/omnitoken-* dist/SHA256SUMS
+            dist/omnitoken-* dist/SHA256SUMS scripts/install.sh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
