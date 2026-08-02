@@ -4,8 +4,12 @@ package store
 
 import (
 	"database/sql"
+	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -17,6 +21,7 @@ CREATE TABLE IF NOT EXISTS events (
 	event_id TEXT PRIMARY KEY,
 	ts INTEGER NOT NULL,
 	device TEXT NOT NULL DEFAULT '',
+	device_origin TEXT NOT NULL DEFAULT 'observed',
 	source TEXT NOT NULL DEFAULT '',
 	model TEXT NOT NULL DEFAULT '',
 	provider TEXT NOT NULL DEFAULT '',
@@ -28,13 +33,15 @@ CREATE TABLE IF NOT EXISTS events (
 	cache_1h_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_5m_tokens INTEGER NOT NULL DEFAULT 0,
 	duration_ms INTEGER NOT NULL DEFAULT 0,
+	gen_ms INTEGER NOT NULL DEFAULT 0,
 	ttft_ms INTEGER NOT NULL DEFAULT 0,
 	session_id TEXT NOT NULL DEFAULT '',
 	cwd TEXT NOT NULL DEFAULT '',
 	git_branch TEXT NOT NULL DEFAULT '',
 	repo TEXT NOT NULL DEFAULT '',
 	app_version TEXT NOT NULL DEFAULT '',
-	received_at INTEGER NOT NULL DEFAULT 0
+	received_at INTEGER NOT NULL DEFAULT 0,
+	dedup_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_device_ts ON events(device, ts);
@@ -57,7 +64,7 @@ func Open(path string) (*Store, error) {
 	}
 	// modernc/sqlite serializes writes; a single conn avoids lock contention.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + quotaSchema + settingsSchema); err != nil {
+	if _, err := db.Exec(schema + quotaSchema + capacitySchema + settingsSchema + procSchema + deviceRegistrySchema + ingestReceiptSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -65,47 +72,543 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateEventsGenMS(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateEventsDeviceOrigin(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateEventsDedupKey(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateLegacyFingerprintProviders(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// providerReclassKey marks the one-time demotion below as done. It has to be a
+// flag rather than a repeatable statement: after a rescan the same rows carry
+// real evidence again, and re-running the demotion would wipe it.
+const providerReclassKey = "schema.provider_reclass_v1"
+
+// migrateLegacyFingerprintProviders clears the provider labels that could only
+// ever have come from the disproved model-name rule (ADR-0018 §6).
+//
+// `bedrock` and `vertex` were produced by exactly one thing — FingerprintProvider
+// reading a model id — and nothing produces them any more. On the machine this
+// was measured against, all 3,172 `bedrock` rows were relay traffic from a
+// vendor that had adopted Bedrock-style names, on a host with no AWS
+// configuration of any kind. Left alone they would keep showing up under
+// "official API", which is the number the user needs to be able to trust.
+//
+// They become `unknown`, not a new guess. Where the source log survives, the
+// next rescan supplies real evidence and the rank guard lets it through; where
+// the log is gone, the row honestly reports that it cannot be classified. The
+// alternative — back-filling from the model name — is the original bug rewritten
+// with a fresh coat of "已重判" on top.
+//
+// Counts are untouched: this statement names one column.
+func migrateLegacyFingerprintProviders(db *sql.DB) error {
+	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
+	var done string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, providerReclassKey).Scan(&done)
+	if err == nil && done != "" {
+		return nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	res, err := db.Exec(
+		`UPDATE events SET provider = ? WHERE provider IN (?, ?)`,
+		model.ProviderUnknown, model.ProviderBedrock, model.ProviderVertex)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: %d 行的 provider 由模型名指纹(bedrock/vertex)降级为 unknown,等待 -rescan 重判(ADR-0018);计数列未改动", n)
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, providerReclassKey)
+	return err
+}
+
+// DeviceOrigin records how a row's device attribution was obtained (ADR-0015).
+// It is a property of the channel the events arrived on, not of the event, so
+// it is passed alongside a batch instead of living on model.Event.
+type DeviceOrigin string
+
+const (
+	// OriginSelf: the machine reported its own work — an agent push, serve's
+	// scan of its own logs, or the proxy (which only ever sees local traffic).
+	OriginSelf DeviceOrigin = "self"
+	// OriginObserved: we are reading a copy of someone else's log — an SSH
+	// mirror pull, where the device name is inferred from the configured host
+	// and may well be wrong if that host holds a synced home directory.
+	OriginObserved DeviceOrigin = "observed"
+)
+
+// migrateEventsGenMS adds the gen_ms column to databases created before
+// ADR-0009. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so the
+// column has to be added explicitly; existing rows default to 0 and are filled
+// in by the next full rescan.
+func migrateEventsGenMS(db *sql.DB) error {
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema already has it
+	}
+	if err != nil {
+		return err
+	}
+	if strings.Contains(sqlText, "gen_ms") {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE events ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// migrateEventsDeviceOrigin adds the device_origin column to databases created
+// before ADR-0015. Existing rows read as 'observed' on purpose: we have no way
+// to tell after the fact which machine actually ran them, and 'observed' is the
+// level a later self-report is allowed to correct — declaring them 'self' would
+// freeze whatever the first scan happened to guess.
+func migrateEventsDeviceOrigin(db *sql.DB) error {
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return nil // fresh database; the schema already has it
+	}
+	if err != nil {
+		return err
+	}
+	if strings.Contains(sqlText, "device_origin") {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE events ADD COLUMN device_origin TEXT NOT NULL DEFAULT 'observed'`)
+	return err
+}
+
+// migrateEventsDedupKey adds the second uniqueness constraint of ADR-0020.
+//
+// The column comes first and the index second, in that order and in this one
+// place, because both paths have to converge: a fresh database gets the column
+// from CREATE TABLE, an existing one gets it from the ALTER, and only then can
+// the index be built over it.
+//
+// Existing rows start empty and are filled in by the next full rescan, the same
+// way gen_ms was (ADR-0009). Empty is exempt from the constraint on purpose: it
+// means "this source offers no second opinion", which is every row written
+// before this migration and every row from a source other than Codex. Were empty
+// treated as a value, the first two such rows would collide and the constraint
+// would swallow the entire database.
+func migrateEventsDedupKey(db *sql.DB) error {
+	var sqlText string
+	switch err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&sqlText); {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return err
+	case !strings.Contains(sqlText, "dedup_key"):
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup_key ON events(dedup_key) WHERE dedup_key != ''`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertEvents is idempotent: duplicates (same event_id) are ignored, so
 // agents and collectors can safely re-send anything. Returns inserted count.
+//
+// Everything that reaches this entry point is a self-report (ADR-0015): an
+// agent push describes the pushing machine's own logs, and the proxy only ever
+// sees traffic leaving the machine it runs on. The one channel that is merely
+// an observer — the SSH mirror pull — calls InsertEventsFrom explicitly.
 func (s *Store) InsertEvents(events []model.Event, receivedAt int64) (int, error) {
+	return s.InsertEventsFrom(events, receivedAt, OriginSelf)
+}
+
+// InsertEventsFrom is InsertEvents with the device attribution's provenance
+// spelled out; see DeviceOrigin and ADR-0015.
+func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin DeviceOrigin) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
+	}
+	if origin == "" {
+		origin = OriginObserved
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
-		(event_id, ts, device, source, model, provider, account_label,
-		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 cache_1h_tokens, cache_5m_tokens, duration_ms, ttft_ms,
-		 session_id, cwd, git_branch, repo, app_version, received_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	result, err := insertEventsFromTx(tx, events, receivedAt, origin)
 	if err != nil {
-		return 0, err
+		return result.inserted, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result.inserted, err
+	}
+	logEventApply(result)
+	return result.inserted, nil
+}
+
+type eventApplyResult struct {
+	inserted     int
+	filled       int
+	reattributed int
+	// deduped counts rows deleted because a second rollout file held a copy of
+	// the same generation (ADR-0020). It is the only counter here that reports a
+	// decrease, so it is logged separately and loudly: on this machine the first
+	// rescan after the change is expected to remove 845 rows, and every rescan
+	// after that must report zero.
+	deduped int
+	// reclassified counts rows whose billing channel evidence improved, keyed
+	// by the new provider label — ADR-0018 §5.5 requires the reclassification
+	// to be auditable, so that "归属变了、总数没变" can actually be checked.
+	reclassified map[string]int
+}
+
+func (r eventApplyResult) mutated() bool {
+	return r.inserted > 0 || r.filled > 0 || r.reattributed > 0 || r.deduped > 0 || len(r.reclassified) > 0
+}
+
+func logEventApply(result eventApplyResult) {
+	if result.deduped > 0 {
+		log.Printf("store: 删除 %d 行 —— Codex 分叉线程把同一次生成复制进了第二个 rollout,"+
+			"每组只保留时间戳在先的那条(ADR-0020);这是唯一一处会让计数下降的操作", result.deduped)
+	}
+	if result.filled > 0 {
+		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", result.filled)
+	}
+	if result.reattributed > 0 {
+		log.Printf("store: %d existing events re-attributed to the machine that reported them itself (ADR-0015)", result.reattributed)
+	}
+	for _, provider := range slices.Sorted(maps.Keys(result.reclassified)) {
+		log.Printf("store: %d 条事件的计费通道重判为 %s(%s),计数列未改动(ADR-0018)",
+			result.reclassified[provider], provider, model.ChannelLabel(model.BillingChannel(provider)))
+	}
+}
+
+// insertEventsFromTx preserves InsertEventsFrom's merge and attribution rules
+// while allowing v2 payload application and its receipt to share one commit.
+func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, origin DeviceOrigin) (eventApplyResult, error) {
+	result := eventApplyResult{}
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
+		(event_id, ts, device, device_origin, source, model, provider, account_label,
+		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+		 cache_1h_tokens, cache_5m_tokens, duration_ms, gen_ms, ttft_ms,
+		 session_id, cwd, git_branch, repo, app_version, received_at, dedup_key)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return result, err
 	}
 	defer stmt.Close()
-	inserted := 0
+	insert := func(e model.Event) (bool, error) {
+		res, err := stmt.Exec(e.EventID, e.TS, e.Device, string(origin), e.Source, e.Model, e.Provider, e.AccountLabel,
+			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
+			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.GenMS, e.TTFTMS,
+			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt, e.DedupKey)
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		return n > 0, nil
+	}
+
+	// The dedup key's own statements (ADR-0020). `INSERT OR IGNORE` above already
+	// refuses a row whose key is taken — the unique index sees to that — but
+	// refusing is not enough on its own, for two reasons:
+	//
+	//   - which copy is kept must not depend on which file was scanned first. A
+	//     fork stamps its copy with the flush instant, so the copy's ts is
+	//     fiction: keeping it would paint an eleven-day-old turn onto the day the
+	//     fork happened. The rule is therefore data-driven — smaller ts wins —
+	//     and it is also provably the original, since a fork can only ever happen
+	//     after the generation it copies;
+	//   - the copies already in the database were written before the key existed.
+	//     They are found by backfilling the key onto rows that have none, which
+	//     is the same "fill a derived column, never a count" move ADR-0009 made
+	//     for gen_ms; the collision that follows is what identifies them.
+	keyOwner, err := tx.Prepare(`SELECT event_id, ts FROM events WHERE dedup_key = ?`)
+	if err != nil {
+		return result, err
+	}
+	defer keyOwner.Close()
+	keyFill, err := tx.Prepare(`UPDATE events SET dedup_key = ?1 WHERE event_id = ?2 AND dedup_key = ''`)
+	if err != nil {
+		return result, err
+	}
+	defer keyFill.Close()
+	// The one statement in this file that removes a row, and the only one
+	// anywhere that can make a count go down. Its safety is not in a guard but in
+	// where it is called from: only after the store has both copies in hand and
+	// has established that they carry the same dedup key, and it only ever names
+	// the one of the two whose timestamp is later. CLAUDE.md records it as the
+	// single exception to "覆盖从不碰计数列", because being counted twice is a
+	// count problem by definition.
+	dropCopy, err := tx.Prepare(`DELETE FROM events WHERE event_id = ?`)
+	if err != nil {
+		return result, err
+	}
+	defer dropCopy.Close()
+
+	// Merging a second observation of an already-known event (ADR-0009 for
+	// gen_ms, ADR-0013 for the rest). Two things make this necessary: a rescan
+	// re-reads history that predates a derived column, and the proxy and the
+	// log can each see one half of the same request — the log knows the repo,
+	// the proxy knows the TTFT.
+	//
+	// The rules that keep this inside ADR-0004's idempotency guarantee:
+	//
+	//   - only ever FILL a column that is empty; never overwrite one that is
+	//     set, so no observation can churn another's value;
+	//   - no count column is on the list, so tokens and event totals cannot
+	//     move no matter how many times a request is observed;
+	//   - duration_ms is deliberately absent: on a log-owned row it means "gap
+	//     to the previous record" (ADR-0006, F8 work time), which is a
+	//     different quantity from the proxy's measured span.
+	//
+	// Because every guard fails once a row is complete, a repeat observation
+	// matches nothing and reports no change — `inserted` keeps meaning what it
+	// always meant, and dedup still shows up as 0.
+	numFill, err := tx.Prepare(
+		`UPDATE events SET gen_ms = CASE WHEN gen_ms = 0 AND ?1 > 0 THEN ?1 ELSE gen_ms END,
+		                   ttft_ms = CASE WHEN ttft_ms = 0 AND ?2 > 0 THEN ?2 ELSE ttft_ms END
+		 WHERE event_id = ?3
+		   AND ((gen_ms = 0 AND ?1 > 0) OR (ttft_ms = 0 AND ?2 > 0))`)
+	if err != nil {
+		return result, err
+	}
+	defer numFill.Close()
+
+	// Attribution only the log channel can see. A proxy row starts with these
+	// empty, and the log observation that follows fills them in.
+	textFill, err := tx.Prepare(
+		`UPDATE events SET session_id = CASE WHEN session_id = '' AND ?1 != '' THEN ?1 ELSE session_id END,
+		                   cwd        = CASE WHEN cwd        = '' AND ?2 != '' THEN ?2 ELSE cwd        END,
+		                   repo       = CASE WHEN repo       = '' AND ?3 != '' THEN ?3 ELSE repo       END,
+		                   git_branch = CASE WHEN git_branch = '' AND ?4 != '' THEN ?4 ELSE git_branch END,
+		                   app_version= CASE WHEN app_version= '' AND ?5 != '' THEN ?5 ELSE app_version END
+			 WHERE event_id = ?6
+			   AND ((session_id = '' AND ?1 != '')
+			     OR (cwd = '' AND ?2 != '')
+			     OR (repo = '' AND ?3 != '')
+			     OR (git_branch = '' AND ?4 != '')
+			     OR (app_version = '' AND ?5 != ''))`)
+	if err != nil {
+		return result, err
+	}
+	defer textFill.Close()
+
+	// duration_ms is the log channel's alone. Its meaning is "gap to the
+	// previous log record" (ADR-0006), which F8 work time reads; the proxy's
+	// measured span is a different quantity and stays out of this column. But
+	// the log must still be able to fill it when the proxy created the row
+	// first — otherwise proxied requests would silently drop out of work time.
+	durFill, err := tx.Prepare(
+		`UPDATE events SET duration_ms = ? WHERE event_id = ? AND duration_ms = 0 AND ? > 0`)
+	if err != nil {
+		return result, err
+	}
+	defer durFill.Close()
+
+	// The one sanctioned overwrite, and it goes one way only (ADR-0013): the
+	// tool is the source of a request, the proxy is merely how it was seen.
+	// The proxy almost always reports first — immediately, against a collector
+	// that polls — so without this every proxied request would be filed under
+	// `proxy` and the by-source history would break in half at the moment the
+	// proxy was switched on.
+	promote, err := tx.Prepare(
+		`UPDATE events SET source = ?1 WHERE event_id = ?2 AND source = 'proxy' AND ?1 != 'proxy'`)
+	if err != nil {
+		return result, err
+	}
+	defer promote.Close()
+
+	// The second sanctioned overwrite, and it goes one way only (ADR-0015): the
+	// machine that ran the request is its origin, a machine that merely holds a
+	// copy of the log is only an observer. Synced home directories are common
+	// (iCloud, rsync, a restored backup), and when the same log exists on two
+	// machines whichever one we scanned first would otherwise own the row
+	// forever — measured at 92% of a second Mac's events on real data.
+	//
+	// The `device_origin = 'observed'` guard carries both remaining rules: an
+	// observer can never take a row (this statement only runs for a self-report),
+	// and the first self-report keeps it (the guard fails on the second one).
+	// First-self-wins is a heuristic — the originating machine reports within
+	// seconds while a synced copy surfaces on the other machine later — not
+	// ground truth; see ADR-0015.
+	//
+	// Like `promote` it never touches a count column: which device column a
+	// request lands in has nothing to do with how many times it is charged.
+	reattribute, err := tx.Prepare(
+		`UPDATE events SET device = ?1, device_origin = 'self'
+		 WHERE event_id = ?2 AND device_origin = 'observed' AND ?1 != ''`)
+	if err != nil {
+		return result, err
+	}
+	defer reattribute.Close()
+
+	// The third sanctioned overwrite, and like the other two it goes one way
+	// only (ADR-0018). A rescan re-reads a log that predates the current
+	// classification rule and arrives with better evidence about which endpoint
+	// answered — the very case the reclassification exists for.
+	//
+	// One-way is enforced by comparing evidence strength (model.ProviderRank):
+	// the guard only fires when the incoming label outranks the stored one. That
+	// single comparison carries every rule ADR-0018 §5 asks for:
+	//
+	//   - idempotent and order-independent — replay the same evidence in any
+	//     order any number of times and the column settles on the strongest
+	//     label present, because the guard fails once it is there;
+	//   - a re-run of today's probe cannot rewrite a past billing conclusion,
+	//     since the two probe outcomes share a rank (§5.4);
+	//   - an event-level relay verdict still corrects a row the machine-level
+	//     probe had painted as subscription, because they are not the same
+	//     question and the event-level answer is the specific one (§3).
+	//
+	// Like `promote` and `reattribute`, it names one column and no count column
+	// is anywhere near it: which channel a request is billed to has nothing to
+	// do with how many times it is counted.
+	reclassify, err := tx.Prepare(
+		`UPDATE events SET provider = ?1
+		 WHERE event_id = ?2 AND ?3 > (` + providerRankSQL + `)`)
+	if err != nil {
+		return result, err
+	}
+	defer reclassify.Close()
+
 	for _, e := range events {
 		if e.EventID == "" {
 			continue
 		}
-		res, err := stmt.Exec(e.EventID, e.TS, e.Device, e.Source, e.Model, e.Provider, e.AccountLabel,
-			e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
-			e.Cache1hTokens, e.Cache5mTokens, e.DurationMS, e.TTFTMS,
-			e.SessionID, e.CWD, e.GitBranch, e.Repo, e.AppVersion, receivedAt)
+		stored, err := insert(e)
 		if err != nil {
-			return inserted, err
+			return result, err
 		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			inserted++
+		if !stored && e.DedupKey != "" {
+			// Refused: either this event_id is known, or another row already
+			// holds this generation. Only the second case needs deciding.
+			var ownerID string
+			var ownerTS int64
+			switch err := keyOwner.QueryRow(e.DedupKey).Scan(&ownerID, &ownerTS); {
+			case err == sql.ErrNoRows: // the key is free; this is a plain event_id repeat
+			case err != nil:
+				return result, err
+			case ownerID != e.EventID && e.TS >= ownerTS:
+				// This one is the fork's copy. Drop it, including any row an
+				// earlier scan wrote for it back when nothing could tell.
+				r, err := dropCopy.Exec(e.EventID)
+				if err != nil {
+					return result, err
+				}
+				// deduped counts rows the database lost, not copies refused —
+				// that is the number the user can check against a row count.
+				n, _ := r.RowsAffected()
+				result.deduped += int(n)
+				continue
+			case ownerID != e.EventID:
+				// This one is the original and the stored row is the copy.
+				if _, err := dropCopy.Exec(ownerID); err != nil {
+					return result, err
+				}
+				result.deduped++
+				if stored, err = insert(e); err != nil {
+					return result, err
+				}
+			}
+		}
+		if stored {
+			result.inserted++
+			continue
+		}
+		// Already known: contribute whatever this observation adds.
+		changed := false
+		if e.DedupKey != "" {
+			// Backfill for a row written before ADR-0020. It cannot violate the
+			// index here: the branch above has just established that nothing else
+			// holds this key.
+			r, err := keyFill.Exec(e.DedupKey, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+		}
+		if e.Provider != "" {
+			r, err := reclassify.Exec(e.Provider, e.EventID, model.ProviderRank(e.Provider))
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				if result.reclassified == nil {
+					result.reclassified = map[string]int{}
+				}
+				result.reclassified[e.Provider] += int(n)
+			}
+		}
+		if origin == OriginSelf && e.Device != "" {
+			r, err := reattribute.Exec(e.Device, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				result.reattributed++
+			}
+		}
+		if e.GenMS > 0 || e.TTFTMS > 0 {
+			r, err := numFill.Exec(e.GenMS, e.TTFTMS, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+		}
+		if e.SessionID != "" || e.CWD != "" || e.Repo != "" || e.GitBranch != "" || e.AppVersion != "" {
+			r, err := textFill.Exec(e.SessionID, e.CWD, e.Repo, e.GitBranch, e.AppVersion, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+		}
+		if e.Source != "" && e.Source != "proxy" {
+			r, err := promote.Exec(e.Source, e.EventID)
+			if err != nil {
+				return result, err
+			}
+			if n, _ := r.RowsAffected(); n > 0 {
+				changed = true
+			}
+			if e.DurationMS > 0 {
+				r, err := durFill.Exec(e.DurationMS, e.EventID, e.DurationMS)
+				if err != nil {
+					return result, err
+				}
+				if n, _ := r.RowsAffected(); n > 0 {
+					changed = true
+				}
+			}
+		}
+		if changed {
+			result.filled++
 		}
 	}
-	return inserted, tx.Commit()
+	return result, nil
 }

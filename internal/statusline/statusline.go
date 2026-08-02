@@ -83,6 +83,24 @@ type sessionInput struct {
 		TotalInputTokens  int64 `json:"total_input_tokens"`
 		TotalOutputTokens int64 `json:"total_output_tokens"`
 	} `json:"context_window"`
+	// RateLimits is how quota reaches OmniToken (ADR-0011). Claude Code hands
+	// the status line its own authoritative numbers, which is why there is no
+	// longer an OAuth poller: the data arrives here, already account-level,
+	// with no credentials to read and no endpoint to call.
+	RateLimits *struct {
+		FiveHour       *rateWindow `json:"five_hour"`
+		SevenDay       *rateWindow `json:"seven_day"`
+		SevenDaySonnet *rateWindow `json:"seven_day_sonnet"`
+		SevenDayOpus   *rateWindow `json:"seven_day_opus"`
+	} `json:"rate_limits"`
+}
+
+// rateWindow mirrors one bucket of the status-line payload. resets_at is epoch
+// SECONDS here — the OAuth endpoint used RFC3339, so this is not a drop-in
+// swap and the collector converts.
+type rateWindow struct {
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       int64   `json:"resets_at"`
 }
 
 // serverData is what we cache: only the fields the line renders.
@@ -103,6 +121,20 @@ type quotaLine struct {
 // Run renders one status line. It never returns an error for "server down" —
 // that path prints what it can (cached or session-only) and succeeds.
 func Run(cfg Config, stdin io.Reader, stdout io.Writer) error {
+	return run(cfg, stdin, stdout, false)
+}
+
+// Capture reads the payload for its quota and prints nothing (ADR-0011).
+//
+// Claude Code allows one statusLine command, but OmniToken only needs to *see*
+// that payload — it does not need to own the rendering. This mode lets someone
+// keep whatever status line they already use and still feed OmniToken, by
+// having a small wrapper hand the same stdin to both. See docs/configuration.md.
+func Capture(cfg Config, stdin io.Reader) error {
+	return run(cfg, stdin, io.Discard, true)
+}
+
+func run(cfg Config, stdin io.Reader, stdout io.Writer, captureOnly bool) error {
 	cfg.applyDefaults()
 
 	var sess sessionInput
@@ -110,6 +142,17 @@ func Run(cfg Config, stdin io.Reader, stdout io.Writer) error {
 		if raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(raw) > 0 {
 			_ = json.Unmarshal(raw, &sess) // malformed input must not break the line
 		}
+	}
+
+	// Capture before rendering: a status line that fails to draw still leaves
+	// usable quota behind. Errors are swallowed on purpose — this command's
+	// contract is to print a line, and anything on stdout or a non-zero exit
+	// would corrupt the user's status bar.
+	captureRateLimits(cfg, sess, time.Now())
+	if captureOnly {
+		// Deliberately no fetch and no render: this path runs alongside
+		// somebody else's status line and must add as little latency as it can.
+		return nil
 	}
 
 	data, stale := loadOrFetch(cfg)
@@ -161,6 +204,7 @@ func fetch(cfg Config) (*serverData, error) {
 		Costs map[string]struct {
 			RealUSD       float64 `json:"real_usd"`
 			EquivalentUSD float64 `json:"equivalent_usd"`
+			UnknownUSD    float64 `json:"unknown_usd"`
 		} `json:"costs"`
 		ByDevice []struct {
 			Key string `json:"key"`
@@ -186,7 +230,10 @@ func fetch(cfg Config) (*serverData, error) {
 		FetchedAt:   time.Now(),
 	}
 	if c, ok := overview.Costs["today"]; ok {
-		d.TodayCost = c.RealUSD + c.EquivalentUSD
+		// All three buckets: the status line shows one figure for the day, and
+		// dropping the not-yet-classified slice would make it shrink for a
+		// reason nobody could see (ADR-0018 §6).
+		d.TodayCost = c.RealUSD + c.EquivalentUSD + c.UnknownUSD
 	}
 	now := time.Now().UnixMilli()
 	for _, q := range quota.Quotas {

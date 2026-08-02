@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OmniToken</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="viz-root">
+<div class="panel">
+  <header class="freshness" id="freshness">
+    <span class="connection" id="connection-state" data-mode="" aria-live="polite">连接中…</span>
+    <span class="fleet-state" id="fleet-state">设备未知</span>
+  </header>
+
+  <main id="main">
+    <section class="hero instrument-card" aria-labelledby="speed-label">
+      <div>
+        <div class="eyebrow" id="speed-label" title="已测总吞吐">当前生成总速度</div>
+        <div class="hero-value">
+          <span class="fig" id="current-speed">—</span>
+          <span class="unit">tok/s</span>
+        </div>
+      </div>
+      <div class="hero-meta">
+        <span id="active-sessions">会话未知</span>
+        <span id="contributing-devices">设备未知</span>
+      </div>
+    </section>
+
+    <section class="usage-grid" aria-label="滚动五小时实际用量">
+      <article class="usage-card claude" id="claude-5h">
+        <div class="source-title"><span class="source-dot"></span>Claude · 最近 5h</div>
+        <strong class="fig" id="claude-5h-value">—</strong>
+        <span class="delta" id="claude-5h-change">比较未知</span>
+      </article>
+      <article class="usage-card codex" id="codex-5h">
+        <div class="source-title"><span class="source-dot"></span>Codex · 最近 5h</div>
+        <strong class="fig" id="codex-5h-value">—</strong>
+        <span class="delta" id="codex-5h-change">比较未知</span>
+      </article>
+    </section>
+
+    <section class="usage-grid quota-grid" id="quota-grid" aria-label="官方配额"></section>
+
+    <section class="instrument-card speed-history" aria-labelledby="history-title">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow" id="history-title">速度热图 · 最近 60 分钟</div>
+          <div class="coverage" id="speed-coverage">测量覆盖未知</div>
+        </div>
+      </div>
+      <div class="speed-lanes" id="speed-lanes" role="img" aria-label="按来源分离的最近一小时速度贡献"></div>
+      <div class="time-axis" aria-hidden="true"><span>−60m</span><span>−30m</span><span>现在</span></div>
+    </section>
+
+    <section class="stats" aria-label="速度摘要">
+      <article><span class="eyebrow">1h 峰值</span><strong class="fig" id="peak-1h">—</strong></article>
+      <article><span class="eyebrow">活跃占比</span><strong class="fig" id="active-ratio">—</strong></article>
+      <article><span class="eyebrow">已测来源</span><strong class="fig" id="measured-source-count">—</strong></article>
+    </section>
+
+    <section class="instrument-card today" aria-labelledby="today-title">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow" id="today-title">今日各模型累计</div>
+          <div class="today-total"><span class="fig" id="today-total">—</span> tokens</div>
+        </div>
+        <span class="model-count" id="model-count">—</span>
+      </div>
+      <div class="composition-strip" id="model-strip" aria-hidden="true"></div>
+      <div class="model-list" id="model-list"></div>
+    </section>
+
+    <section class="instrument-card contributors" aria-labelledby="contributors-title">
+      <div class="section-head">
+        <div><div class="eyebrow" id="contributors-title">当前速度贡献</div><span class="coverage">共享分母 · 可加和</span></div>
+        <span id="contributors-more"></span>
+      </div>
+      <div class="contributor-list" id="contributor-list"></div>
+    </section>
+
+    <section class="instrument-card devices" aria-labelledby="devices-title">
+      <div class="section-head">
+        <div class="eyebrow" id="devices-title">设备</div>
+        <span id="device-summary">设备未知</span>
+      </div>
+      <div class="device-list" id="device-list"></div>
+      <div class="more" id="devices-more" hidden></div>
+    </section>
+  </main>
+
+  <section id="settings" class="settings" hidden>
+    <label class="eyebrow" for="server-input">服务端地址</label>
+    <input id="server-input" type="text" placeholder="127.0.0.1:8787"
+           spellcheck="false" autocapitalize="off" autocorrect="off">
+    <div class="hint">运行 <code>omnitoken serve</code> 的地址。省略 http:// 也可以。</div>
+    <label class="eyebrow" for="token-input">访问令牌</label>
+    <input id="token-input" type="password" placeholder="服务端只监听本机时留空"
+           spellcheck="false" autocapitalize="off" autocorrect="off">
+    <div class="hint">非 loopback 服务端需要读取令牌；令牌不会进入 WebView。</div>
+    <div class="msg" id="settings-msg" aria-live="polite"></div>
+    <div class="actions">
+      <button type="button" id="settings-cancel">取消</button>
+      <button type="button" id="settings-save" class="primary">保存</button>
+    </div>
+  </section>
+
+  <footer>
+    <span class="footer-age" id="footer-age"></span>
+    <div class="footer-actions">
+      <button type="button" id="open-full" class="textlink">完整面板 ↗</button>
+      <button type="button" id="open-settings" class="textlink">设置</button>
+    </div>
+  </footer>
+</div>
+<script src="format-core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

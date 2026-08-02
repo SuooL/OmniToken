@@ -43,15 +43,44 @@ internal/agent        推送 + 中继
 |------|---------|
 | `internal/parser/claudecode/parser.go` | `message.id` + `requestId` |
 | `internal/parser/codex/parser.go` | rollout + 时间戳 + 序号(`token_count` 行无 message id) |
-| `internal/agent/proxy.go` | 设备 + 前缀 + 起始纳秒 + 序号 |
+| `internal/proxy/proxy.go` | 能认出同一次请求时复用日志的 id(`message.id` + `request-id`,ADR-0013);认不出时用 设备 + 前缀 + 起始纳秒 + 序号 |
 
 背景见 `docs/adr/0004-event-identity.md`。
 
-### 其余三条
+### dedup_key:同一次生成被写进两个文件
+
+`event_id` 回答「这条**日志行**见过没有」,拦不住同一次生成被复制成另一条日志行。
+Codex 分叉线程(人工 fork 与 subagent)会把父线程整段复制进新 rollout,只改行时间戳,
+所以副本的 `event_id` 必然不同。第二把键 `dedup_key` 回答「这次**生成**记过没有」:
+`cxg:sha1(turn_id | total_token_usage)`,仅 codex 解析器产出、仅在 `turn_id` 是 UUID 时产出。
+**它是 `event_id` 之上的追加约束,不是替代** —— 改 codex 解析器时两把键都要保持稳定。
+背景见 `docs/adr/0020-codex-resume-duplicate-events.md`。
+
+### 其余四条
 
 - **offset 仅在上报成功后推进** —— 日志文件本身是重传缓冲,提前推进会在断网时丢数据。
 - **权威优先,推断标注** —— 配额取自官方端点,推断值必须显式标注,两者不可混淆。
 - **只采元数据** —— 永不读取对话内容;API key 只存哈希指纹,绝不存明文。
+- **覆盖已入库的行是白名单制,且全都从不碰计数列** —— 一次请求算给谁,和它被计
+  几次,是两回事。分两类,区别在**判据在不在系统之内**:
+
+  | 类别 | 允许的覆盖 | 依据 |
+  |---|---|---|
+  | 自动(写入/重扫路径,判据是系统可核实的事实) | `source` 的 `proxy → 真实工具` | ADR-0013 |
+  | | `device` 的 `observed → self` | ADR-0015 |
+  | | `provider` 的重判 | ADR-0018 |
+  | 人工发起(管理接口,判据在系统之外) | `device` 的合并 | ADR-0019 |
+
+  自动那三处都是单向的,可以写成永远成立的守卫。设备合并不同:没有任何本地信号
+  能证明两个身份是同一台机器,所以它的安全边界不在守卫里,而在「必须由人显式
+  发起」这个性质上 —— 采集、解析、ingest 的任何自动路径都不许调用它。
+
+  **唯一一处会删行、会让计数下降的操作是 ADR-0020 的重复生成清理**,它不在上表里,
+  因为它回答的正是「被计了几次」而不是「算给谁」。安全边界:只在两行共享同一个
+  `dedup_key` 时触发,只删其中一行,且删的是 `ts` 大的那条(副本的时间戳是分叉时的
+  刷盘时刻,必然晚于原件)。判据全在库内,与到达顺序无关。
+
+  **新增任何一处覆盖前先写 ADR。**
 
 ## 改解析器前
 
@@ -63,7 +92,7 @@ internal/agent        推送 + 中继
 
 ## 覆盖率门禁
 
-`make check` 只对生成 event_id 的三个包(`parser/codex`、`parser/claudecode`、`agent`)
+`make check` 只对生成 event_id 的三个包(`parser/codex`、`parser/claudecode`、`proxy`)
 强制覆盖率下限。其余包不卡覆盖率 —— 改 HTTP handler、网页面板、配置解析不会被覆盖率拦下。
 
 阈值定义在 `scripts/coverage-gate.sh`,只有那一处,不要复制到 CI 配置或文档里。
@@ -78,6 +107,21 @@ internal/agent        推送 + 中继
 | `feature/<描述>` | 从最新 `dev` 切出。热修同样用 `feature/*`,无独立 hotfix 分支。 |
 
 **不要直接推 `dev` 或 `main`**,两条分支都有保护。
+
+### Agent 开发流程
+
+Agent 执行 non-trivial 功能、跨层重构或 bug 修复时，必须主动完成以下流程，
+不得等用户逐次提醒：
+
+1. 开始前运行 `git status`、确认上游基线和现有 worktree，保护用户已有未提交改动。
+2. 从最新 `origin/dev` 创建隔离 worktree。人工分支沿用 `feature/<描述>`；
+   Codex 客户端创建的分支使用其规定的 `codex/<描述>` 前缀。
+3. 复杂改动先提交设计/实现计划；行为变更严格执行测试先行，确认测试因缺少目标行为而失败后再写生产代码。
+4. 每个独立可审查阶段在受影响测试通过后形成 focused commit，不把无关修改混入。
+5. 声称完成前必须运行本文件规定的完整 gate；涉及 `desktop/` 时额外运行
+   `make desktop-check` 和实际 Tauri bundle 构建，涉及 Web 时进行真实浏览器验收。
+6. 最后审查 `git diff origin/dev...HEAD`、确认无 secrets/生成垃圾/越界改动，
+   推送当前分支并创建目标为 `dev` 的 PR；不得直接提交或推送到 `dev/main`。
 
 ```sh
 git switch dev && git pull
@@ -96,6 +140,8 @@ CI 跑 `make check`,绿了自动合并并删除分支。
 - [ ] 新行为有测试覆盖
 - [ ] PR 目标是 `dev`
 - [ ] 只改了这次改动需要的文件
+- [ ] 若本次完成、放弃或改变了某个功能项,同一个 PR 内改掉
+      `docs/roadmap.md` 的状态列;放弃时删除条目并在「明确不做」小节写清理由
 
 ## 代码风格
 
@@ -109,3 +155,6 @@ CI 跑 `make check`,绿了自动合并并删除分支。
 ## 设计先行
 
 动手前先读 `docs/`。重大技术决策写 ADR 到 `docs/adr/`,不要只留在对话记录里。
+
+改变功能范围(新增或去掉一个功能)先改 `docs/requirements.md` 再写代码 ——
+它是功能清单的权威来源,`docs/roadmap.md` 只记实现进度。

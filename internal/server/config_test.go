@@ -66,6 +66,32 @@ func TestWriteDefaultConfigRoundTrips(t *testing.T) {
 	}
 }
 
+// A collection start date that cannot be parsed must stop the server, not
+// degrade to "no window": the whole point of ssh_hosts[].since is keeping a
+// machine's back catalogue out, and an import cannot be undone (ADR-0015).
+func TestLoadConfigRejectsMalformedSSHSince(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"collect":{"ssh_hosts":[{"host":"macmini","since":"07/27/2026"}]}}`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted a malformed since; it must refuse to start")
+	}
+
+	if err := os.WriteFile(path,
+		[]byte(`{"collect":{"ssh_hosts":[{"host":"macmini","since":"2026-07-27"}]}}`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.Collect.SSHHosts[0].Since; got != "2026-07-27" {
+		t.Errorf("since = %q, want 2026-07-27", got)
+	}
+}
+
 func TestWriteDefaultConfigNeverOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"listen":":9999","token":"secret"}`)

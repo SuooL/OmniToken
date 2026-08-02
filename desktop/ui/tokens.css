@@ -1,0 +1,128 @@
+/* OmniToken design tokens — the single source of truth for colour, type and
+   radius across BOTH surfaces (ADR-0014).
+
+   Consumers:
+     web/          the nine-page panel, served by `omnitoken serve`
+     desktop/ui/   the macOS menubar popover (Tauri)
+
+   `desktop/ui/tokens.css` is a byte-for-byte copy of this file, and
+   `make desktop-check` fails if the two drift. Do not edit the copy.
+
+   Why a copy and not a build step: the project has no frontend toolchain and
+   deliberately keeps it that way (ADR-0002, ADR-0010). A symlink was rejected
+   because whether `tauri-build` follows symlinks when embedding assets is not
+   guaranteed, and a platform-dependent build behaviour is not worth the bet.
+   The problem with a copy was never that it exists — it is that nobody notices
+   when it changes. So the diff is a gate, the same stance `fmt-check` takes.
+
+   Tokens are scoped to `.viz-root` rather than `:root` so the panel's shell
+   owns them; the popover puts the class on <body>.
+
+   Layout-only variables (--rail, --gutter) stay in web/style.css: they size a
+   1520px shell and mean nothing in a 340px popover. */
+
+/* Telemetry Studio A4 is deliberately dark-only: Web and the menubar must
+   remain the same instrument regardless of the host appearance setting.
+   The near-black ground, indigo surfaces and source gradients are normative,
+   not a fallback theme. */
+.viz-root {
+  color-scheme: dark;
+  /* RGB triplets, so borders / glows / fills can be tinted from one hue
+     instead of hard-coding a second colour that drifts out of step. */
+  --glass-rgb:   24, 26, 54;
+  --overlay-rgb: 255, 255, 255;
+  --line-rgb:    167, 182, 246;
+
+  --page:           #090b15;
+  --surface-1:      #181a36;
+  --surface-2:      #0d1022;
+  --surface-card:   #14182f;
+  --glass:          rgba(var(--glass-rgb), 0.92);
+  --glass-filter:   blur(30px) saturate(118%);
+  --sheen:          rgba(var(--overlay-rgb), 0.05);
+  --lift:           0 30px 90px rgba(0,0,0,0.34);
+  --lift-hi:        0 34px 100px rgba(0,0,0,0.48);
+
+  --text-primary:   #f7f8ff;
+  --text-secondary: #9aa5c2;
+  --text-muted:     #7f89a7;
+  --grid:           rgba(var(--line-rgb), 0.10);
+  --baseline:       #28304c;
+  --border:         #2b3352;
+  --border-strong:  #3a4767;
+
+  /* A full spectrum of bright pastels rather than one accent doing everything.
+     Concurrent lanes need to stay separable, and a single-hue panel is what
+     made the old one read as a spreadsheet. */
+  /* Anchored on the app icon's blue so the panel, the menubar gauge and the
+     Finder icon are one product. The supporting hues are picked for lane
+     separability at speed — five streams have to stay distinct in a glance,
+     which is what drives the spacing around the wheel. */
+  --accent:     #67c9ff;
+  --cyan:       #67c9ff;
+  --accent-rgb: 103, 201, 255;
+  --violet:     #a982ee;
+  --rose:       #ff72a7;
+  --amber:      #f2a16c;
+  --teal:       #67e4b9;
+  --red:        #f47687;
+  --accent-dim: rgba(var(--accent-rgb), 0.16);
+
+  --lane-1: var(--cyan);
+  --lane-2: var(--violet);
+  --lane-3: var(--rose);
+  --lane-4: var(--amber);
+  --lane-5: var(--teal);
+  /* The brand blue is reserved for the aggregate: the union is not a sixth
+     stream competing for a hue, it is what the lanes add up to, so it gets the
+     colour that means "this product" while the lanes take the spectrum around
+     it. Lane 1 moved to cyan so nothing collides.
+     (An achromatic union was tried first and read as a black slab.) */
+  --union:  var(--accent);
+  --warn:   var(--amber);
+  --critical: var(--red);
+  --source-claude: #f2a16c;
+  --source-claude-deep: #8d4d35;
+  --source-codex: #67c9ff;
+  --source-codex-deep: #315b8e;
+  --source-api: #a982ee;
+  --source-api-deep: #5f458f;
+  --source-aggregate: #ff72a7;
+  --status-healthy: #67e4b9;
+  --peak: #ff72a7;
+  --series-1: var(--accent);
+  --series-2: var(--teal);
+  --series-3: var(--rose);
+  --series-4: var(--amber);
+
+  /* Billing channels (ADR-0018). Four categories that must never read as a
+     sequence: they are different billing relationships, not degrees of one
+     thing, so the hues are drawn from separate families rather than one ramp.
+     `unknown` is deliberately the desaturated one — it is the absence of
+     evidence, and it should not compete with the three real channels for
+     attention while still being plainly visible as its own slice. */
+  --channel-subscription: var(--teal);
+  --channel-api:          var(--violet);
+  --channel-relay:        var(--amber);
+  --channel-unknown:      #6b7594;
+
+  /* Consumption meters run their own scale, separate from the chart palette.
+     Fixed steps rather than a gradient: the reader needs "is this fine or
+     not", not a hue to interpolate. Saturated on purpose — these are the one
+     place a colour is allowed to mean alarm, so they sit outside the pastel
+     spectrum above. The figure is always printed beside the bar, so colour
+     reinforces rather than carries the value. */
+  --meter-track:    #cde2fb;
+  --meter-warn:     #fab219;
+  --meter-serious:  #ec835a;
+  --meter-critical: #d03b3b;
+
+  /* Body copy follows the host platform; measured values retain a stable
+     monospace register so live figures never shift as they update. */
+  --font-display: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono",
+                  Menlo, Consolas, "Liberation Mono", monospace;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               "Noto Sans SC", sans-serif;
+
+  --radius: 16px;
+}

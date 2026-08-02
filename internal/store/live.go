@@ -1,6 +1,10 @@
 package store
 
-import "time"
+import (
+	"time"
+
+	"github.com/suool/omnitoken/internal/model"
+)
 
 // Live-view queries (F10).
 
@@ -63,15 +67,30 @@ func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
 		if err := rows.Scan(&ls.SessionID, &ls.Device, &ls.Source, &ls.Repo, &ls.CWD, &ls.Model, &ls.LastTS, &ls.Tokens, &ls.Events); err != nil {
 			return nil, err
 		}
+		// The grouping key is the session, so this fold only renames what is
+		// shown — it cannot merge two rows the way it does in a GROUP BY view.
+		ls.Model = model.CanonicalModel(ls.Model)
 		out = append(out, ls)
 	}
 	return out, rows.Err()
 }
 
 // TokensSince returns total tokens and output tokens since the cutoff.
+// TokensSince returns the burn-rate numerator and its output component.
+//
+// cache_read is deliberately excluded. It is the same conversation context
+// re-read on every turn, so counting it makes the rate describe repetition
+// rather than consumption: measured on real traffic it was 99.6% of the total
+// (9.28M of 9.31M over ten minutes, across 14 requests), which turned a ~3K/min
+// figure into ~862K/min. It is also billed at a tenth of the input price and
+// does not consume the 5h/weekly windows at anything like that rate.
+//
+// Same call as abtop's token_rate, which counts input + output + cache_create
+// and excludes cache_read for the same reason. Cache volume is not lost — the
+// cache page reports it, where repetition is the point.
 func (s *Store) TokensSince(since time.Time) (total, output int64, err error) {
 	err = s.db.QueryRow(
-		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
+		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens),0),
 		        COALESCE(SUM(output_tokens),0)
 		 FROM events WHERE ts >= ?`, since.UnixMilli()).Scan(&total, &output)
 	return

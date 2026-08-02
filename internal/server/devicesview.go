@@ -1,29 +1,46 @@
 package server
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
+)
+
+const (
+	heartbeatOnlineWindow = 2 * time.Minute
+	heartbeatStaleWindow  = 10 * time.Minute
 )
 
 // deviceEntry is one row of the devices page (F21 / GAP-3): range totals plus
 // the context that makes a device comparable — today's volume, when it last
 // reported, how many projects it touched, and its dominant model.
 type deviceEntry struct {
-	Device         string   `json:"device"`
-	Events         int64    `json:"events"`
-	TotalTokens    int64    `json:"total_tokens"`
-	InputTokens    int64    `json:"input_tokens"`
-	OutputTokens   int64    `json:"output_tokens"`
-	CacheRead      int64    `json:"cache_read_tokens"`
-	CacheCreation  int64    `json:"cache_creation_tokens"`
-	TodayTokens    int64    `json:"today_tokens"`
-	LastTS         int64    `json:"last_ts"`
-	Repos          int64    `json:"repos"`
-	TopModel       string   `json:"top_model"`
-	TopModelTokens int64    `json:"top_model_tokens"`
-	CostUSD        *float64 `json:"cost_usd,omitempty"`
-	CostPartial    bool     `json:"cost_partial,omitempty"`
+	Device          string   `json:"device"`
+	DeviceID        string   `json:"device_id,omitempty"`
+	DisplayName     string   `json:"display_name,omitempty"`
+	IdentityStatus  string   `json:"identity_status"`
+	ConnectionState string   `json:"connection_state"`
+	LastSeenAt      int64    `json:"last_seen_at,omitempty"`
+	LastSeenAgeMS   *int64   `json:"last_seen_age_ms,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	QueuedBatches   int      `json:"queued_batches,omitempty"`
+	QueuedBytes     int64    `json:"queued_bytes,omitempty"`
+	OldestQueuedAt  int64    `json:"oldest_queued_at,omitempty"`
+	Events          int64    `json:"events"`
+	TotalTokens     int64    `json:"total_tokens"`
+	InputTokens     int64    `json:"input_tokens"`
+	OutputTokens    int64    `json:"output_tokens"`
+	CacheRead       int64    `json:"cache_read_tokens"`
+	CacheCreation   int64    `json:"cache_creation_tokens"`
+	TodayTokens     int64    `json:"today_tokens"`
+	LastTS          int64    `json:"last_ts"`
+	Repos           int64    `json:"repos"`
+	TopModel        string   `json:"top_model"`
+	TopModelTokens  int64    `json:"top_model_tokens"`
+	CostUSD         *float64 `json:"cost_usd,omitempty"`
+	CostPartial     bool     `json:"cost_partial,omitempty"`
 }
 
 // handleDevices answers GET /api/v1/devices?days=30 with per-device summary
@@ -35,7 +52,7 @@ type deviceEntry struct {
 // models are unpriced the figure is a lower bound and cost_partial says so.
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 30)
-	now := time.Now()
+	now := s.currentTime()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	rangeStart := dayStart.AddDate(0, 0, -(days - 1))
 	end := now.Add(time.Hour)
@@ -63,6 +80,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 
 	unpricedSet := map[string]bool{}
 	out := make([]deviceEntry, 0, len(summary))
+	indexByDevice := make(map[string]int, len(summary))
 	for _, row := range summary {
 		e := deviceEntry{
 			Device: row.Device, Events: row.Events, TotalTokens: row.TotalTokens,
@@ -70,6 +88,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			CacheRead: row.CacheRead, CacheCreation: row.CacheCreation,
 			TodayTokens: today[row.Device], LastTS: row.LastTS, Repos: row.Repos,
 			TopModel: row.TopModel, TopModelTokens: row.TopModelTokens,
+			IdentityStatus: s.identityStatusFor(row.Device), ConnectionState: "unknown",
 		}
 		var cost float64
 		priced, missing := 0, 0
@@ -88,7 +107,52 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			e.CostUSD = &cost
 			e.CostPartial = missing > 0
 		}
+		indexByDevice[e.Device] = len(out)
 		out = append(out, e)
+	}
+
+	registered, err := s.store.ListDevices()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, record := range registered {
+		index, exists := indexByDevice[record.DeviceID]
+		if !exists {
+			index = len(out)
+			indexByDevice[record.DeviceID] = index
+			out = append(out, deviceEntry{Device: record.DeviceID})
+		}
+		entry := &out[index]
+		entry.DeviceID = record.DeviceID
+		entry.IdentityStatus = "registered"
+		entry.Capabilities = append([]string(nil), record.Capabilities...)
+		entry.LastSeenAt = record.LastSeenAt
+		entry.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
+		if record.LastSeenAt > 0 {
+			age := max(now.UnixMilli()-record.LastSeenAt, 0)
+			entry.LastSeenAgeMS = &age
+		}
+		heartbeat, _, heartbeatErr := s.store.LatestHeartbeat(record.DeviceID)
+		if heartbeatErr == nil {
+			entry.QueuedBatches = heartbeat.QueuedBatches
+			entry.QueuedBytes = heartbeat.QueuedBytes
+			entry.OldestQueuedAt = heartbeat.OldestQueuedAt
+		} else if !errors.Is(heartbeatErr, sql.ErrNoRows) {
+			http.Error(w, heartbeatErr.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// One resolution for every device-keyed view, applied last so a rename
+	// reaches registered and legacy identities alike (see deviceNames).
+	names, err := s.deviceNames()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for i := range out {
+		out[i].DisplayName = names.name(out[i].Device)
 	}
 
 	unpriced := make([]string, 0, len(unpricedSet))
@@ -104,4 +168,38 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		"unpriced":     unpriced,
 		"generated_at": now.UnixMilli(),
 	})
+}
+
+func heartbeatState(now time.Time, lastSeenAt, revokedAt int64) string {
+	if revokedAt > 0 || lastSeenAt <= 0 {
+		return "offline"
+	}
+	age := now.UnixMilli() - lastSeenAt
+	switch {
+	case age <= heartbeatOnlineWindow.Milliseconds():
+		return "online"
+	case age <= heartbeatStaleWindow.Milliseconds():
+		return "stale"
+	default:
+		return "offline"
+	}
+}
+
+// identityStatusFor names what kind of identity a device row has, before the
+// registry gets a chance to overwrite it with `registered`.
+//
+// The hub's own machine is its own category. It has no agent, no token and no
+// heartbeat because it needs none — the server reads its logs directly — so
+// grouping it with agents that have not enrolled pointed the reader at an
+// upgrade that does not exist, and it could never leave that group. The
+// distinction is cheap to make and entirely inside the system: the hub knows
+// what it calls itself, and whether it is scanning anything.
+//
+// Local collection being off matters: with no local collector running, a row
+// under the hub's own name came from somewhere else and is not this machine.
+func (s *Server) identityStatusFor(device string) string {
+	if s.cfg.LocalEnabled() && device != "" && device == s.cfg.DeviceName {
+		return "local"
+	}
+	return "legacy_unbound"
 }

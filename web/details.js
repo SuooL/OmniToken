@@ -1,0 +1,233 @@
+"use strict";
+// Details view: filterable, paginated raw-event drill-down (F13).
+
+function detailsSessionHref(sessionID) {
+  return "#details?session=" + encodeURIComponent(sessionID);
+}
+
+const Details = {
+  filters: { device: "", source: "", model: "", repo: "", session: "", days: "7" },
+  // identity → display name, from the same breakdown that fills the filter.
+  // A v2 device is filed under a UUID, so without this every row, option and
+  // chip on this page reads as 36 characters of hex.
+  deviceNames: {},
+  limit: 100,
+  offset: 0,
+  total: 0,
+  built: false,
+  seq: 0, // guards against out-of-order fetch responses
+
+  enter() {
+    if (!this.built) {
+      this.build();
+      this.loadOptions();
+      this.built = true;
+    }
+    this.load();
+  },
+
+  leave() {
+    this.seq += 1;
+  },
+
+  applyRoute(params, shouldLoad = true) {
+    const session = params.get("session") || "";
+    const changed = session !== this.filters.session;
+    this.filters.session = session;
+    if (changed) this.offset = 0;
+    if (this.built) this.renderChips();
+    if (shouldLoad && this.built && changed) this.load();
+  },
+
+  build() {
+    document.getElementById("view-details").innerHTML = `
+    <section class="instrument-card">
+      <div class="card-head">
+        <h2>事件明细</h2>
+        <div class="head-tools"><span class="subtle" id="d-note"></span></div>
+      </div>
+      <div class="filter-row">
+        <select id="d-f-device" aria-label="设备筛选"><option value="">全部设备</option></select>
+        <select id="d-f-source" aria-label="来源筛选"><option value="">全部来源</option></select>
+        <select id="d-f-model" aria-label="模型筛选"><option value="">全部模型</option></select>
+        <select id="d-f-repo" aria-label="项目筛选"><option value="">全部项目</option></select>
+        <select id="d-f-days" aria-label="时间范围">
+          <option value="7">近 7 天</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+        <span class="chip-row" id="d-chips" data-role="filter-summary"></span>
+      </div>
+    </section>
+    <section class="chart-card">
+      <div class="card-head"><h2>当前页事件分布</h2><span class="subtle">用于理解筛选结果，不替代表格</span></div>
+      <div id="d-distribution" style="height:260px" data-chart="event-distribution"></div>
+    </section>
+    <section class="instrument-card">
+      <div id="d-table" class="data-table data-table-shell"></div>
+      <div class="pager">
+        <span class="subtle" id="d-page"></span>
+        <button id="d-prev" class="ghost-btn">上一页</button>
+        <button id="d-next" class="ghost-btn">下一页</button>
+      </div>
+    </section>`;
+
+    for (const [id, key] of [["d-f-device", "device"], ["d-f-source", "source"],
+                             ["d-f-model", "model"], ["d-f-repo", "repo"], ["d-f-days", "days"]]) {
+      document.getElementById(id).addEventListener("change", (ev) => {
+        this.filters[key] = ev.target.value;
+        this.offset = 0;
+        this.load();
+      });
+    }
+    document.getElementById("d-prev").addEventListener("click", () => {
+      if (this.offset > 0) {
+        this.offset = Math.max(0, this.offset - this.limit);
+        this.load();
+      }
+    });
+    document.getElementById("d-next").addEventListener("click", () => {
+      if (this.offset + this.limit < this.total) {
+        this.offset += this.limit;
+        this.load();
+      }
+    });
+  },
+
+  // Filter options come from the 90-day breakdown so rarely-used values
+  // still show up regardless of the currently selected time range.
+  async loadOptions() {
+    const dims = [["device", "d-f-device"], ["source", "d-f-source"],
+                  ["model", "d-f-model"], ["repo", "d-f-repo"]];
+    await Promise.all(dims.map(async ([by, id]) => {
+      try {
+        const d = await Api.get(`/api/v1/breakdown?by=${by}&days=90`);
+        const sel = document.getElementById(id);
+        if (by === "device") {
+          this.deviceNames = {};
+          for (const r of d.rows || []) {
+            if (r.key && r.display_name) this.deviceNames[r.key] = r.display_name;
+          }
+        }
+        // The option's value stays the identity — it is what /api/v1/events
+        // filters on; only the text the user reads is renamed.
+        sel.innerHTML = sel.firstElementChild.outerHTML +
+          (d.rows || []).filter((r) => r.key).map((r) =>
+            `<option value="${esc(r.key)}">${esc(
+              by === "repo" ? repoLabel(r.key) : by === "device" ? this.deviceLabel(r.key) : r.key)}</option>`
+          ).join("");
+        sel.value = this.filters[by];
+      } catch (e) { /* keep the bare "全部" option */ }
+    }));
+  },
+
+  async load() {
+    const my = ++this.seq;
+    const p = new URLSearchParams({ days: this.filters.days, limit: this.limit, offset: this.offset });
+    for (const k of ["device", "source", "model", "repo", "session"]) {
+      if (this.filters[k]) p.set(k, this.filters[k]);
+    }
+    const note = document.getElementById("d-note");
+    try {
+      const d = await Api.get("/api/v1/events?" + p);
+      if (my !== this.seq) return; // superseded by a newer request
+      this.total = d.total || 0;
+      this.render(d.events || []);
+      note.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    } catch (e) {
+      if (my === this.seq) note.textContent = "服务不可达";
+    }
+  },
+
+  render(events) {
+    this.renderChips();
+    this.renderDistribution(events);
+    const el = document.getElementById("d-table");
+    el.innerHTML = events.length
+      ? `<table><thead><tr>
+          <th>时间</th><th>设备</th><th>来源</th><th>模型</th><th>项目</th>
+          <th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>成本</th><th>会话</th>
+        </tr></thead><tbody>` + events.map((e) => this.rowHTML(e)).join("") + `</tbody></table>`
+      : `<p class="subtle">无匹配事件</p>`;
+
+    const from = this.total === 0 ? 0 : this.offset + 1;
+    document.getElementById("d-page").textContent =
+      `第 ${from}–${this.offset + events.length} 条 / 共 ${full(this.total)} 条`;
+    document.getElementById("d-prev").disabled = this.offset <= 0;
+    document.getElementById("d-next").disabled = this.offset + this.limit >= this.total;
+  },
+
+  renderDistribution(events) {
+    const el = document.getElementById("d-distribution");
+    if (!events.length) {
+      el.innerHTML = `<p class="empty">当前页没有可绘制事件。</p>`;
+      return;
+    }
+    const byModel = new Map();
+    events.forEach((event) => {
+      const key = event.model || "(未知模型)";
+      const row = byModel.get(key) || {model: key, input: 0, output: 0, events: 0};
+      row.input += (event.input_tokens || 0) + (event.cache_read_tokens || 0) + (event.cache_creation_tokens || 0);
+      row.output += event.output_tokens || 0;
+      row.events += 1;
+      byModel.set(key, row);
+    });
+    const rows = [...byModel.values()].sort((a, b) => b.input + b.output - a.input - a.output).slice(0, 12);
+    ChartRegistry.set(el, {
+      titleText: "筛选事件按模型的 token 分布",
+      grid: {left: 12, right: 16, top: 28, bottom: 42, containLabel: true},
+      legend: {top: 0, textStyle: {color: cssVar("--text-secondary")}},
+      xAxis: {type: "category", data: rows.map((row) => row.model), axisLabel: {color: cssVar("--text-muted"), rotate: rows.length > 6 ? 25 : 0}},
+      yAxis: {type: "value", splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted"), formatter: compact}},
+      series: [
+        {name: "输入与缓存", type: "bar", stack: "tokens", data: rows.map((row) => row.input), itemStyle: {color: cssVar("--source-codex")}},
+        {name: "输出", type: "bar", stack: "tokens", data: rows.map((row) => row.output), itemStyle: {color: cssVar("--source-claude")}},
+      ],
+    });
+  },
+
+  rowHTML(e) {
+    const t = new Date(e.ts);
+    const time = t.toLocaleString("zh-CN", {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+    const sid = e.session_id || "";
+    const num = (v) => `<td title="${full(v || 0)}">${compact(v || 0)}</td>`;
+    return `<tr>
+      <td title="${esc(t.toLocaleString("zh-CN", { hour12: false }))} · ${relTime(e.ts)}">${time}</td>
+      <td title="${esc(e.device || "")}">${esc(e.device ? this.deviceLabel(e.device) : "—")}</td>
+      <td>${esc(e.source || "—")}</td>
+      <td>${esc(e.model || "—")}</td>
+      <td title="${esc(e.cwd || "")}">${esc(this.trunc(repoLabel(e.repo, e.cwd), 28))}</td>
+      ${num(e.input_tokens)}${num(e.output_tokens)}${num(e.cache_read_tokens)}${num(e.cache_creation_tokens)}
+      <td>${e.cost_usd != null ? usd(e.cost_usd) : "—"}</td>
+      <td>${sid
+        ? `<a class="session-link" href="${detailsSessionHref(sid)}" title="按此会话过滤:${esc(sid)}">${esc(sid.slice(0, 8))}</a>`
+        : "—"}</td>
+    </tr>`;
+  },
+
+  deviceLabel(identity) {
+    return this.deviceNames[identity] || identity;
+  },
+
+  renderChips() {
+    const labels = {
+      device: "设备", source: "来源", model: "模型", repo: "项目", days: "范围",
+    };
+    const chips = Object.entries(this.filters)
+      .filter(([key, value]) => key !== "session" && value && !(key === "days" && value === "7"))
+      .map(([key, value]) => `<span class="chip">${labels[key]} ${esc(
+        key === "device" ? this.deviceLabel(value) : value)}</span>`);
+    if (this.filters.session) {
+      chips.push(`<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
+        <a id="d-clear-session" class="chip-x" href="#details" aria-label="清除会话过滤">×</a></span>`);
+    }
+    document.getElementById("d-chips").innerHTML = chips.join("");
+  },
+
+  trunc(s, n) {
+    s = String(s);
+    return s.length > n ? "…" + s.slice(-(n - 1)) : s;
+  },
+};

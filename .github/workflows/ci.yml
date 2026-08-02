@@ -54,6 +54,30 @@ jobs:
       - name: Check
         run: make check
 
+      # A reminder, deliberately not a gate. Most code changes — bug fixes,
+      # refactors, CI work — legitimately touch no docs, so failing them would
+      # only teach everyone to type a bypass phrase, and the check would decay
+      # into the same self-attestation it was meant to replace. Same stance the
+      # project takes on lint: a signal, not a merge gate.
+      #
+      # It can only tell that docs were not touched, never whether the roadmap
+      # entry is correct — that part stays human judgement.
+      - name: Docs sync reminder
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -uo pipefail
+          files="$(gh pr view "$PR_URL" --json files --jq '.files[].path')"
+          code="$(printf '%s\n' "$files" | grep -E '^(internal|cmd)/' || true)"
+          docs="$(printf '%s\n' "$files" | grep -E '^docs/' || true)"
+          if [ -n "$code" ] && [ -z "$docs" ]; then
+            echo "::warning title=状态文档可能需要同步::本 PR 改了产品代码但未改 docs/。若本次完成、放弃或改变了某个功能项,请在同一 PR 内同步 docs/roadmap.md 的状态(见 CLAUDE.md「什么算做完」)。若只是修复或重构,忽略本提示。"
+          else
+            echo "docs sync: 无需提示"
+          fi
+
   merge:
     name: squash-merge-and-delete-branch
     needs: verify

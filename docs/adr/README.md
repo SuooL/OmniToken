@@ -12,3 +12,22 @@ ADR 标注 supersedes,不改写历史。
 | [0005](0005-pricing.md) | 成本计算:LiteLLM 定价、查询时计算、真实/等效成本分流 | 已采纳 |
 | [0006](0006-worktime-semantics.md) | 工作时长语义:事件区间化 + 双指标(投入/代理运转) | 已采纳 |
 | [0007](0007-quota-observation.md) | 配额观测:权威限额数据(Codex 5h/周)优先,推断窗口兜底 | 已采纳 |
+| [0008](0008-desktop-client.md) | 桌面端形态:Tauri 菜单栏瘦客户端,前端源码 web 与桌面共用 | 已采纳 |
+| [0009](0009-generation-speed.md) | 生成速度语义:生成区间与并集口径 | 已采纳 |
+| [0010](0010-vendored-frontend-libs.md) | 前端可用 vendored 预构建库(修订 0002 前端条款) | 已采纳 |
+| [0011](0011-quota-via-statusline.md) | 配额改由 statusLine 捕获(取代 0007 的 OAuth 通道) | 已采纳 |
+| [0012](0012-live-process-state.md) | 活跃会话的地面真值:agent 侧读本机进程表 | 已采纳 |
+| [0013](0013-proxy-log-same-request.md) | 同一次请求被日志与代理同时观测:共享 event_id、字段归属、代理边界 | 已采纳 |
+| [0014](0014-menubar-realtime-and-interaction.md) | 菜单栏客户端:SSE 实时桥、交互与视觉对齐(修订 0008) | 已采纳 |
+| [0015](0015-device-attribution.md) | 设备归属:自报优先于旁观的单向覆盖,以及按主机的采集起点 | 已采纳 |
+| [0016](0016-read-endpoint-auth.md) | 读接口鉴权由监听地址推导,默认监听改回 loopback(修订 0008) | 已采纳 |
+| [0017](0017-additive-speed-contributions.md) | 速度分解:共享时间轴上的可加和来源/会话贡献(补充 0009) | 已采纳 |
+| [0018](0018-billing-channel-classification.md) | 计费通道三分类:订阅/官方 API/第三方,判据为逐事件 requestId | 已采纳 |
+| [0019](0019-device-identity-merge.md) | 设备身份合并:用户显式发起的覆盖,与自动覆盖的边界 | 已采纳 |
+| [0020](0020-codex-resume-duplicate-events.md) | Codex 分叉线程复制历史:加第二把去重键 dedup_key,不改 event_id | 已采纳 |
+| [0021](0021-aggregation-timezone.md) | 聚合时区:日界由配置钉住,启动即校验 | 已采纳 |
+| [0022](0022-card-head-hierarchy.md) | 卡片头部:标题在前、口径作后缀;热力图按容器定格子而非拉伸 | 已采纳 |
+| [0023](0023-windows-process-table.md) | Windows 进程表:Toolhelp32 + 读 PEB 拿命令行,读不到就不报(落实 0012) | 已采纳 |
+| [0024](0024-caliber-notes-behind-info.md) | 口径说明收进 `i` 提示框,行动指引留在原地 | 已采纳 |
+| [0025](0025-quota-capacity-estimate.md) | 订阅额度容量估计:跨窗口峰值取样,样本不足不给数 | 已采纳 |
+| [0026](0026-central-hub-public-migration.md) | 中心 Hub 上公网:HTTPS+SSE 传输、分面安全,以域名解耦实现可迁移 | 已采纳 |

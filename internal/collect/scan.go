@@ -1,12 +1,15 @@
 package collect
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
@@ -19,14 +22,15 @@ const sinkBatch = 2000
 // A file's offset is only committed after its events are accepted.
 type Sink func([]model.Event) error
 
-// QuotaSink delivers quota snapshots (ADR-0007). Optional: a nil sink means
-// snapshots are dropped, which is safe — they are state, not flow.
+// QuotaSink delivers quota snapshots (ADR-0007). A non-nil sink is part of the
+// source-cursor durability boundary: its error leaves the offset uncommitted.
+// A nil sink explicitly opts out of collecting snapshots.
 type QuotaSink func([]model.QuotaSnapshot) error
 
 // ParseFunc is the incremental-parser contract shared by all tool parsers:
 // consume complete lines from r and return the events, quota snapshots, and
 // the byte count consumed (excluding any trailing partial line).
-type ParseFunc func(r io.Reader, device string) model.ParseResult
+type ParseFunc func(r io.Reader, device string, turnStartMS int64) model.ParseResult
 
 // SourceSpec pairs a set of log directories with the parser for their format.
 // FullReparse marks formats whose lines are not self-contained (Codex rollout
@@ -50,11 +54,18 @@ func LocalSpecs(claudeDirs, codexDirs []string) []SourceSpec {
 // ScanSources incrementally parses all *.jsonl under each spec's dirs,
 // attributing events to device and resolving repos via resolveRepo.
 // quotaSink may be nil.
-func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink) (int, error) {
+//
+// notBefore is the start of collection for this source: events with an earlier
+// timestamp are dropped instead of being handed to the sink, and an event
+// exactly at that instant is kept. The zero time means no window. It exists for
+// SSH hosts (SSHHost.Since) — adding a machine years after the fact should not
+// back-import its whole log history — and is left zero for this machine's own
+// logs, which are the one set of logs we can attribute with confidence.
+func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
 	total := 0
 	for _, spec := range specs {
 		for _, f := range listJSONL(spec.Dirs) {
-			n, err := scanFile(f, spec, device, st, resolveRepo, sink, quotaSink)
+			n, err := scanFile(f, spec, device, st, resolveRepo, sink, quotaSink, notBefore)
 			total += n
 			if err != nil {
 				return total, err
@@ -62,6 +73,23 @@ func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(
 		}
 	}
 	return total, nil
+}
+
+// dropBefore removes events older than notBefore. The boundary instant itself
+// is kept: a window that starts on a date should contain everything from that
+// date's first millisecond on.
+func dropBefore(events []model.Event, notBefore time.Time) []model.Event {
+	if notBefore.IsZero() {
+		return events
+	}
+	cutoff := notBefore.UnixMilli()
+	kept := events[:0]
+	for _, e := range events {
+		if e.TS >= cutoff {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 func listJSONL(dirs []string) []string {
@@ -81,7 +109,7 @@ func listJSONL(dirs []string) []string {
 	return files
 }
 
-func scanFile(path string, spec SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink) (int, error) {
+func scanFile(path string, spec SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, nil
@@ -90,24 +118,53 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 	if info.Size() < offset {
 		// File truncated/replaced (e.g. rsync rewrote it): re-read; dedup absorbs repeats.
 		offset = 0
+		if err := st.DiscardScan(path); err != nil {
+			return 0, fmt.Errorf("discard scan state for truncated %s: %w", path, err)
+		}
 	}
-	if info.Size() == offset {
+
+	inFlight, resuming := st.InFlightFor(path)
+	if resuming && info.Size() < inFlight.End {
+		// The fixed input boundary no longer exists. Forget only the in-flight
+		// delivery ledger and safely re-read; durable ingestion deduplicates it.
+		if err := st.DiscardScan(path); err != nil {
+			return 0, fmt.Errorf("discard scan state for replaced %s: %w", path, err)
+		}
+		resuming = false
+	}
+	if !resuming && info.Size() == offset {
 		return 0, nil
 	}
-	if spec.FullReparse {
-		offset = 0
+
+	start, end := offset, info.Size()
+	if resuming {
+		start, end = inFlight.Start, inFlight.End
+	} else if spec.FullReparse {
+		start = 0
 	}
 	fh, err := os.Open(path)
 	if err != nil {
 		return 0, nil
 	}
 	defer fh.Close()
-	if _, err := fh.Seek(offset, 0); err != nil {
+	if _, err := fh.Seek(start, 0); err != nil {
 		return 0, nil
 	}
 
-	res := spec.Parse(fh, device)
-	events := res.Events
+	res := spec.Parse(io.LimitReader(fh, end-start), device, st.TurnStartFor(path))
+	if !resuming {
+		end = start + res.Consumed
+		if err := st.BeginScan(path, start, end, res.TurnStartMS); err != nil {
+			return 0, fmt.Errorf("begin scan state for %s: %w", path, err)
+		}
+		inFlight, _ = st.InFlightFor(path)
+	} else if start+res.Consumed != end {
+		return 0, fmt.Errorf(
+			"resume scan state for %s: parser consumed %d bytes, want %d",
+			path, res.Consumed, end-start,
+		)
+	}
+	events := dropBefore(res.Events, notBefore)
 	for i := range events {
 		if events[i].CWD != "" && resolveRepo != nil {
 			events[i].Repo = st.RepoFor(device, events[i].CWD, resolveRepo)
@@ -115,19 +172,48 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 	}
 	for start := 0; start < len(events); start += sinkBatch {
 		end := min(start+sinkBatch, len(events))
+		key, err := logicalDeliveryKey("events", start/sinkBatch, events[start:end])
+		if err != nil {
+			return 0, fmt.Errorf("identify event batch for %s: %w", path, err)
+		}
+		if st.DeliveryDone(path, key) {
+			continue
+		}
 		if err := sink(events[start:end]); err != nil {
 			return 0, err // do not commit offset; retry next scan
 		}
-	}
-	// Quota snapshots are state, not flow: a delivery failure must not hold
-	// back the offset (the next observation supersedes a lost one anyway).
-	if quotaSink != nil && len(res.Quotas) > 0 {
-		if err := quotaSink(res.Quotas); err != nil {
-			log.Printf("collect: quota sink for %s: %v", path, err)
+		if err := st.MarkDeliveryDone(path, key); err != nil {
+			return 0, fmt.Errorf("persist event delivery for %s: %w", path, err)
 		}
 	}
-	if err := st.Commit(path, offset+res.Consumed); err != nil {
-		log.Printf("collect: commit state for %s: %v", path, err)
+	if quotaSink != nil && len(res.Quotas) > 0 {
+		key, err := logicalDeliveryKey("quotas", 0, res.Quotas)
+		if err != nil {
+			return 0, fmt.Errorf("identify quota batch for %s: %w", path, err)
+		}
+		if !st.DeliveryDone(path, key) {
+			if err := quotaSink(res.Quotas); err != nil {
+				return 0, fmt.Errorf("quota sink for %s: %w", path, err)
+			}
+			if err := st.MarkDeliveryDone(path, key); err != nil {
+				return 0, fmt.Errorf("persist quota delivery for %s: %w", path, err)
+			}
+		}
+	}
+
+	// The offset covers the dropped lines as well: they were read and
+	// deliberately left out of the window, not deferred to a later pass.
+	if err := st.Commit(path, end, inFlight.TurnStartMS); err != nil {
+		return 0, fmt.Errorf("commit state for %s: %w", path, err)
 	}
 	return len(events), nil
+}
+
+func logicalDeliveryKey(kind string, ordinal int, payload any) (string, error) {
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return fmt.Sprintf("%s:%d:%x", kind, ordinal, sum), nil
 }

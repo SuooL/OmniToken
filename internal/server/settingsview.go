@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/suool/omnitoken/internal/pricing"
+	"github.com/suool/omnitoken/internal/store"
 )
 
 // Settings API (F23/GAP-5): pricing overrides and device display names,
@@ -24,8 +25,10 @@ import (
 // computed at query time (ADR-0005), so an override applies retroactively to
 // history and is undone by simply removing it.
 const (
-	settingsKeyPricing      = "pricing_overrides"
-	settingsKeyDeviceLabels = "device_labels"
+	settingsKeyPricing = "pricing_overrides"
+	// The label key is owned by the store: a device merge has to move labels
+	// inside its own transaction, so both sides must name the same document.
+	settingsKeyDeviceLabels = store.DeviceLabelsKey
 )
 
 // Validation bounds. Prices are per 1M tokens in USD: 10000 is far above any
@@ -90,6 +93,13 @@ func (s *Server) ReloadPricing() error {
 type settingsResponse struct {
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides"`
 	DeviceLabels     map[string]string           `json:"device_labels"`
+	// DeviceMerges is the audit log of ADR-0019 merges, oldest first. It is
+	// read-only and has no delete counterpart: a merge cannot be undone, so the
+	// record of it is the only thing left to check against afterwards.
+	DeviceMerges []store.DeviceMergeRecord `json:"device_merges"`
+	// LocalIdentity lets the panel warn that this machine is in the database
+	// under two names before the user goes looking for the reason.
+	LocalIdentity localIdentity `json:"local_identity"`
 }
 
 // settingsRequest uses pointers so an absent field means "leave as is" while
@@ -120,6 +130,21 @@ func (s *Server) currentSettings() (settingsResponse, error) {
 	if resp.DeviceLabels == nil {
 		resp.DeviceLabels = map[string]string{}
 	}
+	merges, err := s.store.DeviceMergeHistory()
+	if err != nil {
+		return resp, err
+	}
+	// Always an array, never null: the panel renders "还没有合并过" from an empty
+	// list and would otherwise have to special-case a missing field.
+	resp.DeviceMerges = merges
+	if resp.DeviceMerges == nil {
+		resp.DeviceMerges = []store.DeviceMergeRecord{}
+	}
+	identity, err := s.localIdentity()
+	if err != nil {
+		return resp, err
+	}
+	resp.LocalIdentity = identity
 	return resp, nil
 }
 

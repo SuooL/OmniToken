@@ -3,6 +3,8 @@ package store
 import (
 	"fmt"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 // PeriodRows buckets events by local calendar period (F12 reports).
@@ -79,6 +81,9 @@ func (s *Store) SessionRows(from, to time.Time, limit int) ([]SessionRow, error)
 			&r.Events, &r.InputTokens, &r.OutputTokens, &r.CacheRead, &r.CacheCreation, &r.TotalTokens); err != nil {
 			return nil, err
 		}
+		// One sampled model name per session, shown as a label — so it wears the
+		// display name like every other view (internal/model/canonical.go).
+		r.Model = model.CanonicalModel(r.Model)
 		out = append(out, r)
 	}
 	return out, rows.Err()

@@ -1,0 +1,743 @@
+* { box-sizing: border-box; margin: 0; }
+
+/* OmniToken panel — an instrument, not a report.
+   Colour, type and radius come from tokens.css, which the menubar popover
+   shares verbatim (ADR-0014). Everything below is this surface's own layout.
+   Only the shell dimensions live here: they size a 1600px page and mean
+   nothing in a 340px popover. */
+.viz-root {
+  --gutter: clamp(14px, 1.4vw, 22px);
+  --source-claude-gradient: linear-gradient(180deg, var(--source-claude), var(--source-claude-deep));
+  --source-codex-gradient: linear-gradient(180deg, var(--source-codex), var(--source-codex-deep));
+  --source-api-gradient: linear-gradient(180deg, var(--source-api), var(--source-api-deep));
+}
+
+html { background: #090b15; }
+body {
+  min-height: 100vh;
+  padding: 12px;
+  background:
+    radial-gradient(circle at 12% 0, #262258 0, transparent 25%),
+    radial-gradient(circle at 90% 0, #0c354e 0, transparent 30%),
+    #090b15;
+}
+.skip-link {
+  position: fixed; left: 12px; top: 8px; z-index: 100;
+  transform: translateY(-150%);
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--surface-1); color: var(--text-primary);
+}
+.skip-link:focus { transform: none; }
+
+/* Keep the page ground quiet. Magnitude and grouping belong inside charts;
+   a decorative wash behind every card would compete with those encodings. */
+body::before { content: none; }
+.viz-root { position: relative; z-index: 1; }
+
+/* A compact top shell gives charts the full viewport width. Width is spent on
+   more columns, never on longer lines — see .grid-auto. */
+.viz-root {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  width: min(1600px, 100%);
+  min-height: calc(100vh - 24px);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow: clip;
+  background: linear-gradient(155deg, var(--surface-1), var(--surface-2));
+  border: 1px solid rgba(var(--line-rgb), 0.19);
+  border-radius: 24px;
+  box-shadow: 0 30px 90px rgba(0,0,0,0.48), inset 0 1px rgba(var(--overlay-rgb), 0.05);
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: auto;
+  width: 100%;
+  max-width: 100%;
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.brand { display: flex; align-items: baseline; gap: 8px; padding: 0 4px; flex: 0 0 auto; }
+.brand h1 {
+  font-family: var(--font-body);
+  font-size: 15px; font-weight: 800; letter-spacing: -0.02em;
+}
+.brand .dot-live {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--teal); flex: none;
+  box-shadow: 0 0 10px var(--teal);
+  box-shadow: 0 0 0 0 var(--accent-dim);
+  animation: pulse 2.4s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-dim); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.tabs {
+  display: flex;
+  min-width: 0;
+  margin-left: auto;
+  flex-direction: row;
+  gap: 2px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  scroll-padding-inline: 24px;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tabs a {
+  color: var(--text-secondary); text-decoration: none;
+  font-size: 13px; padding: 7px 10px; border-radius: 8px;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  scroll-margin-inline: 16px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tabs a:hover { background: var(--surface-2); color: var(--text-primary); }
+.tabs a[aria-current] {
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.18), rgba(var(--accent-rgb), 0.05));
+  color: var(--text-primary); font-weight: 600;
+  border-bottom-color: var(--accent);
+  box-shadow: 0 5px 12px -8px rgba(var(--accent-rgb), 0.70);
+}
+
+.content { padding: 22px var(--gutter) 40px; min-width: 0; }
+.page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 18px;
+}
+.page-head h2 { font-size: 15px; font-weight: 620; color: var(--text-primary); margin: 0; }
+.subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+.refresh { color: var(--text-muted); font-size: 12px; font-family: var(--font-display); }
+.page-utilities { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.hub-health { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.hub-health.healthy .health-dot {
+  background: var(--status-healthy);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--status-healthy) 55%, transparent);
+}
+.hub-health.unavailable .health-dot { background: var(--critical); }
+
+/* Gains columns with width instead of stretching them. */
+.grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  gap: 14px;
+}
+
+/* Glass, not paper. A translucent panel over the ambient wash, lifted by an
+   inset highlight along the top edge and a soft shadow beneath — the layering
+   is what separates content from ground without drawing a box around it. */
+.card {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 13px;
+  margin-bottom: 11px;
+  box-shadow: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+.card:hover { border-color: var(--border-strong); box-shadow: none; }
+.instrument-card,
+.metric-card,
+.chart-card,
+.state-panel {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+.instrument-card, .chart-card, .state-panel { padding: 13px; margin-bottom: 11px; }
+.metric-card { padding: 13px; min-width: 0; }
+.metric-card .metric-value {
+  font: 760 clamp(24px, 3.2vw, 38px)/1 var(--font-body);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.035em;
+}
+.metric-card .metric-label {
+  color: var(--text-muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+}
+/* Scope note, rendered as a suffix on the title's own line (ADR-0022). It used
+   to sit above the title at 11px while the title below it was 14px — the eye
+   read the small line first and the large one second, so the hierarchy looked
+   inverted. No uppercase: it trails a Chinese title and often carries an
+   identifier like `contribution_tps`, which uppercasing only damages. */
+.eyebrow {
+  color: var(--text-muted); font-size: 11px; font-weight: 400;
+  letter-spacing: .01em; margin-left: 8px; white-space: normal;
+}
+.composition-strip {
+  display: flex; height: 8px; overflow: hidden; border-radius: 999px;
+  background: var(--grid); margin-top: 10px;
+}
+.composition-strip > span { min-width: 2px; height: 100%; }
+/* Channel swatch in the billing-channel table. The colour repeats the strip
+   above, so it is a cross-reference rather than the sole carrier of meaning —
+   the label sits right beside it (ADR-0018 §6 wants the split legible, not
+   decoded from hue). */
+.channel-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 999px;
+  margin-right: 7px; vertical-align: middle;
+}
+.data-table-shell { overflow-x: auto; overscroll-behavior-inline: contain; }
+.data-table-shell table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+.data-table-shell th, .data-table-shell td {
+  padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap;
+}
+.data-table-shell th:first-child, .data-table-shell td:first-child { text-align: left; }
+.chart-fallback { margin-top: 10px; color: var(--text-muted); }
+.chart-fallback summary { cursor: pointer; font-size: 12px; }
+.telemetry-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.coverage-note { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--text-muted); font-size: 12px; }
+.unavailable-lane {
+  padding: 10px 12px; border: 1px dashed var(--border-strong);
+  border-radius: 8px; color: var(--text-muted); font-size: 12px;
+}
+.settings-danger { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
+.settings-danger h2 { color: var(--critical); }
+/* Device identity merge (ADR-0019). Collapsed by default and visually apart
+   from renaming: one is a label, the other rewrites stored attribution and
+   cannot be undone. */
+.merge-panel { margin-top: 12px; }
+.merge-panel > summary {
+  cursor: pointer; font-size: 12px; color: var(--text-secondary);
+  padding: 6px 0; list-style-position: inside;
+}
+.merge-panel[open] > summary { color: var(--text-primary); margin-bottom: 8px; }
+.merge-hint, .merge-warnings {
+  margin: 10px 0 0; padding: 10px 12px; font-size: 12px;
+  border: 1px dashed var(--border-strong); border-radius: 8px;
+  color: var(--text-secondary); background: var(--surface-2);
+}
+.merge-hint { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.merge-warnings { list-style: disc; padding-inline-start: 28px; }
+.merge-warnings li + li { margin-top: 4px; }
+.merge-error { color: var(--critical); }
+.merge-picker label, .merge-confirm-row label {
+  display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted);
+}
+.merge-confirm-row { margin-top: 12px; }
+.merge-confirm-row .form-input { min-width: 240px; }
+.merge-run:disabled { opacity: 0.4; cursor: default; }
+.merge-impact, .merge-history { margin-top: 10px; }
+.merge-picker select {
+  font: inherit; font-size: 12px; color: var(--text-secondary);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; max-width: 240px;
+}
+
+.credential-scope-map {
+  display: grid; gap: 8px; margin: 14px 0; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+}
+.credential-scope-map > div {
+  display: grid; grid-template-columns: minmax(96px, .7fr) auto minmax(150px, 1.4fr);
+  align-items: center; gap: 12px; color: var(--text-secondary); font-size: 12px;
+}
+.credential-scope-map strong { color: var(--text-primary); }
+.source-lanes { min-height: 280px; }
+.model-composition { min-height: 300px; }
+/* 14px is the card-title size. It lives on the base rule, not only on
+   `.card-head h2`, so a title that forgets the wrapper cannot silently
+   render a step smaller — four of them did (ADR-0022). */
+h2 { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
+/* Wraps as a whole: a legend wide enough to crowd the title takes its own line
+   instead of squeezing it. Without this the flex row shrinks the heading first,
+   and "每日模型构成 · 前 4 个模型" broke across two lines while the legend beside
+   it sat on one. The heading therefore refuses to shrink, but is still capped
+   at the container so a long one wraps inside itself rather than overflowing. */
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.card-head h2 { margin-bottom: 0; flex: 0 0 auto; max-width: 100%; }
+/* Wraps rather than overflowing: this slot holds button groups and legends
+   that are wider than a phone screen. min-width: 0 because a flex item's auto
+   minimum would otherwise keep it from shrinking below its content. */
+.head-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+
+/* Tiles stretch to fill the row rather than stopping at a cap. A cap was tried
+   and reverted: it keeps a tile the size of its number, but it also leaves a
+   dead column of background on a wide screen, and blank space to the right is
+   the thing the full-bleed shell exists to eliminate. A row that is too empty
+   is a sign the page needs another tile, not a narrower grid. */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-tile {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 13px;
+  box-shadow: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.stat-tile:hover { border-color: var(--border-strong); box-shadow: none; }
+.stat-tile.plain { background: none; border: 0; box-shadow: none; padding: 0; backdrop-filter: none; }
+.stat-tile .label { font-size: 12px; color: var(--text-secondary); }
+.stat-tile .value { font-family: var(--font-body); font-size: 28px; font-weight: 760; margin: 4px 0 2px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.stat-tile .sub { font-size: 12px; color: var(--text-muted); }
+.stat-tile .sub.cost { color: var(--text-secondary); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.bars .val .extra { color: var(--text-muted); font-weight: 400; }
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; }
+.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+.ghost-btn {
+  font: inherit; font-size: 12px; color: var(--text-secondary);
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 10px; cursor: pointer;
+}
+.ghost-btn[aria-pressed="true"] { background: var(--grid); color: var(--text-primary); }
+.btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
+a.ghost-btn { text-decoration: none; }
+
+.chart svg { display: block; width: 100%; height: auto; }
+/* The calendar is the one chart that sizes itself: its cells are computed from
+   the container so one viewBox unit stays one CSS pixel (ADR-0022). The generic
+   `width: 100%` above would stretch it again and take every label with it, so
+   this more specific rule opts it out.
+   Below the cell floor the grid is wider than the card; it scrolls rather than
+   scaling down, because scaling shrinks the labels too — 8px text on a phone is
+   the same defect this change exists to remove. */
+.heatmap-shell { overflow-x: auto; overscroll-behavior-x: contain; }
+.heatmap-shell svg { width: auto; height: auto; max-width: none; }
+.chart text { font-family: inherit; font-size: 11px; fill: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.data-table { overflow-x: auto; margin-top: 8px; }
+.data-table table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.data-table th, .data-table td {
+  text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid);
+  font-variant-numeric: tabular-nums; color: var(--text-secondary); white-space: nowrap;
+}
+.data-table th { color: var(--text-muted); font-weight: 500; }
+.data-table th:first-child, .data-table td:first-child { text-align: left; }
+
+/* min(280px, 100%) so a viewport narrower than the 280px floor still gets a
+   track that fits, instead of one fixed at 280px that overflows. */
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; margin-bottom: 16px; }
+.bars .row { margin-bottom: 10px; }
+.bars .row-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; gap: 8px; }
+.bars .key { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .val { color: var(--text-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.bars .track { height: 8px; border-radius: 0 4px 4px 0; background: none; }
+.bars .track {
+  overflow: hidden;
+  border-radius: 9px;
+  background: #28304c;
+}
+.bars .fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 9px;
+  background: linear-gradient(90deg, var(--status-healthy), var(--source-codex));
+}
+.bars .empty { color: var(--text-muted); font-size: 12px; }
+
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  font-size: 12px; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 12px; background: var(--surface-1);
+}
+.chip b { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* minmax(0, …) rather than a bare fr: `1fr` means `minmax(auto, 1fr)`, and the
+   auto minimum keeps a track from shrinking below its content. Rows inside use
+   white-space: nowrap for ellipsis, so a long device or model name would push
+   the whole card past the viewport instead of being truncated. */
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 16px; margin-bottom: 16px; }
+@media (max-width: 800px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* meter: fill carries the accent; the track is a lighter step of the same ramp */
+.meter { height: 8px; border-radius: 4px; background: var(--meter-track); margin-top: 10px; overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 4px; background: var(--series-1); width: 0; transition: width 0.6s ease; }
+/* Intensity scale: the figure is always printed beside the bar, so colour
+   reinforces rather than carries the value (status palette, fixed steps). */
+.meter-fill.warn { background: var(--meter-warn); }
+.meter-fill.serious { background: var(--meter-serious); }
+.meter-fill.critical { background: var(--meter-critical); }
+.stat-tile .sub.proj { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+/* projected to blow past the quota — the number says so too */
+.stat-tile .sub.proj.over { color: var(--meter-critical); font-weight: 600; }
+.chip.authoritative { border-color: var(--series-2); color: var(--series-2); padding: 1px 7px; font-size: 11px; }
+.stat-tile .label .chip { padding: 1px 7px; font-size: 11px; margin-left: 4px; }
+/* Shown once, at the top, when the server wants a token the browser does not
+   have (ADR-0016). Without it the panel is nine pages of identical 401s and no
+   indication of where the fix lives. */
+.auth-banner {
+  grid-column: 1 / -1;
+  margin: 0; padding: 10px var(--gutter);
+  font-size: 12px; line-height: 1.6;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--meter-warn) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--meter-warn) 45%, transparent);
+}
+.auth-banner a { color: var(--accent); }
+.auth-banner code { font-family: var(--font-display); }
+
+/* device state: color + text label together, never color alone */
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--text-muted); }
+.dot.active, .dot.online { background: #0ca30c; }
+.dot.idle { background: #fab219; }
+.dot.offline, .dot.stale { background: var(--text-muted); }
+.dev-row .sub2 { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.subtle { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+
+/* speed view (F15): 近似 / 精确 通道徽标,颜色只作强化,文案本身已自解释 */
+.badge.approx { border-color: var(--series-4); color: var(--series-4); }
+.badge.exact  { border-color: var(--series-2); color: var(--series-2); }
+.stat-tile .value .unit { font-size: 14px; color: var(--text-muted); font-weight: 500; }
+
+/* details view (F13) */
+.filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.filter-row select {
+  font: inherit; font-size: 12px; color: var(--text-secondary);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; max-width: 220px;
+}
+.pager { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 12px; }
+.pager button:disabled { opacity: 0.4; cursor: default; }
+.session-link { color: var(--series-1); cursor: pointer; }
+.session-link:hover { text-decoration: underline; }
+.chip-x { font: inherit; color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0 0 0 2px; }
+.chip-x:hover { color: var(--text-primary); }
+
+.tooltip {
+  position: fixed; z-index: 10; pointer-events: none;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 12px; color: var(--text-secondary);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 170px;
+}
+.tooltip .t-date { color: var(--text-primary); font-weight: 600; margin-bottom: 4px; }
+.tooltip .t-row { display: flex; justify-content: space-between; gap: 16px; }
+.tooltip .t-row .k { display: flex; align-items: center; gap: 6px; }
+.tooltip .t-row .v { font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* ---- narrow screens ----------------------------------------------------
+   Keep all nine routes on one scrollable row rather than wrapping them into
+   several lines and displacing the data below. */
+@media (max-width: 640px) {
+  .tabs a { flex: 0 0 auto; padding: 8px 12px; }
+
+  /* Title, legend and buttons compete for one row; let them stack instead of
+     squeezing a button down to two wrapped characters. */
+  .card-head { flex-wrap: wrap; gap: 8px; }
+  .ghost-btn { white-space: nowrap; }
+
+  .card { padding: 14px 12px; }
+  .stat-tile { padding: 12px 12px; }
+  .stat-tile .value { font-size: 22px; }
+
+  /* Tables already scroll inside .data-table; bleed the scroll area to the
+     card edges so the full width is usable rather than boxed in by padding. */
+  .data-table { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+
+  .pager { justify-content: space-between; }
+}
+
+/* Touch input needs a bigger target than a mouse does; 13px text with 5px
+   padding is a ~27px tab, well under a comfortable tap area. */
+@media (pointer: coarse) {
+  .tabs a { padding: 8px 14px; }
+  .ghost-btn { padding: 7px 12px; }
+  .chip-x { padding: 4px 6px; }
+}
+
+/* ── Live readout ────────────────────────────────────────────────────────
+   The hero is the lane strip, not a number tile. A tile says "here is a
+   figure"; the strip says "here is what your machines are doing", which is
+   the difference between a report and an instrument. */
+
+.now {
+  display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;
+  padding: 4px 0 16px;
+}
+.now .figure {
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  text-shadow: none;
+  font-size: clamp(44px, 6vw, 76px);
+  font-weight: 790; line-height: 0.92; letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.now .unit { font-size: 0.34em; font-weight: 500; color: var(--text-secondary); letter-spacing: 0; }
+.now .caption { color: var(--text-secondary); font-size: 13px; padding-bottom: 6px; }
+.now .caption b { color: var(--text-primary); font-weight: 600; }
+.now.idle .figure { color: var(--text-muted); }
+
+/* Lanes. One row per stream, then the union beneath — the whole argument of
+   ADR-0009 in one picture: concurrent 50 tok/s sessions add on the shared
+   timeline, while sequential sessions do not inflate the aggregate. */
+.lanes { display: flex; flex-direction: column; gap: 2px; }
+.lane {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) 92px;
+  align-items: center; gap: 12px;
+  padding: 5px 0;
+}
+.lane .who {
+  font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lane .who .sub { color: var(--text-muted); font-size: 11px; }
+.lane .track {
+  position: relative; height: 24px; border-radius: 7px;
+  background: rgba(var(--line-rgb), 0.06);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+/* Blocks glow in their lane's hue: on a dark ground a flat fill disappears,
+   and the glow is what makes concurrent activity read at a glance. */
+.lane .blk {
+  position: absolute; top: 2px; bottom: 2px;
+  border-radius: 3px; min-width: 2px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 100%, white), color-mix(in srgb, var(--c) 52%, #090b15));
+  box-shadow: 0 0 12px -2px var(--c), inset 0 1px 0 rgba(var(--overlay-rgb), 0.3);
+  animation: blk-in 0.35s ease-out both;
+}
+@keyframes blk-in { from { opacity: 0; transform: scaleY(0.35); } to { opacity: 1; transform: none; } }
+.lane .rate {
+  font-family: var(--font-display); font-size: 13px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.lane .rate .u { color: var(--text-muted); font-size: 10px; }
+
+.lane.union { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.lane.union .who { color: var(--text-primary); font-weight: 600; font-size: 12px; }
+.lane.union .track { height: 30px; }
+.lane.union { --c: var(--union); }
+
+.lane-1 { --c: var(--lane-1); }
+.lane-2 { --c: var(--lane-2); }
+.lane-3 { --c: var(--lane-3); }
+.lane-4 { --c: var(--lane-4); }
+.lane-5 { --c: var(--lane-5); }
+
+.axis {
+  display: flex; justify-content: space-between;
+  font-family: var(--font-display); font-size: 10px; color: var(--text-muted);
+  padding-top: 6px;
+  margin-left: calc(min(200px, max(120px, 16vw)) + 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand .dot-live { animation: none; }
+  .lane .blk { animation: none; }
+}
+@media (max-width: 700px) {
+  .lane { grid-template-columns: minmax(0, 1fr) 78px; }
+  .lane .track { grid-column: 1 / -1; grid-row: 2; }
+  .axis { margin-left: 0; }
+}
+
+/* ── Icons ───────────────────────────────────────────────────────────────
+   Stroked, currentColor, so each one takes the tint of where it sits. */
+.ico { width: 15px; height: 15px; flex: none; }
+.tabs a { display: flex; align-items: center; gap: 9px; }
+.tabs a .ico { color: var(--text-muted); transition: color 0.14s ease; }
+.tabs a:hover .ico { color: var(--text-secondary); }
+
+/* Each destination carries its own hue, so the rail reads as a set of places
+   rather than a list of words — and the active one lights up in that hue. */
+.tabs a[data-icon="live"]     { --ic: var(--teal); }
+.tabs a[data-icon="speed"]    { --ic: var(--accent); }
+.tabs a[data-icon="overview"] { --ic: var(--violet); }
+.tabs a[data-icon="reports"]  { --ic: var(--amber); }
+.tabs a[data-icon="details"]  { --ic: var(--rose); }
+.tabs a[data-icon="devices"]  { --ic: var(--accent); }
+.tabs a[data-icon="models"]   { --ic: var(--violet); }
+.tabs a[data-icon="cache"]    { --ic: var(--teal); }
+.tabs a[data-icon="settings"] { --ic: var(--text-secondary); }
+.tabs a[aria-current] .ico { color: var(--ic); filter: drop-shadow(0 0 6px var(--ic)); }
+.tabs a[aria-current] {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ic) 20%, transparent),
+    color-mix(in srgb, var(--ic) 5%, transparent)
+  );
+  border-bottom-color: var(--ic);
+  box-shadow: 0 5px 12px -8px color-mix(in srgb, var(--ic) 70%, transparent);
+}
+.card-head h2 { display: flex; align-items: center; gap: 8px; }
+.card-head h2 .ico { width: 14px; height: 14px; color: var(--accent); }
+
+/* ── A4 instrument hierarchy ─────────────────────────────────────────────
+   Every route uses the same recessed navy card surface. Motion and source
+   gradients carry emphasis; route changes must not switch visual systems. */
+.card,
+.stat-tile {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+.card:hover,
+.stat-tile:hover {
+  border-color: var(--border-strong);
+  box-shadow: none;
+  transform: none;
+}
+/* Keep the route groups explicit for the established visual-contract check,
+   while assigning all of them the same A4 surface instead of theme islands. */
+#view-live .card,
+#view-speed .card,
+main:not(#view-live):not(#view-speed) .card {
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+}
+
+.page-head h2 {
+  font-size: clamp(20px, 2vw, 26px);
+  letter-spacing: -0.025em;
+}
+.card > h2,
+.card-head h2 {
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+.label,
+.sub,
+.subtle,
+.refresh,
+.legend,
+th {
+  letter-spacing: 0.01em;
+}
+.value,
+.fig,
+code,
+time,
+td,
+.refresh {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+.tabs a:focus-visible,
+.ghost-btn:focus-visible,
+.filter-row select:focus-visible,
+input:focus-visible,
+button:focus-visible {
+  outline-color: var(--accent);
+}
+
+/* The route row scrolls horizontally on compact widths. Keep its keyboard
+   focus ring inside each link so the scroll viewport cannot clip it. */
+.tabs a:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (max-width: 860px) {
+  body { padding: 8px; }
+  .viz-root {
+    min-height: calc(100vh - 16px);
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    width: 100%;
+    max-width: 100vw;
+    background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .content { width: 100%; overflow-x: clip; }
+  .brand { flex: 0 0 auto; }
+  .tabs {
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    scroll-padding-inline: 24px;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { scroll-margin-inline: 16px; }
+}
+
+@media (max-width: 420px) {
+  body { padding: 0; }
+  .viz-root {
+    min-height: 100vh;
+    border-inline: 0;
+    border-radius: 0;
+  }
+  .content { padding: 16px 12px 36px; }
+  .page-head { gap: 8px; margin-bottom: 14px; }
+  .card { padding: 13px 12px; margin-bottom: 10px; }
+  .stat-row { gap: 8px; margin-bottom: 10px; }
+  .data-table { max-width: calc(100vw - 24px); }
+  .data-table-shell { max-width: calc(100vw - 24px); }
+  .filter-row select { max-width: 100%; min-height: 40px; }
+  .credential-scope-map > div { grid-template-columns: 1fr; gap: 4px; }
+  /* On a phone the merge controls stack: a picker or a confirmation box that
+     overflows the card is one the user cannot read before committing. */
+  .merge-picker label, .merge-confirm-row label { width: 100%; align-items: stretch; flex-direction: column; }
+  .merge-picker select, .merge-confirm-row .form-input { max-width: 100%; min-width: 0; width: 100%; min-height: 40px; }
+  .merge-impact, .merge-history { max-width: calc(100vw - 24px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition: none !important;
+  }
+}
+
+/* Methodology notes folded behind an `i` (ADR-0024). The button sits inline
+   with a card title, so it is sized to the 11px eyebrow beside it rather than
+   to a control — it is punctuation, not an action. */
+.infotip-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+.infotip-btn {
+  width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border-strong); background: transparent;
+  color: var(--text-muted); font-size: 10px; line-height: 1;
+  font-family: var(--font-display); font-style: italic; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.infotip-btn:hover, .infotip-btn[aria-expanded="true"] {
+  color: var(--text-primary); border-color: var(--accent);
+}
+/* Anchored to the button and lifted above the chart canvases, which paint
+   their own stacking context. Width is capped in ch so a long note wraps to a
+   readable measure instead of the card's full width. */
+.infotip-pop {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+  width: max-content; max-width: min(46ch, 78vw);
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+  color: var(--text-secondary); font-size: 12px; line-height: 1.6;
+  text-align: left; white-space: normal; font-weight: 400;
+}
+.infotip-pop.flip { left: auto; right: 0; }
+.infotip-pop code { font-size: 11px; }
+.infotip-pop b { color: var(--text-primary); font-weight: 600; }

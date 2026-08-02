@@ -16,11 +16,9 @@ func almost(t *testing.T, name string, got, want float64) {
 }
 
 // seedSpeedStore inserts events with known per-event speeds:
-//   - claude-opus-4 (claude-code): outputs 10..50 over 1000ms → tps 10,20,30,40,50
-//   - gpt-5 (codex): must be EXCLUDED from the approx channel — its
-//     token_count gaps are a logging artifact, not generation time
-//   - noise that must be excluded: output_tokens < 8, duration_ms = 0
 //   - claude-opus-4 (proxy): tps 30,60,90 with ttft 300,500,1000
+//   - log-channel and codex events, which the proxy channel must never pick up
+//   - noise that must be excluded: output_tokens < 8, duration_ms = 0
 func seedSpeedStore(t *testing.T) (*Store, time.Time, time.Time) {
 	t.Helper()
 	s, err := Open(t.TempDir() + "/t.db")
@@ -57,40 +55,11 @@ func seedSpeedStore(t *testing.T) (*Store, time.Time, time.Time) {
 	return s, base.Add(-time.Hour), base.Add(time.Hour)
 }
 
-func TestSpeedByModelApprox(t *testing.T) {
-	s, from, to := seedSpeedStore(t)
-	defer s.Close()
-
-	rows, err := s.SpeedByModel(from, to, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Codex must not appear: only claude-code feeds the approximate channel.
-	if len(rows) != 1 {
-		t.Fatalf("rows = %d, want 1 (codex must be excluded) (%+v)", len(rows), rows)
-	}
-	opus := rows[0]
-	if opus.Model != "claude-opus-4" {
-		t.Fatalf("model = %q, want claude-opus-4", opus.Model)
-	}
-
-	// Odd sample count: tps 10,20,30,40,50.
-	if opus.Samples != 5 || opus.OutputTokens != 150 {
-		t.Errorf("opus samples/output = %d/%d, want 5/150", opus.Samples, opus.OutputTokens)
-	}
-	almost(t, "opus median", opus.MedianTPS, 30)
-	almost(t, "opus avg", opus.AvgTPS, 30)
-	almost(t, "opus p90", opus.P90TPS, 50) // nearest rank ceil(0.9*5)=5
-	almost(t, "opus min", opus.MinTPS, 10)
-	almost(t, "opus max", opus.MaxTPS, 50)
-	almost(t, "opus ttft avg (logs are 0)", opus.AvgTTFTMS, 0)
-}
-
 func TestSpeedByModelExact(t *testing.T) {
 	s, from, to := seedSpeedStore(t)
 	defer s.Close()
 
-	rows, err := s.SpeedByModel(from, to, true)
+	rows, err := s.ProxySpeedByModel(from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +82,7 @@ func TestSpeedByModelWindow(t *testing.T) {
 	defer s.Close()
 
 	// Window ending before any event: no rows, no error.
-	rows, err := s.SpeedByModel(from.Add(-2*time.Hour), from, false)
+	rows, err := s.ProxySpeedByModel(from.Add(-2*time.Hour), from)
 	if err != nil {
 		t.Fatal(err)
 	}

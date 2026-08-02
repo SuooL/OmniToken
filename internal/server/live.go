@@ -56,6 +56,11 @@ const (
 	burnWindow   = 10 * time.Minute
 	deviceActive = 2 * time.Minute
 	deviceStale  = 10 * time.Minute // token-monitor's staleAfterMs default
+	// How long a process report stays trustworthy (ADR-0012). Six times the
+	// default 15s collection interval: long enough that a slow tick or a brief
+	// network drop does not blank the panel, short enough that a machine which
+	// went away stops claiming to have sessions open.
+	procTTL = 90 * time.Second
 )
 
 func (s *Server) livePayload(now time.Time) (map[string]any, error) {
@@ -64,11 +69,42 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Process ground truth (ADR-0012), fetched before the device views so each
+	// device can say whether it has any.
+	running, err := s.store.RunningSessions(now.Add(-procTTL))
+	if err != nil {
+		return nil, err
+	}
+	reporters, err := s.store.ProcReporters(now.Add(-procTTL))
+	if err != nil {
+		return nil, err
+	}
+	reports := make(map[string]bool, len(reporters))
+	for _, r := range reporters {
+		reports[r.Device] = true
+	}
+	procCount := map[string]int{}
+	for _, p := range running {
+		procCount[p.Device]++
+	}
+
 	type devView struct {
 		store.DeviceStatus
-		State string `json:"state"` // active | idle | stale
+		State           string `json:"state"` // active | idle | stale (legacy UI compatibility)
+		DeviceID        string `json:"device_id,omitempty"`
+		DisplayName     string `json:"display_name,omitempty"`
+		IdentityStatus  string `json:"identity_status"`
+		ConnectionState string `json:"connection_state"`
+		LastSeenAt      int64  `json:"last_seen_at,omitempty"`
+		LastSeenAgeMS   *int64 `json:"last_seen_age_ms,omitempty"`
+		// Running is meaningless unless HasProcs is true: a device with no
+		// agent (SSH-pulled) reports nothing, which is not the same as zero
+		// sessions and must not be rendered as "closed".
+		HasProcs bool `json:"has_procs"`
+		Running  int  `json:"running"`
 	}
 	devViews := make([]devView, 0, len(devices))
+	viewByDevice := make(map[string]int, len(devices))
 	for _, d := range devices {
 		state := "stale"
 		age := now.UnixMilli() - d.LastTS
@@ -77,13 +113,70 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		} else if age <= deviceStale.Milliseconds() {
 			state = "idle"
 		}
-		devViews = append(devViews, devView{d, state})
+		viewByDevice[d.Device] = len(devViews)
+		devViews = append(devViews, devView{
+			DeviceStatus:    d,
+			State:           state,
+			IdentityStatus:  s.identityStatusFor(d.Device),
+			ConnectionState: "unknown",
+			HasProcs:        reports[d.Device],
+			Running:         procCount[d.Device],
+		})
+	}
+	registered, err := s.store.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range registered {
+		index, exists := viewByDevice[record.DeviceID]
+		if !exists {
+			index = len(devViews)
+			viewByDevice[record.DeviceID] = index
+			devViews = append(devViews, devView{
+				DeviceStatus: store.DeviceStatus{Device: record.DeviceID},
+				HasProcs:     reports[record.DeviceID],
+				Running:      procCount[record.DeviceID],
+			})
+		}
+		view := &devViews[index]
+		view.DeviceID = record.DeviceID
+		view.IdentityStatus = "registered"
+		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
+		view.LastSeenAt = record.LastSeenAt
+		if record.LastSeenAt > 0 {
+			age := max(now.UnixMilli()-record.LastSeenAt, 0)
+			view.LastSeenAgeMS = &age
+		}
+		switch view.ConnectionState {
+		case "online":
+			view.State = "active"
+		case "stale":
+			view.State = "idle"
+		default:
+			view.State = "stale"
+		}
+	}
+	// Same resolution the devices page uses, so one machine cannot end up with
+	// two names depending on which page is open (see deviceNames).
+	names, err := s.deviceNames()
+	if err != nil {
+		return nil, err
+	}
+	for i := range devViews {
+		devViews[i].DisplayName = names.name(devViews[i].Device)
 	}
 	sessions, err := s.store.ActiveSessions(now.Add(-burnWindow))
 	if err != nil {
 		return nil, err
 	}
 	total, output, err := s.store.TokensSince(now.Add(-burnWindow))
+	if err != nil {
+		return nil, err
+	}
+	// Same window as burn so "active" means one thing across the payload.
+	// Widening it would not dilute the rate anyway: speed divides by the union
+	// of generation intervals, not by the window (ADR-0009).
+	speed, err := s.store.LiveSpeedSince(now.Add(-burnWindow), now, "")
 	if err != nil {
 		return nil, err
 	}
@@ -111,18 +204,46 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"quotas":   quotaViews,
-		"devices":  devViews,
+		"quotas":  quotaViews,
+		"devices": devViews,
+		// Inferred from recent events: "used tokens lately". Kept beside
+		// `processes` on purpose — the two answer different questions, and a
+		// session can appear in one and not the other (open but thinking; or
+		// just closed after a burst).
 		"sessions": sessions,
+		"processes": map[string]any{
+			"sessions":    running,
+			"reporters":   reporters,
+			"ttl_seconds": int(procTTL.Seconds()),
+		},
 		"burn": map[string]any{
 			"window_minutes": int(burnWindow.Minutes()),
 			"tokens":         total,
 			"output_tokens":  output,
 			"per_minute":     total / int64(burnWindow.Minutes()),
 		},
+		// Distinct from burn on purpose: burn divides by the whole window and
+		// so includes idle time ("how much am I consuming"), speed divides by
+		// the union of generation intervals ("how fast is it generating").
+		"speed":        speed,
 		"windows":      windows,
 		"generated_at": now.UnixMilli(),
 	}, nil
+}
+
+// handleLive serves the same payload as the SSE snapshot, once, over plain GET.
+//
+// It exists for the menubar client, which polls rather than holding a stream
+// open (ADR-0008 defers the SSE bridge past v1). Sharing livePayload is the
+// point: burn rate is defined once, so the popover and the Live page cannot
+// drift into reporting different numbers for the same ten minutes.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	payload, err := s.livePayload(s.currentTime())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, payload)
 }
 
 // handleStream is the SSE endpoint (docs/API.md). token-monitor-aligned:
@@ -134,13 +255,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	// The server-wide write deadline protects every bounded response from slow
+	// readers. SSE is the one intentional exception: it owns the connection
+	// until the client leaves and emits a bounded state-bearing refresh below.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("X-Accel-Buffering", "no")
 
 	send := func(event string) error {
-		payload, err := s.livePayload(time.Now())
+		payload, err := s.livePayload(s.currentTime())
 		if err != nil {
 			return err
 		}
@@ -154,17 +279,23 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ch, cancel := s.bcast.Subscribe()
 	defer cancel()
-	heartbeat := time.NewTicker(30 * time.Second)
-	defer heartbeat.Stop()
+	refreshInterval := s.streamRefreshInterval
+	if refreshInterval <= 0 {
+		refreshInterval = 30 * time.Second
+	}
+	refresh := time.NewTicker(refreshInterval)
+	defer refresh.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-heartbeat.C:
-			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
+		case <-refresh.C:
+			// A comment proves transport liveness but leaves fleet state frozen.
+			// Recompute the payload so last-seen thresholds age even when no
+			// collector mutation occurs.
+			if err := send("live"); err != nil {
 				return
 			}
-			fl.Flush()
 		case <-ch:
 			time.Sleep(time.Second) // coalesce bursts; pending signals collapse
 			select {
