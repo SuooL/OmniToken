@@ -93,6 +93,9 @@ release: clean
 	GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-linux-amd64   ./cmd/omnitoken
 	GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-linux-arm64   ./cmd/omnitoken
 	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(DIST)/$(BIN)-windows-amd64.exe ./cmd/omnitoken
+	# Checksums for out-of-band distribution (install.sh verifies against this).
+	# CI regenerates the same file; sha256sum on Linux, shasum on macOS.
+	cd $(DIST) && { command -v sha256sum >/dev/null 2>&1 && sha256sum $(BIN)-* || shasum -a 256 $(BIN)-*; } > SHA256SUMS
 	@ls -lh $(DIST)
 
 clean:

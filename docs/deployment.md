@@ -290,6 +290,34 @@ OMNITOKEN_ADMIN_TOKEN='<ADMIN_SECRET>' \
 `-allow-insecure-http`;这个开关会持久化到 agent config。公网地址不应使用该开关，
 应修复 HTTPS ingress。
 
+## 一键安装 agent(`scripts/install.sh`)
+
+在被统计设备上装 agent 的标准方式:检测 OS/架构、下载对应制品、**用 SHA256SUMS 校验**、
+可选 enroll、并按平台装成服务(macOS launchd / Linux systemd 系统或用户单元 / 无 systemd
+时 nohup+cron 兜底)。
+
+有外网的机器从 GitHub Release 拉:
+
+```sh
+curl -fsSL https://github.com/SuooL/OmniToken/releases/latest/download/install.sh \
+  | OMNITOKEN_ADMIN_TOKEN='<ADMIN>' sh -s -- \
+      --server https://ingest.example.net --name "$(hostname)"
+```
+
+**只够得到 Hub、上不了 GitHub 的机器**(如隔离的 GPU 节点)把制品下载源指到 Hub 自己
+(Hub 前置反代 serve `dist/` 即可,见 ADR-0026 的分发说明):
+
+```sh
+curl -fsSL https://ingest.example.net/agent/install.sh \
+  | OMNITOKEN_ADMIN_TOKEN='<ADMIN>' sh -s -- \
+      --base-url https://ingest.example.net/agent \
+      --server https://ingest.example.net --name gpu-node
+```
+
+overlay/mesh 内网直连 Hub(明文 HTTP)时加 `--allow-insecure-http`,DNS 不稳可加
+`--resolve-ip <hub-ip>`(ADR-0026 §3)。`OMNITOKEN_ADMIN_TOKEN` 通过受保护通道提供,不写进
+命令历史。制品与 `SHA256SUMS` 由 `make release` 产出、`release.yml` 发到 GitHub Release。
+
 ## 常驻进程
 
 仓库提供 [systemd server unit](../deploy/omnitoken-server.service)、
