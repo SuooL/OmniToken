@@ -230,6 +230,22 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 
 | 卡片头部层级与热力图缩放(ADR-0022) | ✅ 完成 | 用户反馈「几乎每个 panel 的标题字号都不一致」。实测九路由六十余个卡片头:字号其实统一(h2 14px / eyebrow 11px / subtle 12px),真正的毛病是**信息层级与视觉层级相反** —— eyebrow 在上却最小、h2 在下却最大,所以「下面那个明显是大的」。改为标题在前、口径同行作后缀。同轮修掉两个客观 bug:四个没包 `.card-head` 的 h2 漏到 13px(改基础值 14px,让默认就是对的);热力图 SVG 被拉伸 1.72×,`viewBox` 内 11px 文字实际画成 ≈19px(移动端反向缩到 ≈5.5px),改为按容器反推格子尺寸使 1 单位 = 1 像素,窄屏横向滚动而不是连字一起缩。顺带修 `compact()` 对非整数不取整,tok/s 曾以 14 位小数直接上屏 |
 
+## M10 — 中心 Hub 上公网(2026-08-01 起)
+
+把唯一权威 Hub 从本机 Mac 的 loopback 搬到公网服务器(阿里云 146),去掉每设备的
+反向 SSH 隧道 —— 新增一台经跳板可达的 H200 暴露了「每设备一条隧道」的别扭。设计与
+落地见 [ADR-0026](adr/0026-central-hub-public-migration.md) 与
+[runbook](runbooks/central-hub-public.md)。传输不引 WebSocket:agent 保持 HTTPS
+直连 + durable outbox,面板/菜单栏保持 SSE;明确否决机器间 SSH 隧道。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 设计定稿(ADR-0026) | ✅ 完成 | 唯一权威上公网、三子域名分面(ingest/omni/admin)、admin 只 loopback、以域名解耦实现换机零改动;§6 记下反代前置下 ADR-0016「loopback 免鉴」推定失效的守卫(必须非 loopback 监听) |
+| `resolve_ip` 解析钉定(ADR-0026 §3) | ✅ 完成 | DNS 不稳/污染时,agent 可选 `resolve_ip` 用自定义 DialContext 把 server host 钉到指定 IP,TLS 仍按 URL 域名校验证书;留空行为不变。否决 URL 直写 IP(ACME 不签 IP 证书)与 hosts 文件。3 单测含「钉 IP 后仍按域名校验」 |
+| 阿里云 146 Hub 实接 | 未实施 | 待按 runbook 执行:装机(listen 非 loopback)、Caddy 两子域名 + ACME、搬库、四台设备切 `https://ingest.<域名>`、桌面/网页切 `omni.<域名>` |
+| Mac 降为设备 + 身份合并 | 未实施 | Mac 从 hub-self 变 agent,新旧身份本质同一台,必须走 ADR-0019 设备合并(人工、loopback) |
+| omni 面板身份网关 | 未定 | Cloudflare Access / Tailscale / 自建 OIDC 选型待定 |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试
