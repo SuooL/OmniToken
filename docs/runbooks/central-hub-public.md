@@ -11,10 +11,15 @@
 
 ## 0. 前提与命名(一次性)
 
-- 一个你能自己改解析的域名,加两条 A 记录指向 `<146-公网IP>`,**TTL 调到 60s**:
+- 本次 `<域名>` = `suoool.net`,DNS 在 Cloudflare 管理。加两条 A 记录指向 `<146-公网IP>`,
+  **TTL 60s**,且**全部用灰云(DNS-only,直连 146),不挂橙云代理** —— 橙云边缘从国内访问
+  经常挂/不稳,设备上报和你看面板都会受影响。灰云下 TLS 由 146 上的 Caddy 自己终止(真
+  Let's Encrypt 证书),流量不经 Cloudflare。
   - `ingest.<域名>` —— 设备上报入口
   - `omni.<域名>` —— 面板/菜单栏入口
-- 阿里云安全组:公网只放行 `443`(和你管理用的 `22`)。**绝不放行 `8787` 到公网。**
+- 阿里云安全组:公网放行 `443`(和管理用的 `22`)。**ACME 签证书**:用 HTTP-01 需再放行
+  `80`;想保持 80 关闭就用 Caddy 的 Cloudflare DNS 插件走 DNS-01(拿一个 CF API token)。
+  **绝不放行 `8787` 到公网。**
 - 生成三个互不相同的高熵凭据,存进 146 上权限 0600 的文件,别进 shell history:
   ```sh
   openssl rand -hex 32   # READ_TOKEN
@@ -49,7 +54,8 @@ sudo install -d -o omnitoken -g omnitoken -m 0750 /var/lib/omnitoken /etc/omnito
   "read_token": "<READ_TOKEN>",
   "admin_token": "<ADMIN_TOKEN>",
   "token": "<LEGACY_TOKEN>",
-  "timezone": "America/New_York"
+  "timezone": "America/New_York",
+  "collect": { "local": false }
 }
 ```
 
@@ -57,6 +63,9 @@ sudo install -d -o omnitoken -g omnitoken -m 0750 /var/lib/omnitoken /etc/omnito
   读鉴权关成 no-op,而反代又把它捅上公网 = 免 token 裸读(ADR-0026 §6)。用私网 IP 后
   `requireAuthConsistency` 会强制三凭据齐备,缺一起不来 —— 正好兜底。若这台没有独立私网
   IP,退而用 `0.0.0.0:8787` 但**必须**靠安全组 + 本机防火墙(ufw/nftables)只放行 443。
+- **`collect.local: false` —— 146 是纯 Hub,不采集本机。** 它自己不跑 Claude/Codex,开着
+  只会空扫不存在的日志目录、白费 CPU。也不配 `ssh_hosts`(所有设备走 push,无 SSH 拉取),
+  于是 `mirror` 目录实际不用。
 - `token`(legacy)只在把 v1 设备迁到 v2 之前需要;迁完删掉这行(见 §5.3)。
 - `timezone` 沿用现网的 `America/New_York`(ADR-0021,日界)。
 
@@ -79,7 +88,8 @@ curl --fail --silent --show-error http://<146-私网IP>:8787/api/v1/health
 ## 2. 反代 + TLS + 两子域名(Caddy)
 
 用 Caddy:自动 ACME 签证书,**证书随域名走、不随机器走**(换机时新机自动重签,不是迁移
-包袱,ADR-0026 §5)。装好后写 `/etc/caddy/Caddyfile`:
+包袱,ADR-0026 §5)。因为走灰云、不经 Cloudflare,**TLS 完全由 146 上的 Caddy 终止**,
+证书是真 Let's Encrypt。装好后写 `/etc/caddy/Caddyfile`:
 
 ```caddy
 # 设备上报入口:只放三条 v2 路由(迁移期临时加 v1 ingest,见 §5.3)
@@ -102,8 +112,9 @@ omni.<域名> {
 
 - **admin 面(revoke / devices/merge / `PUT /api/v1/settings`)哪个子域名都不暴露。**
   它们只在 146 本地可达,运维经 §7 操作。
-- **限流**:Caddy 限流要装 `caddy-ratelimit` 插件;或者在阿里云侧用 WAF/安全组限速。
-  给 `ingest.<域名>` 的 ingest/heartbeat 设 5–10 r/s、enroll 设 burst 2。
+- **限流/防扫描全在 146 侧做**(灰云,没有 Cloudflare WAF 兜底):装 `caddy-ratelimit`
+  插件给 `ingest.<域名>` 的 ingest/heartbeat 设 5–10 r/s、enroll 设 burst 2;可再配
+  fail2ban / 阿里云安全组收窄。公网扫描器会直接打到 443,Caddy 的 `respond 404` 便宜地挡掉。
 - **换 nginx 也行**:`deploy` 无 nginx 样例,但 `docs/deployment.md` 方案 D 有骨架;
   SSE 那段要 `proxy_buffering off;` + 大 `proxy_read_timeout`,否则实时被攒住。
 
@@ -115,16 +126,16 @@ curl -I https://omni.<域名>/api/v1/health
 
 ---
 
-## 3. 给 `omni.<域名>` 套身份网关(强烈建议)
+## 3. 给 `omni.<域名>` 套身份网关
 
 面板读鉴权是 `read_token`,浏览器要看数就得揣着它;对公开子域名,单靠一个共享 bearer
-偏弱。在 Caddy 前(或 `omni` 这个 site 内)加一层:
+偏弱。**本次用你自建的那个网关(暂定)** 包住 `omni.<域名>`,只放行你自己。
 
-- 最省事:**Cloudflare Access** 或 **Tailscale Serve** 包住 `omni.<域名>`,只放行你自己;
-- 或 Caddy `forward_auth` 接一个 OIDC 反代。
+因为走灰云、不用 Cloudflare 代理,**面板的鉴权/限流不能指望 CF**,全靠这个自建网关 +
+`read_token`:让 Caddy 的 `omni` 站点先过网关(`forward_auth` 到你的网关,或让网关做前置
+反代、Caddy 只作上游),认证通过后再带 `read_token` 到 Hub。`read_token` 只在网关后使用。
 
-`read_token` 只在网关后使用。`ingest.<域名>` 不套网关(设备要能直接到),它靠 per-device
-bearer + 限流。
+`ingest.<域名>` 不套网关(设备要能直接到),它靠 per-device bearer + §2 的限流。
 
 ---
 
