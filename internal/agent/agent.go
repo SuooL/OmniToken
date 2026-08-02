@@ -5,6 +5,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -39,7 +40,11 @@ const (
 )
 
 type Config struct {
-	ServerURL          string // e.g. https://hub.example or http://127.0.0.1:8788
+	ServerURL string // e.g. https://hub.example or http://127.0.0.1:8788
+	// ResolveIP pins the server host's name resolution to this IP (ADR-0026 §3);
+	// empty uses normal DNS. TLS still validates against the URL hostname, so a
+	// flaky or polluted resolver cannot stop uploads without weakening auth.
+	ResolveIP          string
 	AllowInsecureHTTP  bool
 	Token              string // legacy v1 bearer token
 	ProtocolVersion    int    // zero and one are legacy v1; two uses the durable outbox
@@ -81,7 +86,10 @@ func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) er
 		return err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client, err = newHTTPClient(30*time.Second, hubURL.String(), fc.ResolveIP)
+		if err != nil {
+			return err
+		}
 	}
 	body, err := json.Marshal(enrollmentRequest{
 		DeviceID:     fc.DeviceID,
@@ -142,6 +150,10 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.RelayListen != "" && cfg.RelayToken == "" {
 		return nil, errors.New("relay token is required when relay is enabled")
 	}
+	httpClient, err := newHTTPClient(60*time.Second, cfg.ServerURL, cfg.ResolveIP)
+	if err != nil {
+		return nil, err
+	}
 	st, err := collect.LoadState(cfg.StatePath)
 	if err != nil {
 		return nil, err
@@ -149,7 +161,7 @@ func New(cfg Config) (*Agent, error) {
 	agent := &Agent{
 		cfg:    cfg,
 		state:  st,
-		client: &http.Client{Timeout: 60 * time.Second},
+		client: httpClient,
 		probe:  collect.NewCachedProber(10 * time.Minute),
 		sleep:  time.Sleep,
 		jitter: mathrand.Float64,
@@ -792,4 +804,37 @@ func loopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// newHTTPClient builds the agent's HTTP client. When resolveIP is set it pins
+// the server host to that IP with a custom dialer, while leaving TLS to verify
+// the certificate against the URL hostname — so a flaky or DNS-polluted network
+// cannot stop uploads, yet the connection stays authenticated (ADR-0026 §3). An
+// empty resolveIP keeps the default transport unchanged.
+func newHTTPClient(timeout time.Duration, serverURL, resolveIP string) (*http.Client, error) {
+	if resolveIP == "" {
+		return &http.Client{Timeout: timeout}, nil
+	}
+	if net.ParseIP(resolveIP) == nil {
+		return nil, fmt.Errorf("resolve_ip %q is not a valid IP address", resolveIP)
+	}
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve_ip set but server URL is unparseable: %w", err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("resolve_ip set but server URL %q has no host", serverURL)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Rewrite only the configured host, and keep the request's port, so TLS
+		// SNI and certificate verification still use the hostname, not the IP.
+		if h, port, splitErr := net.SplitHostPort(addr); splitErr == nil && strings.EqualFold(h, host) {
+			addr = net.JoinHostPort(resolveIP, port)
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}, nil
 }

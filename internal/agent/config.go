@@ -14,6 +14,7 @@ import (
 // Precedence: command-line flags > environment > this file > defaults.
 type FileConfig struct {
 	Server             string   `json:"server"`                        // server or relay-peer base URL
+	ResolveIP          string   `json:"resolve_ip,omitempty"`          // pin the server host's DNS to this IP; TLS still uses the hostname (ADR-0026 §3)
 	AllowInsecureHTTP  bool     `json:"allow_insecure_http,omitempty"` // permit plaintext to a non-loopback target
 	Token              string   `json:"token,omitempty"`               // ingest bearer token
 	ProtocolVersion    int      `json:"protocol_version,omitempty"`    // absent means legacy v1

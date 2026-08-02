@@ -204,6 +204,7 @@ func runAgent(args []string) {
 	}
 	a, err := agent.New(agent.Config{
 		ServerURL:          strings.TrimSuffix(srvURL, "/"),
+		ResolveIP:          fc.ResolveIP,
 		AllowInsecureHTTP:  fc.AllowInsecureHTTP,
 		Token:              pick(*token, "OMNITOKEN_TOKEN", fc.Token),
 		ProtocolVersion:    fc.EffectiveProtocolVersion(),
