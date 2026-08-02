@@ -117,7 +117,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		devViews = append(devViews, devView{
 			DeviceStatus:    d,
 			State:           state,
-			IdentityStatus:  "legacy_unbound",
+			IdentityStatus:  s.identityStatusFor(d.Device),
 			ConnectionState: "unknown",
 			HasProcs:        reports[d.Device],
 			Running:         procCount[d.Device],

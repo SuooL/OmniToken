@@ -222,8 +222,16 @@ native_tps(group) = measured_output_tokens(group)
 `device_id`、`display_name`、`identity_status`、`connection_state`、
 `last_seen_at`、`last_seen_age_ms`、`capabilities`、`queued_batches`、
 `queued_bytes`、`oldest_queued_at`。
-`connection_state` 为 `online | stale | offline`;仅有历史用量、没有 v2 identity 的旧
-设备保留为 `identity_status=legacy_unbound, connection_state=unknown`。
+`connection_state` 为 `online | stale | offline`。`identity_status` 三取一:
+
+| 值 | 含义 |
+|---|---|
+| `registered` | 走过 v2 注册,有 device_id、token 与心跳 |
+| `local` | 运行 hub 的这台机器。服务端直接扫本地日志,没有 agent、token 或心跳,也无从注册 |
+| `legacy_unbound` | 仅有历史用量、没有 v2 identity 的设备 |
+
+`local` 与 `legacy_unbound` 的 `connection_state` 均为 `unknown` —— 两者都没有心跳可言,
+但原因不同:前者不需要,后者是还没有。
 
 ### GET /api/v1/health
 

@@ -280,9 +280,12 @@ const DevicesView = {
         const model = r.top_model
           ? `${esc(r.top_model)} <span class="dev-share">${compact(r.top_model_tokens)}</span>`
           : "—";
+        // Three kinds of row, not two. The hub's own machine has no agent to
+        // be online or offline and nothing to enrol, so calling it a legacy
+        // device pointed at an upgrade that does not exist.
         const connection = r.identity_status === "registered"
           ? this.connectionLabel(r.connection_state)
-          : "旧版设备";
+          : r.identity_status === "local" ? "本机" : "旧版设备";
         const lastSeen = r.identity_status === "registered" ? r.last_seen_at : r.last_ts;
         const backlog = r.identity_status === "registered"
           ? (r.queued_batches

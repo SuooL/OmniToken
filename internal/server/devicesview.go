@@ -88,7 +88,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			CacheRead: row.CacheRead, CacheCreation: row.CacheCreation,
 			TodayTokens: today[row.Device], LastTS: row.LastTS, Repos: row.Repos,
 			TopModel: row.TopModel, TopModelTokens: row.TopModelTokens,
-			IdentityStatus: "legacy_unbound", ConnectionState: "unknown",
+			IdentityStatus: s.identityStatusFor(row.Device), ConnectionState: "unknown",
 		}
 		var cost float64
 		priced, missing := 0, 0
@@ -183,4 +183,23 @@ func heartbeatState(now time.Time, lastSeenAt, revokedAt int64) string {
 	default:
 		return "offline"
 	}
+}
+
+// identityStatusFor names what kind of identity a device row has, before the
+// registry gets a chance to overwrite it with `registered`.
+//
+// The hub's own machine is its own category. It has no agent, no token and no
+// heartbeat because it needs none — the server reads its logs directly — so
+// grouping it with agents that have not enrolled pointed the reader at an
+// upgrade that does not exist, and it could never leave that group. The
+// distinction is cheap to make and entirely inside the system: the hub knows
+// what it calls itself, and whether it is scanning anything.
+//
+// Local collection being off matters: with no local collector running, a row
+// under the hub's own name came from somewhere else and is not this machine.
+func (s *Server) identityStatusFor(device string) string {
+	if s.cfg.LocalEnabled() && device != "" && device == s.cfg.DeviceName {
+		return "local"
+	}
+	return "legacy_unbound"
 }
