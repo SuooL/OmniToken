@@ -123,12 +123,14 @@ test("a five-hour card leads with it and still shows the projection and the week
     projected_percent: 36.5,
     weekly_percent: 12,
     resets_in_minutes: 102,
+    used_tokens: 144_000_000,
+    remaining_tokens: 170_000_000,
   }]);
 
-  assert.match(html, /<strong[^>]*>24%<\/strong>/);
-  assert.ok(html.includes("官方 5h 用量"));
-  assert.ok(html.includes("1h42m 后重置"));
-  assert.ok(html.includes("预估 5h 37%"));
+  // The percentage keeps the headline and the tokens join it there.
+  assert.match(html, /<strong[^>]*>24%<span class="fig-aside">144M<\/span><\/strong>/);
+  assert.ok(html.includes("5h · 还剩 170M · 1h42m"));
+  assert.ok(html.includes("预估 37%"));
   assert.ok(html.includes("周 12%"));
 });
 
@@ -143,11 +145,15 @@ test("a weekly fallback names the window it fell back to", () => {
     projected_percent: null,
     weekly_percent: 72,
     resets_in_minutes: 9575,
+    used_tokens: 15_000_000,
+    remaining_tokens: 114_000_000,
   }]);
 
-  assert.match(html, /<strong[^>]*>72%<\/strong>/);
-  assert.ok(html.includes("官方周用量"));
-  assert.ok(html.includes("无官方 5h 数据"));
+  assert.match(html, /<strong[^>]*>72%<span class="fig-aside">15M<\/span><\/strong>/);
+  assert.ok(html.includes("周 · 还剩 114M · 159h"));
+  // The sentence "无官方 5h 数据" only repeated the 周 beside it, on a card
+  // 170px wide.
+  assert.ok(!html.includes("无官方 5h 数据"));
 });
 
 // Absent data is not zero usage: rendering "0%" here would tell the user they
@@ -184,10 +190,31 @@ test("an untouched authoritative window is a reading, not a blank", () => {
   assert.match(html, /<strong[^>]*>0%<\/strong>/);
   assert.ok(!html.includes("暂无"));
   // Nothing to project from yet, and the popover says that rather than 0%.
-  assert.ok(html.includes("预估 5h —"));
+  assert.ok(html.includes("预估 —"));
 });
 
 test("no quota rows at all leaves the card empty rather than inventing sources", () => {
   assert.ok(showQuotas([]).includes("官方配额不可用"));
   assert.ok(showQuotas(undefined).includes("官方配额不可用"));
+});
+
+test("配额卡把已用 token 放在百分比旁,把推断的剩余量放进副行", () => {
+  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
+  // The tokens ride the headline, inside the same <strong> as the percentage,
+  // so the two share a baseline instead of stacking into another row.
+  assert.match(source, /fig-aside/);
+  assert.match(source, /finite\(quota\.used_tokens\)/);
+  // The remainder is inferred and often absent; the sub-line has to close up
+  // around it rather than render an empty separator.
+  assert.match(source, /finite\(quota\.remaining_tokens\)/);
+  assert.match(source, /\.filter\(Boolean\)\.join\(" · "\)/);
+});
+
+// The basis names the window in as many characters as the window needs. It
+// used to read 官方周用量 / 官方 5h 用量, which spent a third of a 170px card
+// on the word 官方 — already implied by the card's own title.
+test("配额卡的窗口标签只写窗口本身", () => {
+  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
+  assert.match(source, /label: "周"/);
+  assert.match(source, /label: "5h"/);
 });
