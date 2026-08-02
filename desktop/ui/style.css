@@ -180,6 +180,16 @@ body.degraded #main { opacity: .88; }
 .delta[data-direction="up"] { color: var(--status-healthy); }
 .delta[data-direction="down"] { color: var(--amber); }
 
+/* The tokens ride the headline at a size that reads as its companion rather
+   than as a second number competing with it. Baseline-aligned by sitting
+   inside the same <strong>. */
+.quota-card .fig-aside {
+  margin-left: 5px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  letter-spacing: 0;
+}
 .quota-card .quota-basis { color: var(--text-secondary); font-size: 10px; }
 .quota-card .delta { color: var(--text-muted); font-size: 10px; }
 /* Fixed steps from severity() in format-core.js, not a gradient: the reader

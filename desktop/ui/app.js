@@ -161,8 +161,8 @@ function renderUsageCard(source, prefix) {
 // screen. The server decides the basis; the popover only has to say it out loud,
 // because "24% of the 5 hours" and "24% of the week" are not the same warning.
 const QUOTA_BASIS = {
-  five_hour: { percent: "five_hour_percent", label: "官方 5h 用量" },
-  weekly: { percent: "weekly_percent", label: "官方周用量" },
+  five_hour: { percent: "five_hour_percent", label: "5h" },
+  weekly: { percent: "weekly_percent", label: "周" },
 };
 
 const SOURCE_TONE = { "claude-code": "claude", codex: "codex" };
@@ -175,12 +175,21 @@ function quotaDetail(quota) {
   if (quota.basis === "five_hour") {
     // The projection is absent until the window has enough elapsed time to
     // extrapolate from — an em dash, not 0%, because nothing has been ruled out.
-    return `预估 5h ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
+    return `预估 ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
   }
-  // Not a fault: Codex's `primary` limit became a weekly window, so it has no
-  // 5-hour figure to report at all, and Claude's is captured opportunistically.
-  if (quota.basis === "weekly") return "无官方 5h 数据";
+  // A weekly-only card used to spell out "无官方 5h 数据". The basis beside the
+  // number already says 周, so the sentence only repeated it — and this card is
+  // 170px wide.
+  if (quota.basis === "weekly") return "";
   return "官方端点未报配额";
+}
+
+// Compact remaining time for a card this narrow. Not untilReset(): that one is
+// shared with the web panel (ADR-0014), which has the room to say 后重置.
+function quotaReset(minutes) {
+  if (!(minutes > 0)) return "即将重置";
+  const hours = Math.floor(minutes / 60);
+  return hours >= 24 ? `${hours}h` : `${hours}h${minutes % 60}m`;
 }
 
 function renderQuotas() {
@@ -193,15 +202,27 @@ function renderQuotas() {
   root.innerHTML = quotas.map((quota) => {
     const basis = QUOTA_BASIS[quota.basis];
     const percent = basis ? quota[basis.percent] : null;
-    const reset = basis && finite(quota.resets_in_minutes) ? untilReset(quota.resets_in_minutes) : "";
+    const reset = basis && finite(quota.resets_in_minutes) ? quotaReset(quota.resets_in_minutes) : "";
+    // The percentage answers "how full", the tokens answer it again in the unit
+    // the user actually writes in. Both describe the same window, so they share
+    // the headline line rather than being stacked.
+    const used = finite(quota.used_tokens) ? compact(quota.used_tokens) : "";
+    // The remainder is inferred (ADR-0025) and simply absent until the
+    // calibration has evidence; the line closes up around it.
+    const sub = [
+      basis ? basis.label : "无官方配额",
+      finite(quota.remaining_tokens) ? `还剩 ${compact(quota.remaining_tokens)}` : "",
+      reset,
+    ].filter(Boolean).join(" · ");
+    const detail = quotaDetail(quota);
     return `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}"
       data-basis="${esc(quota.basis)}">
       <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
       <strong class="fig" data-severity="${finite(percent) ? severity(percent) : ""}">${
-        finite(percent) ? percentLabel(percent) : "暂无"}</strong>
-      <span class="quota-basis">${basis ? esc(basis.label) : "无官方配额"}${
-        reset ? ` · ${esc(reset)}` : ""}</span>
-      <span class="delta">${esc(quotaDetail(quota))}</span>
+        finite(percent) ? percentLabel(percent) : "暂无"}${
+        used ? `<span class="fig-aside">${esc(used)}</span>` : ""}</strong>
+      <span class="quota-basis">${esc(sub)}</span>
+      ${detail ? `<span class="delta">${esc(detail)}</span>` : ""}
     </article>`;
   }).join("");
 }
