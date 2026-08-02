@@ -138,10 +138,24 @@ async function refreshAuthState() {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
     health.className = "hub-health healthy";
     health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 正常</span>`;
+    // Only warn when a read actually fails. A reverse proxy in front of the hub
+    // can inject the token, so `auth_required && !Api.token` no longer implies a
+    // 401 — probe an authenticated read and trust the result instead of the
+    // heuristic. Without this, the omni-behind-Authelia setup nags for a token
+    // the browser never needs.
     if (h.auth_required && !Api.token) {
-      document.querySelector(".viz-root").insertAdjacentHTML("afterbegin",
-        `<div class="auth-banner">这台服务端可被其它机器访问,读取需要令牌。
-           请到 <a href="#settings">设置 → 访问令牌</a> 填写 <code>config.json</code> 里的 <code>token</code>。</div>`);
+      let denied = false;
+      try {
+        const probe = await fetch(Api.url("/api/v1/live"));
+        denied = probe.status === 401 || probe.status === 403;
+      } catch {
+        denied = false;
+      }
+      if (denied) {
+        document.querySelector(".viz-root").insertAdjacentHTML("afterbegin",
+          `<div class="auth-banner">这台服务端可被其它机器访问,读取需要令牌。
+             请到 <a href="#settings">设置 → 访问令牌</a> 填写 <code>config.json</code> 里的 <code>token</code>。</div>`);
+      }
     }
   } catch (e) {
     health.className = "hub-health unavailable";
