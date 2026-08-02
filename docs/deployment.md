@@ -318,6 +318,19 @@ overlay/mesh 内网直连 Hub(明文 HTTP)时加 `--allow-insecure-http`,DNS 不
 `--resolve-ip <hub-ip>`(ADR-0026 §3)。`OMNITOKEN_ADMIN_TOKEN` 通过受保护通道提供,不写进
 命令历史。制品与 `SHA256SUMS` 由 `make release` 产出、`release.yml` 发到 GitHub Release。
 
+**Windows** 用 PowerShell 版 `scripts/install.ps1`(逻辑相同,服务注册成隐藏的登录计划任务
+`OmniTokenAgent`):
+
+```powershell
+$env:OMNITOKEN_ADMIN_TOKEN='<ADMIN>'
+& ([scriptblock]::Create((irm https://ingest.example.net/agent/install.ps1))) `
+    -Server https://ingest.example.net -Name $env:COMPUTERNAME `
+    -BaseUrl https://ingest.example.net/agent
+```
+
+mesh 内网直连加 `-AllowInsecureHttp`(`-Server http://<mesh-ip>:8787`),DNS 钉定加
+`-ResolveIp <hub-ip>`。install.sh / install.ps1 都随 Release 一同发布。
+
 ## 常驻进程
 
 仓库提供 [systemd server unit](../deploy/omnitoken-server.service)、
