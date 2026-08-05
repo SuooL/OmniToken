@@ -14,6 +14,8 @@ const MAX_CONTRIBUTORS = 5;
 
 let SERVER = "";
 let HAS_TOKEN = false;
+// Where "完整面板" opens. Empty means "use SERVER", matching the backend fallback.
+let PANEL_URL = "";
 let latestLive = null;
 let latestTelemetry = null;
 let telemetryError = "";
@@ -398,6 +400,7 @@ const settingsEls = {
   settings: $("settings"),
   input: $("server-input"),
   token: $("token-input"),
+  panel: $("panel-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
 };
@@ -414,6 +417,7 @@ function openSettings() {
   settingsEls.token.placeholder = HAS_TOKEN
     ? "已保存访问令牌；留空保持不变"
     : "服务端只监听本机时留空";
+  settingsEls.panel.value = PANEL_URL;
   settingsMessage("");
   settingsEls.main.hidden = true;
   settingsEls.settings.hidden = false;
@@ -436,9 +440,11 @@ async function saveSettings() {
     const stored = await invoke("settings_set", {
       server: settingsEls.input.value,
       token: settingsEls.token.value,
+      panelUrl: settingsEls.panel.value,
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
+    PANEL_URL = stored.panel_url;
     latestTelemetry = null;
     closeSettings();
   } catch (error) {
@@ -451,7 +457,7 @@ async function saveSettings() {
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 settingsEls.save.addEventListener("click", saveSettings);
-for (const input of [settingsEls.input, settingsEls.token]) {
+for (const input of [settingsEls.input, settingsEls.token, settingsEls.panel]) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveSettings();
     if (event.key === "Escape") closeSettings();
@@ -470,6 +476,7 @@ async function boot() {
   const stored = await invoke("settings_get");
   SERVER = stored.server;
   HAS_TOKEN = !!stored.has_token;
+  PANEL_URL = stored.panel_url || "";
   await listen("live", (event) => onLive(event.payload));
   await listen("open-settings", openSettings);
   await pullTelemetry();

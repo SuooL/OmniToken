@@ -109,9 +109,10 @@ async fn settings_set(
     app: tauri::AppHandle,
     server: String,
     token: String,
+    panel_url: String,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
-    let next = settings::validate_candidate(&current, &server, &token).await?;
+    let next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
     settings::save(&app, &next)?;
 
     // Point the bridge at the new address now instead of waiting for the old
@@ -135,7 +136,10 @@ fn refresh_now(app: tauri::AppHandle) {
 #[tauri::command]
 fn open_full_panel(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let url = settings::load(&app).server;
+    // Not `server`: the browser dashboard can live behind a reverse proxy that
+    // does its own auth, distinct from the API address the app polls directly
+    // (see Settings::panel_url). Falls back to `server` when unset.
+    let url = settings::load(&app).panel_target();
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
