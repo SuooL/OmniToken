@@ -136,7 +136,7 @@ func runAgent(args []string) {
 	rescan := fs.Bool("rescan", false, "re-read all local logs from the start once, backfilling derived fields")
 	relay := fs.String("relay", "", "also relay ingest for peers on this listen address (e.g. :8788)")
 	proxyListen := fs.String("proxy-listen", "", "run the local API proxy on this address (e.g. 127.0.0.1:8899)")
-	interval := fs.Int("interval", 0, "scan interval seconds (default 15)")
+	interval := fs.Int("interval", 0, "scan interval seconds (default 10)")
 	dirs := fs.String("claude-dirs", "", "comma-separated Claude log dirs (default: auto-detect)")
 	fs.Parse(args)
 
@@ -190,7 +190,7 @@ func runAgent(args []string) {
 		intervalSec = fc.IntervalSeconds
 	}
 	if intervalSec <= 0 {
-		intervalSec = 15
+		intervalSec = 10
 	}
 	statePath := fc.State
 	if statePath == "" {
