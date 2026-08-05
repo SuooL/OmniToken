@@ -100,6 +100,10 @@
     <input id="token-input" type="password" placeholder="服务端只监听本机时留空"
            spellcheck="false" autocapitalize="off" autocorrect="off">
     <div class="hint">非 loopback 服务端需要读取令牌；令牌不会进入 WebView。</div>
+    <label class="eyebrow" for="panel-input">完整面板地址</label>
+    <input id="panel-input" type="text" placeholder="留空则用服务端地址"
+           spellcheck="false" autocapitalize="off" autocorrect="off">
+    <div class="hint">「完整面板」按钮在浏览器打开的网址。走反代/域名认证时填这里（如 https://omni.example.net），留空则打开上面的服务端地址。</div>
     <div class="msg" id="settings-msg" aria-live="polite"></div>
     <div class="actions">
       <button type="button" id="settings-cancel">取消</button>

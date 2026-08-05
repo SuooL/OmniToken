@@ -50,6 +50,17 @@ pub struct Settings {
     /// the common case — a server on this machine, listening on loopback.
     #[serde(default)]
     pub token: String,
+    /// Where the "完整面板" button opens in a browser, when that differs from the
+    /// API address. Empty — the common case — falls back to `server`.
+    ///
+    /// The two can legitimately diverge: the app polls the API at a direct or
+    /// mesh address with a bearer token it injects itself, while the human-facing
+    /// dashboard may sit behind a reverse proxy that runs its own browser auth
+    /// (e.g. Authelia) and injects the read token at its edge. Pointing `server`
+    /// at that proxy would break the app's own polling — it cannot pass the
+    /// browser login — so the panel destination is a separate field, not a reuse.
+    #[serde(default)]
+    pub panel_url: String,
     #[serde(default)]
     pub tray_title: TrayTitle,
     /// Warn before the wall, not after. Enabled by default because it is the
@@ -80,10 +91,23 @@ impl Default for Settings {
         Self {
             server: default_server(),
             token: String::new(),
+            panel_url: String::new(),
             tray_title: TrayTitle::default(),
             notify: true,
             autostart: false,
             hotkey: false,
+        }
+    }
+}
+
+impl Settings {
+    /// The URL the "完整面板" button should open. Falls back to `server` so the
+    /// common case — one address for both API and browser — needs no extra setup.
+    pub fn panel_target(&self) -> String {
+        if self.panel_url.trim().is_empty() {
+            self.server.clone()
+        } else {
+            self.panel_url.clone()
         }
     }
 }
@@ -95,6 +119,9 @@ impl Default for Settings {
 pub struct SettingsView {
     pub server: String,
     pub has_token: bool,
+    /// Not a secret, unlike the token: it is a plain browser destination the
+    /// settings form needs to pre-fill, so it crosses into the webview as-is.
+    pub panel_url: String,
     pub tray_title: TrayTitle,
     pub notify: bool,
     pub autostart: bool,
@@ -106,6 +133,7 @@ impl From<&Settings> for SettingsView {
         Self {
             server: settings.server.clone(),
             has_token: !settings.token.is_empty(),
+            panel_url: settings.panel_url.clone(),
             tray_title: settings.tray_title,
             notify: settings.notify,
             autostart: settings.autostart,
@@ -186,6 +214,7 @@ pub async fn validate_candidate(
     current: &Settings,
     server: &str,
     token: &str,
+    panel_url: &str,
 ) -> Result<Settings, String> {
     let mut candidate = current.clone();
     candidate.server = normalize(server)?;
@@ -193,6 +222,15 @@ pub async fn validate_candidate(
     if !token.is_empty() {
         candidate.token = token.to_string();
     }
+    // A blank panel URL is not a validation failure: it means "open the API
+    // address in the browser", so it is stored as empty and `panel_target`
+    // falls back to `server`. A non-blank one is normalized like any base URL —
+    // but never probed, because the browser (not this app) authenticates it.
+    candidate.panel_url = if panel_url.trim().is_empty() {
+        String::new()
+    } else {
+        normalize(panel_url)?
+    };
 
     crate::get_json(
         &candidate.server,
@@ -278,6 +316,9 @@ mod tests {
         assert!(s.notify);
         assert!(!s.autostart);
         assert!(!s.hotkey);
+        // Same trap as the others: a missing panel_url must default to empty so
+        // the button keeps opening `server`, not revert anything.
+        assert!(s.panel_url.is_empty());
     }
 
     // Also covers the other direction: an empty object is a plausible result of
@@ -356,6 +397,7 @@ mod tests {
             &Settings::default(),
             &server,
             "valid-token",
+            "",
         ))
         .unwrap();
 
@@ -375,6 +417,7 @@ mod tests {
             &Settings::default(),
             &server,
             "wrong-token",
+            "",
         ));
 
         let request = request_rx.recv().unwrap();
@@ -387,8 +430,12 @@ mod tests {
     fn missing_bearer_credential_fails_an_authenticated_probe() {
         let (server, request_rx, handle) = authenticated_server("valid-token");
 
-        let result =
-            tauri::async_runtime::block_on(validate_candidate(&Settings::default(), &server, ""));
+        let result = tauri::async_runtime::block_on(validate_candidate(
+            &Settings::default(),
+            &server,
+            "",
+            "",
+        ));
 
         let request = request_rx.recv().unwrap();
         handle.join().unwrap();
@@ -406,7 +453,8 @@ mod tests {
         };
 
         let candidate =
-            tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ")).unwrap();
+            tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ", ""))
+                .unwrap();
 
         let request = request_rx.recv().unwrap();
         handle.join().unwrap();
@@ -426,5 +474,79 @@ mod tests {
         assert_eq!(json["has_token"], true);
         assert!(json.get("token").is_none());
         assert!(!json.to_string().contains("never-send-this"));
+    }
+
+    #[test]
+    fn panel_target_falls_back_to_server_when_unset() {
+        let s = Settings {
+            server: "http://192.168.10.124:8787".into(),
+            panel_url: String::new(),
+            ..Settings::default()
+        };
+        assert_eq!(s.panel_target(), "http://192.168.10.124:8787");
+
+        // Whitespace is treated the same as empty, not as a real destination.
+        let blank = Settings {
+            panel_url: "   ".into(),
+            ..s.clone()
+        };
+        assert_eq!(blank.panel_target(), "http://192.168.10.124:8787");
+    }
+
+    #[test]
+    fn panel_target_prefers_the_explicit_panel_url() {
+        let s = Settings {
+            server: "http://192.168.10.124:8787".into(),
+            panel_url: "https://omni.example.net".into(),
+            ..Settings::default()
+        };
+        assert_eq!(s.panel_target(), "https://omni.example.net");
+    }
+
+    #[test]
+    fn a_blank_panel_url_input_clears_the_field() {
+        let (server, request_rx, handle) = authenticated_server("valid-token");
+        let current = Settings {
+            panel_url: "https://stale.example.net".into(),
+            ..Settings::default()
+        };
+
+        let candidate = tauri::async_runtime::block_on(validate_candidate(
+            &current,
+            &server,
+            "valid-token",
+            "   ",
+        ))
+        .unwrap();
+
+        request_rx.recv().unwrap();
+        handle.join().unwrap();
+        // Clearing the field means "open the API address again", so a previously
+        // saved panel URL must not linger.
+        assert!(candidate.panel_url.is_empty());
+        assert_eq!(candidate.panel_target(), candidate.server);
+    }
+
+    #[test]
+    fn a_panel_url_is_normalized_but_never_probed() {
+        // The probe server answers exactly one request. If validate_candidate
+        // ever probed the panel URL too, this test would hang or the single
+        // accept would be the wrong one — so passing proves only `server` is hit.
+        let (server, request_rx, handle) = authenticated_server("valid-token");
+
+        let candidate = tauri::async_runtime::block_on(validate_candidate(
+            &Settings::default(),
+            &server,
+            "valid-token",
+            "  omni.example.net/dash/  ",
+        ))
+        .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        // Scheme filled in, trailing slash trimmed — same rules as `server`.
+        assert_eq!(candidate.panel_url, "http://omni.example.net/dash");
+        // The one probe that happened was the overview call to `server`.
+        assert!(request.starts_with("GET /api/v1/overview?days=1 HTTP/1.1\r\n"));
     }
 }
