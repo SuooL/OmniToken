@@ -64,6 +64,75 @@ func TestFiveHourQuotaIsIndependentOfArrivalOrder(t *testing.T) {
 	}
 }
 
+// One account can report several scopes for the same weekly window — the
+// account-wide `seven_day` alongside per-model `seven_day:opus` — and the card
+// absorbs whichever is tightest. It has to name that scope, because the quota
+// row above decides what to draw by asking which readings a card already shows;
+// getting the scope wrong there would either hide a reading nobody else renders
+// or leave the duplicate it was meant to remove.
+func TestWeeklyWindowCarriesTheScopeItPicked(t *testing.T) {
+	now := time.UnixMilli(1_700_000_000_000)
+	resets := now.Add(48 * time.Hour).UnixMilli()
+	observed := now.Add(-3 * time.Minute).UnixMilli()
+
+	quotas := []model.QuotaSnapshot{
+		{Source: "claude-code", Scope: "seven_day", WindowMinutes: 10080, UsedPercent: 30, ResetsAt: resets, ObservedAt: observed},
+		{Source: "claude-code", Scope: "seven_day:opus", WindowMinutes: 10080, UsedPercent: 88, ResetsAt: resets, ObservedAt: observed},
+	}
+
+	w := tightestQuota(quotas, now, 10080)["claude-code"]
+	if w.scope != "seven_day:opus" {
+		t.Errorf("scope = %q, want seven_day:opus (the tightest of 30/88)", w.scope)
+	}
+	if w.observed != observed {
+		t.Errorf("observed = %d, want %d", w.observed, observed)
+	}
+}
+
+// The window card repeats the authoritative percentage and reset that the quota
+// row also holds, and adds tokens, cost and the projection on top. So the panel
+// draws one card, not two — and to drop the duplicate it needs each card to
+// state which reading it absorbed, keyed by (source, window minutes, scope).
+//
+// The server only labels; it must not filter `quotas[]` itself. The menubar
+// reads that same list to raise its 75%/90% alerts, so removing an entry there
+// would silently disable the alert for the very window the panel is showing.
+func TestWindowCardNamesTheReadingItAbsorbed(t *testing.T) {
+	now := time.Now()
+	s := channelTestServer(t, channelSeed(now))
+	observed := now.Add(-4 * time.Minute).UnixMilli()
+
+	q := capacityQuota("five_hour", 300, 40, now.Add(3*time.Hour))
+	q.ObservedAt = observed
+
+	cards, err := s.buildWindowCards(now, []model.QuotaSnapshot{q})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	card := cardByKey(t, cards, "claude-code")
+	if !card.Authoritative {
+		t.Fatalf("card is not authoritative: %+v", card)
+	}
+	if card.Source != "claude-code" || card.Scope != "five_hour" {
+		t.Errorf("absorbed reading = (%q, %q), want (claude-code, five_hour)", card.Source, card.Scope)
+	}
+	if card.ObservedAt != observed {
+		t.Errorf("observed_at = %d, want %d — the row above shows freshness, so the card must too",
+			card.ObservedAt, observed)
+	}
+
+	// A placeholder card absorbed nothing: there was no reading to begin with,
+	// so it must not claim one and make the row hide a snapshot it never showed.
+	codex := cardByKey(t, cards, "codex")
+	if codex.Authoritative {
+		t.Fatalf("codex card unexpectedly authoritative: %+v", codex)
+	}
+	if codex.Scope != "" || codex.ObservedAt != 0 {
+		t.Errorf("placeholder claims a reading: scope=%q observed_at=%d", codex.Scope, codex.ObservedAt)
+	}
+}
+
 // Rows that describe a different window, or a window that has already rolled
 // over, must not be able to win by being the tightest.
 func TestFiveHourQuotaIgnoresOtherWindowsAndExpiredOnes(t *testing.T) {

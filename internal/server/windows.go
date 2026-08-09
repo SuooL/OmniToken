@@ -26,6 +26,18 @@ type windowCard struct {
 	Authoritative bool    `json:"authoritative"` // window boundary from the provider
 	Placeholder   bool    `json:"placeholder"`   // provider reports no such window (yet)
 	Note          string  `json:"note,omitempty"`
+	// Which authoritative reading this card absorbed, so the quota row above can
+	// drop the snapshot the card already states and stop drawing it twice. The
+	// identity is (source, window minutes, scope): one account reports several
+	// scopes for one window — `seven_day` beside per-model `seven_day:opus` —
+	// and only the tightest becomes a card.
+	//
+	// Labelling, not filtering: `quotas[]` in the same payload stays whole,
+	// because the menubar raises its 75%/90% alerts by walking that list, and a
+	// server-side removal would disable the alert for the window on screen.
+	Source     string `json:"source,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	ObservedAt int64  `json:"observed_at,omitempty"` // when the reading was taken
 	// Burn-rate projection (F11): observed rate over the elapsed part of the
 	// window, extrapolated to the window end. Only meaningful for a window
 	// with a real end — a rolling look-back has none.
@@ -122,6 +134,7 @@ type fiveHourWin struct {
 	start, resets time.Time
 	pct           float64
 	scope         string
+	observed      int64 // unix ms; how fresh the reading is
 }
 
 // windowKinds are the quota windows the panel draws a card for. Both are
@@ -156,7 +169,8 @@ func tightestQuota(quotas []model.QuotaSnapshot, now time.Time, windowMinutes in
 		}
 		resets := time.UnixMilli(q.ResetsAt)
 		out[q.Source] = fiveHourWin{
-			start: resets.Add(-span), resets: resets, pct: q.UsedPercent, scope: q.Scope,
+			start: resets.Add(-span), resets: resets, pct: q.UsedPercent,
+			scope: q.Scope, observed: q.ObservedAt,
 		}
 	}
 	return out
@@ -216,6 +230,7 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 			if authoritative {
 				card.Authoritative = true
 				card.StartMS, card.ResetsAt, card.UsedPercent = w.start.UnixMilli(), w.resets.UnixMilli(), w.pct
+				card.Source, card.Scope, card.ObservedAt = source, w.scope, w.observed
 				from = w.start
 			} else {
 				card.StartMS = rollingStart.UnixMilli()

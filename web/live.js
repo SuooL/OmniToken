@@ -192,7 +192,7 @@ const Live = {
       if (v.device && v.display_name) this.deviceNames[v.device] = v.display_name;
     }
 
-    this.renderQuotas(d.quotas || []);
+    this.renderQuotas(d.quotas || [], d.windows || []);
 
     const burn = d.burn || {};
     document.getElementById("burn-rate").textContent = compact(burn.per_minute || 0) + "/min";
@@ -261,6 +261,11 @@ const Live = {
         const remain = Math.max(0, Math.round((w.resets_at - Date.now()) / 60000));
         bits.push(`配额 ${w.used_percent.toFixed(0)}%`);
         bits.push(`${Math.floor(remain / 60)}h${remain % 60}m 后重置`);
+        // How fresh the percentage is. It used to live on a separate tile above
+        // this one; that tile said nothing this card does not, so it moved here
+        // rather than being dropped — a quota reading without its age invites
+        // reading a stale number as current.
+        if (w.observed_at) bits.push(`观测 ${relTime(w.observed_at)}`);
       } else {
         bits.push(`近 ${elapsed}`);
       }
@@ -294,11 +299,26 @@ const Live = {
     }).join("");
   },
 
-  // Authoritative quota windows (ADR-0007): Anthropic's OAuth usage endpoint
-  // and Codex's rate_limits. These are real numbers, not inferred — labelled
-  // as such so they are never confused with the estimated block below.
-  renderQuotas(quotas) {
+  // Authoritative quota readings (ADR-0011 for Claude, Codex's rate_limits) that
+  // no window card already states. These are real numbers, not inferred —
+  // labelled as such so they are never confused with the estimated block below.
+  //
+  // A window card carries the same percentage and reset as the reading it
+  // absorbed, and adds tokens, cost, projection and remaining allowance on top,
+  // so drawing that reading again here is the identical number twice — which is
+  // what this row used to do for every scope. What is left is what no card
+  // shows: an account reports several scopes for one window (`seven_day` beside
+  // per-model `seven_day:opus`) and only the tightest becomes a card.
+  //
+  // The server labels rather than filters: `quotas[]` arrives whole because the
+  // menubar walks that same list for its 75%/90% alerts.
+  renderQuotas(quotas, windows) {
     const el = document.getElementById("quota-row");
+    const key = (source, minutes, scope) => `${source}|${minutes}|${scope || ""}`;
+    const absorbed = new Set((windows || [])
+      .filter((w) => w.authoritative && w.source)
+      .map((w) => key(w.source, w.window_minutes, w.scope)));
+    quotas = quotas.filter((q) => !absorbed.has(key(q.source, q.window_minutes, q.scope)));
     if (!quotas.length) { el.innerHTML = ""; return; }
     const order = { five_hour: 0, seven_day: 1 };
     const sorted = [...quotas].sort((a, b) =>

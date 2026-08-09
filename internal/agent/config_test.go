@@ -93,8 +93,8 @@ func TestWriteSkeletonConfigCreatesEditableFile(t *testing.T) {
 	if fc.Server != "" {
 		t.Errorf("Server = %q, want empty so the required-field error repeats", fc.Server)
 	}
-	if fc.IntervalSeconds != 15 {
-		t.Errorf("IntervalSeconds = %d, want 15", fc.IntervalSeconds)
+	if fc.IntervalSeconds != 10 {
+		t.Errorf("IntervalSeconds = %d, want 10", fc.IntervalSeconds)
 	}
 
 	// The file carries a token once filled in — it must not be world-readable.

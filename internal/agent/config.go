@@ -26,7 +26,7 @@ type FileConfig struct {
 	RelayListen        string   `json:"relay_listen,omitempty"`         // e.g. ":8788" to relay for peers
 	RelayToken         string   `json:"relay_token,omitempty"`          // protects this relay's listener
 	RelayUpstreamToken string   `json:"relay_upstream_token,omitempty"` // credential expected by the next relay hop
-	IntervalSeconds    int      `json:"interval_seconds,omitempty"`     // scan interval; default 15
+	IntervalSeconds    int      `json:"interval_seconds,omitempty"`     // scan interval; default 10
 	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
 	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
 	State              string   `json:"state,omitempty"`                // offset state file path
@@ -113,7 +113,7 @@ func WriteSkeletonConfig(path string) error {
 		return err
 	}
 
-	skeleton := FileConfig{IntervalSeconds: 15}
+	skeleton := FileConfig{IntervalSeconds: 10}
 	data, err := json.MarshalIndent(skeleton, "", "  ")
 	if err != nil {
 		return err

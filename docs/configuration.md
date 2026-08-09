@@ -460,7 +460,7 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | `relay_listen` | `OMNITOKEN_RELAY` | 空 | 开中继端口(如 `:8788`) |
 | `relay_token` | `OMNITOKEN_RELAY_TOKEN` | 空 | 保护本机 relay listener 的独立 credential;启用 relay 时必填 |
 | `relay_upstream_token` | `OMNITOKEN_RELAY_UPSTREAM_TOKEN` | 回落 `relay_token` | 连接上游 relay 时使用,支持每跳不同 credential |
-| `interval_seconds` | — | 15 | 扫描周期 |
+| `interval_seconds` | — | 10 | 扫描周期 |
 | `claude_dirs` / `codex_dirs` | — | 自动探测 | 日志目录 |
 | `state` | — | `~/.omnitoken/agent-state.json` | offset 状态 |
 | `since` | — | 空(不限) | 采集起点 `YYYY-MM-DD`,早于该日零点的事件不上报。日期写错**直接启动失败**,不会静默当成「不限」 |
