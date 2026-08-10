@@ -170,6 +170,14 @@ alerts at 75% / 90%. It connects to a running hub; it does not collect anything 
 Build it with `make desktop` (see [limitations](#limitations) — it is not yet shipped in
 Releases).
 
+<div align="center">
+<img src="docs/images/menubar.png" width="330" alt="macOS menu bar popover">
+</div>
+
+<div align="center"><em>Unlike the dashboard shots above, this one is a real fleet. Claude's quota
+tile reads <em>no data</em> because nothing had refreshed that status line recently — the capture is
+opportunistic by design, and the panel says so instead of showing a stale percentage.</em></div>
+
 **Local API proxy** (optional, off by default) — point a script's `base_url` at
 `http://127.0.0.1:8899/anthropic` and requests are forwarded **verbatim** while OmniToken
 records usage, **exact TTFT**, and wall time. This is the only channel that can measure
