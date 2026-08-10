@@ -196,6 +196,13 @@ func runAgent(args []string) {
 	if statePath == "" {
 		statePath = filepath.Join(server.DataDir(), "agent-state.json")
 	}
+	// Where `omnitoken statusline` drops Claude's quota for a collector to pick
+	// up (ADR-0011). Resolved here for the same reason as the state path: the
+	// agent package must not reach into the server package for the data dir.
+	statuslineCachePath := fc.StatuslineCachePath
+	if statuslineCachePath == "" {
+		statuslineCachePath = filepath.Join(server.DataDir(), "statusline-cache.json")
+	}
 	// LoadFileConfig already rejected a malformed date, so this cannot fail
 	// here; checking anyway keeps the assumption from going unstated.
 	since, err := fc.SinceTime()
@@ -203,27 +210,28 @@ func runAgent(args []string) {
 		log.Fatalf("config: %v", err)
 	}
 	a, err := agent.New(agent.Config{
-		ServerURL:          strings.TrimSuffix(srvURL, "/"),
-		ResolveIP:          fc.ResolveIP,
-		AllowInsecureHTTP:  fc.AllowInsecureHTTP,
-		Token:              pick(*token, "OMNITOKEN_TOKEN", fc.Token),
-		ProtocolVersion:    fc.EffectiveProtocolVersion(),
-		DeviceID:           fc.DeviceID,
-		DeviceToken:        pick("", "OMNITOKEN_DEVICE_TOKEN", fc.DeviceToken),
-		OutboxPath:         fc.Outbox,
-		OutboxMaxBytes:     fc.OutboxMaxBytes,
-		AgentVersion:       version,
-		DeviceName:         deviceName,
-		Since:              since,
-		ClaudeDirs:         claudeDirs,
-		CodexDirs:          codexDirs,
-		StatePath:          statePath,
-		Interval:           time.Duration(intervalSec) * time.Second,
-		RelayListen:        pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
-		RelayToken:         pick("", "OMNITOKEN_RELAY_TOKEN", fc.RelayToken),
-		RelayUpstreamToken: pick("", "OMNITOKEN_RELAY_UPSTREAM_TOKEN", fc.RelayUpstreamToken),
-		ProxyListen:        pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
-		ProxyUpstreams:     fc.ProxyUpstreams,
+		ServerURL:           strings.TrimSuffix(srvURL, "/"),
+		ResolveIP:           fc.ResolveIP,
+		AllowInsecureHTTP:   fc.AllowInsecureHTTP,
+		Token:               pick(*token, "OMNITOKEN_TOKEN", fc.Token),
+		ProtocolVersion:     fc.EffectiveProtocolVersion(),
+		DeviceID:            fc.DeviceID,
+		DeviceToken:         pick("", "OMNITOKEN_DEVICE_TOKEN", fc.DeviceToken),
+		OutboxPath:          fc.Outbox,
+		OutboxMaxBytes:      fc.OutboxMaxBytes,
+		AgentVersion:        version,
+		DeviceName:          deviceName,
+		Since:               since,
+		ClaudeDirs:          claudeDirs,
+		CodexDirs:           codexDirs,
+		StatePath:           statePath,
+		StatuslineCachePath: statuslineCachePath,
+		Interval:            time.Duration(intervalSec) * time.Second,
+		RelayListen:         pick(*relay, "OMNITOKEN_RELAY", fc.RelayListen),
+		RelayToken:          pick("", "OMNITOKEN_RELAY_TOKEN", fc.RelayToken),
+		RelayUpstreamToken:  pick("", "OMNITOKEN_RELAY_UPSTREAM_TOKEN", fc.RelayUpstreamToken),
+		ProxyListen:         pick(*proxyListen, "OMNITOKEN_PROXY", fc.ProxyListen),
+		ProxyUpstreams:      fc.ProxyUpstreams,
 	})
 	if err != nil {
 		log.Fatalf("init: %v", err)
