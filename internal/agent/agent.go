@@ -44,24 +44,29 @@ type Config struct {
 	// ResolveIP pins the server host's name resolution to this IP (ADR-0026 §3);
 	// empty uses normal DNS. TLS still validates against the URL hostname, so a
 	// flaky or polluted resolver cannot stop uploads without weakening auth.
-	ResolveIP          string
-	AllowInsecureHTTP  bool
-	Token              string // legacy v1 bearer token
-	ProtocolVersion    int    // zero and one are legacy v1; two uses the durable outbox
-	DeviceID           string
-	DeviceToken        string
-	OutboxPath         string
-	OutboxMaxBytes     int64
-	AgentVersion       string
-	Capabilities       []string
-	DeviceName         string
-	ClaudeDirs         []string
-	CodexDirs          []string
-	StatePath          string
-	Interval           time.Duration
-	RelayListen        string // e.g. ":8788"; empty = relay disabled
-	RelayToken         string // protects this relay's listener
-	RelayUpstreamToken string // next-hop relay credential; falls back to RelayToken
+	ResolveIP         string
+	AllowInsecureHTTP bool
+	Token             string // legacy v1 bearer token
+	ProtocolVersion   int    // zero and one are legacy v1; two uses the durable outbox
+	DeviceID          string
+	DeviceToken       string
+	OutboxPath        string
+	OutboxMaxBytes    int64
+	AgentVersion      string
+	Capabilities      []string
+	DeviceName        string
+	ClaudeDirs        []string
+	CodexDirs         []string
+	StatePath         string
+	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
+	// Claude's quota is read from the rate-limits file beside it (ADR-0011).
+	// Empty disables the reader — see New. The caller fills the default, because
+	// resolving the data directory belongs to the layer above this one.
+	StatuslineCachePath string
+	Interval            time.Duration
+	RelayListen         string // e.g. ":8788"; empty = relay disabled
+	RelayToken          string // protects this relay's listener
+	RelayUpstreamToken  string // next-hop relay credential; falls back to RelayToken
 	// Since is the first instant to report; the zero time means no window.
 	Since          time.Time
 	ProxyListen    string            // e.g. "127.0.0.1:8899"; empty = proxy disabled
@@ -129,6 +134,10 @@ type Agent struct {
 	now    func() time.Time
 	// procs is a seam for tests; nil means collect.LiveProcesses.
 	procs func(device string, now time.Time) (model.ProcReport, error)
+	// quotaReader picks up what the status line captured for Claude (ADR-0011);
+	// nil when no cache path is configured. Codex quota does not come through
+	// here — it is parsed straight out of the rollout logs the scan reads.
+	quotaReader *collect.StatusQuotaReader
 
 	heartbeatSequence atomic.Uint64
 	lastScanAt        atomic.Int64
@@ -184,7 +193,42 @@ func New(cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
+	// Attribute the reading the same way a scan attributes an event, so one
+	// machine does not appear under two identities depending on which surface
+	// reported it (ADR-0019 §7).
+	if cfg.StatuslineCachePath != "" {
+		agent.quotaReader = collect.NewStatusQuotaReader(agent.scanDevice(), cfg.StatuslineCachePath)
+	}
 	return agent, nil
+}
+
+// scanDevice is the identity this agent reports under. V2 uses the enrolled ID;
+// legacy v1 has only the name.
+func (a *Agent) scanDevice() string {
+	if a.isV2() {
+		return a.cfg.DeviceID
+	}
+	return a.cfg.DeviceName
+}
+
+// collectStatusQuota reports what the status line captured for Claude, if it is
+// something not reported before (ADR-0011).
+//
+// This exists because the reader used to be constructed only inside `serve`.
+// On the topology the deployment guide recommends — an agent per machine,
+// hub elsewhere — that left Claude quota stranded on the machine that captured
+// it: the file was fresh and nothing ever read it. Codex was unaffected, since
+// its quota is parsed out of the rollout logs the scan already walks, which is
+// why the gap read as a Claude-side outage rather than a missing collector.
+func (a *Agent) collectStatusQuota(now time.Time) error {
+	if a.quotaReader == nil {
+		return nil
+	}
+	qs := a.quotaReader.Collect(now)
+	if len(qs) == 0 {
+		return nil
+	}
+	return a.pushQuotas(qs)
 }
 
 func (a *Agent) Close() error {
@@ -227,11 +271,7 @@ func (a *Agent) scanOnce() (int, error) {
 	// is this machine's work" is the obvious assumption and it is false whenever
 	// a home directory is synced: the agent would then claim another machine's
 	// history with full self-report authority. Config `since` bounds that.
-	device := a.cfg.DeviceName
-	if a.isV2() {
-		device = a.cfg.DeviceID
-	}
-	n, err := collect.ScanSources(specs, device, a.state, collect.LocalRepoResolver, sink, a.pushQuotas, a.cfg.Since)
+	n, err := collect.ScanSources(specs, a.scanDevice(), a.state, collect.LocalRepoResolver, sink, a.pushQuotas, a.cfg.Since)
 	if err == nil {
 		a.lastScanAt.Store(a.currentTime().UnixMilli())
 	}
@@ -307,6 +347,14 @@ func (a *Agent) Run() error {
 		}
 		if statusErr != nil {
 			log.Printf("agent: status report failed: %v", statusErr)
+		}
+		// Alongside the process report and for the same reason: a captured
+		// quota describes the account right now, which belongs to the resident
+		// loop rather than to a one-shot historical import. Its failure is
+		// logged but does not gate collection — the events are the product,
+		// the quota is a signal about them.
+		if quotaErr := a.collectStatusQuota(a.currentTime()); quotaErr != nil {
+			log.Printf("agent: quota report failed: %v", quotaErr)
 		}
 		if err != nil || statusErr != nil {
 			a.sleep(backoff.Next())

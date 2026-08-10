@@ -30,6 +30,11 @@ type FileConfig struct {
 	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
 	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
 	State              string   `json:"state,omitempty"`                // offset state file path
+	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
+	// Claude's quota is read from the rate-limits file beside it (ADR-0011).
+	// Default: ~/.omnitoken/statusline-cache.json, matching the status line's
+	// own default and the server's.
+	StatuslineCachePath string `json:"statusline_cache_path,omitempty"`
 	// Since ("YYYY-MM-DD", local time) is the start of collection: events older
 	// than that midnight are never reported. Empty means no window.
 	//
