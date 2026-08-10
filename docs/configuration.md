@@ -463,6 +463,7 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | `interval_seconds` | — | 10 | 扫描周期 |
 | `claude_dirs` / `codex_dirs` | — | 自动探测 | 日志目录 |
 | `state` | — | `~/.omnitoken/agent-state.json` | offset 状态 |
+| `statusline_cache_path` | — | `~/.omnitoken/statusline-cache.json` | 定位 `omnitoken statusline` 的产物;Claude 配额从它旁边的 `rate-limits.json` 读取并上报(ADR-0011)。只在你给 statusline 配了非默认 `cache_path` 时才需要改 |
 | `since` | — | 空(不限) | 采集起点 `YYYY-MM-DD`,早于该日零点的事件不上报。日期写错**直接启动失败**,不会静默当成「不限」 |
 | `proxy_listen` | `OMNITOKEN_PROXY` | 空(关闭) | 本地 API 代理监听地址,如 `127.0.0.1:8899` |
 | `proxy_upstreams` | — | anthropic/openai 内置 | `{前缀: 上游 base}`,与内置合并 |

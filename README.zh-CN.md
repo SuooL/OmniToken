@@ -151,6 +151,14 @@ Opus 4.8 15.0K $1.25 · 今日 5.4M $10.00(2 台) · 5h 97% 1h08m · 周 36% 70h
 它只连接一个已在运行的 hub，自身不采集。用 `make desktop` 构建
 （见[局限](#局限)：目前尚未随 Release 分发）。
 
+<div align="center">
+<img src="docs/images/menubar.png" width="330" alt="macOS 菜单栏弹窗">
+</div>
+
+<div align="center"><em>与上面的面板截图不同，这张是真实机群。Claude 配额那格显示「暂无」，
+是因为当时没有任何 Claude Code 在刷新状态栏 —— 这条捕获通道按设计就是机会性的，
+面板如实说明，而不是拿一个陈旧的百分比顶上。</em></div>
+
 **本地 API 代理**（可选，默认关闭）—— 把脚本的 `base_url` 指向
 `http://127.0.0.1:8899/anthropic`，请求被**逐字转发**，同时记录用量、**精确 TTFT** 与耗时。
 这是唯一能精确测出首 token 延迟的通道 —— 日志里根本没有这个字段。
