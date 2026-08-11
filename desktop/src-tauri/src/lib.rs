@@ -9,6 +9,8 @@
 
 mod gauge;
 mod live;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod notify;
 mod settings;
 mod telemetry;
@@ -172,6 +174,11 @@ fn show_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
     let Some(window) = app.get_webview_window("panel") else {
         return;
     };
+    // Tahoe re-establishes the opaque backing each time the window is ordered
+    // front, so the corners have to be re-cleared on every show, not only once
+    // at setup (see macos_window).
+    #[cfg(target_os = "macos")]
+    macos_window::harden(&window);
     if let Some(rect) = rect {
         let size = window.outer_size().unwrap_or_default();
         if let (tauri::Position::Physical(pos), tauri::Size::Physical(icon)) =
@@ -379,6 +386,13 @@ pub fn run() {
                 })
                 .build(app)?;
             tray::remember_items(app.handle(), items);
+
+            // Clear the opaque backing the transparent window ships behind the
+            // CSS card on macOS 26 before it is ever shown (macos_window).
+            #[cfg(target_os = "macos")]
+            if let Some(panel) = app.get_webview_window("panel") {
+                macos_window::harden(&panel);
+            }
 
             // Keep the OS in step with what the file says. Someone may have
             // removed the LaunchAgent by hand, or the chord may have been taken

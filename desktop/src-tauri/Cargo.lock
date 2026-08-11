@@ -2507,6 +2507,8 @@ dependencies = [
  "eventsource-stream",
  "futures-util",
  "log",
+ "objc2",
+ "objc2-app-kit",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

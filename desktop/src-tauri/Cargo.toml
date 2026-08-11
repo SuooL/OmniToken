@@ -69,6 +69,20 @@ reqwest = { version = "0.12", default-features = false, features = [
 # be right — and the server sends the last of those every 30 seconds.
 eventsource-stream = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# macOS only: re-assert the panel window's transparency at the NSWindow level.
+# `transparent: true` alone stopped clearing the corners behind the CSS card on
+# macOS 26 (Tahoe) — a known wry/tao regression (tauri#14394). Both crates are
+# already in the tree transitively via tauri/wry, so pinning them here as direct
+# deps at the same versions adds no new dependency subtree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSWindow",
+  "NSResponder",
+  "NSColor",
+] }
 # Just the reconnect timer. tauri's async runtime *is* tokio, so this adds no new
 # dependency tree — only the ability to sleep without parking a blocking thread
 # for the length of the backoff.
