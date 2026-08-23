@@ -27,7 +27,7 @@ type CacheDailyRow struct {
 // CacheByModel aggregates cache-relevant token sums per model, largest
 // cache traffic first.
 func (s *Store) CacheByModel(from, to time.Time) ([]CacheModelRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, COUNT(*),
 		        COALESCE(SUM(input_tokens),0),
 		        COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
@@ -54,7 +54,7 @@ func (s *Store) CacheByModel(from, to time.Time) ([]CacheModelRow, error) {
 
 // CacheDaily buckets input and cache-read tokens by local calendar day.
 func (s *Store) CacheDaily(from, to time.Time) ([]CacheDailyRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d,
 		        COALESCE(SUM(input_tokens),0), COALESCE(SUM(cache_read_tokens),0)
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY d ORDER BY d`,

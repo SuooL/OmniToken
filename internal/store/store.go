@@ -50,8 +50,15 @@ CREATE INDEX IF NOT EXISTS idx_events_repo_ts ON events(repo, ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 `
 
+// Store keeps writes and reads on separate connection pools (ADR-0027). The
+// dashboard's overview issues ~18 sequential queries; on the single shared
+// connection every one of them queued behind the constant ingest writer and the
+// panel hung. `db` stays a one-connection writer (writes serialize, so no
+// SQLITE_BUSY), while `rdb` is a small read-only pool that lets those reads run
+// against WAL concurrently with the writer instead of waiting in line.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	rdb *sql.DB
 }
 
 func Open(path string) (*Store, error) {
@@ -88,7 +95,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	// Read-only pool. Opened after the writer has created the schema and the WAL
+	// so these connections attach to a ready database. query_only is a safety
+	// belt: a stray write here errors instead of silently becoming a second
+	// writer that fights the ingest one (ADR-0027).
+	rdb, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=query_only(true)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(4)
+	rdb.SetMaxIdleConns(4)
+	return &Store{db: db, rdb: rdb}, nil
 }
 
 // providerReclassKey marks the one-time demotion below as done. It has to be a
@@ -227,7 +245,13 @@ func migrateEventsDedupKey(db *sql.DB) error {
 	return err
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	rerr := s.rdb.Close()
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	return rerr
+}
 
 // InsertEvents is idempotent: duplicates (same event_id) are ignored, so
 // agents and collectors can safely re-send anything. Returns inserted count.

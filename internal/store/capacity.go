@@ -120,7 +120,7 @@ const capacityMinSamples = 3
 // CapacitySamples returns the most recent windows that reached minPeak, newest
 // first.
 func (s *Store) CapacitySamples(source, scope string, windowMinutes int, minPeak float64, limit int) ([]CapacitySample, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT peak_percent, tokens_at_peak, window_id FROM quota_capacity
 		 WHERE source = ? AND scope = ? AND window_minutes = ? AND peak_percent >= ?
 		 ORDER BY window_id DESC LIMIT ?`,
@@ -178,7 +178,7 @@ func (s *Store) CapacityEstimate(source, scope string, windowMinutes int) (int64
 // Idempotent, because ObserveCapacity only ever raises a window's peak. Running
 // it again after more history arrives simply sharpens what is there.
 func (s *Store) BackfillCapacity(since time.Time) (int, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT source, scope, window_minutes, resets_at, used_percent, observed_at
 		 FROM (SELECT source, scope, window_minutes, resets_at, used_percent, observed_at,
 		              ROW_NUMBER() OVER (
@@ -238,7 +238,7 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 // from the stored provider, exactly as every read path does it, rather than
 // being spelled out as a provider list in SQL that would drift from the mapping.
 func (s *Store) subscriptionTokens(source string, from, to int64) (int64, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT provider, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0)
 		 FROM events WHERE source = ? AND ts >= ? AND ts <= ? GROUP BY provider`,
 		source, from, to)

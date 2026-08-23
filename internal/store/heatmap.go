@@ -19,7 +19,7 @@ type HeatmapDay struct {
 // date(..., 'localtime') expression), so the heatmap and the daily chart can
 // never disagree about which day a request belongs to.
 func (s *Store) HeatmapDays(from, to time.Time) ([]HeatmapDay, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d,
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
 		        COUNT(*)

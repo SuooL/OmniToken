@@ -87,7 +87,7 @@ func sumMS(spans []span) int64 {
 
 // WorkTime derives per-repo and per-(device,repo) work metrics from events.
 func (s *Store) WorkTime(from, to time.Time, idle time.Duration) ([]RepoWork, []DeviceRepoWork, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, repo, session_id, ts, duration_ms FROM events
 		 WHERE ts >= ? AND ts < ?
 		 ORDER BY device, repo, session_id, ts`,

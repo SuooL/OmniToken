@@ -45,7 +45,7 @@ type SpeedModelRow struct {
 // it shows as two rows, which is at least not a wrong number.
 func (s *Store) ProxySpeedByModel(from, to time.Time) ([]SpeedModelRow, error) {
 	const srcCond = `source = 'proxy'`
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`WITH sp AS (
 		   SELECT model,
 		          output_tokens * 1000.0 / duration_ms AS tps,

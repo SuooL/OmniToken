@@ -62,7 +62,7 @@ func (s *Store) SpeedSeries(from, to time.Time, bucket time.Duration, device str
 		q += ` AND device = ?`
 		args = append(args, device)
 	}
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.rdb.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ type SpeedModelStat struct {
 // logs after 30 days, so events older than a rescan can never be given an
 // interval. A speed built on 12% of the events is not a fact about the model.
 func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, device, session_id, ts, gen_ms, output_tokens, ttft_ms, source
 		 FROM events
 		 WHERE ts >= ? AND ts < ? AND gen_ms > 0 AND output_tokens > 0`,
@@ -265,7 +265,7 @@ func ttftQuantiles(values []int64) (median, p90 float64) {
 // eventCountByModel counts every event per model, interval or not, so coverage
 // has an honest denominator.
 func (s *Store) eventCountByModel(from, to time.Time) (map[string]int64, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, COUNT(*) FROM events
 		 WHERE ts >= ? AND ts < ? AND output_tokens > 0
 		 GROUP BY model`, from.UnixMilli(), to.UnixMilli())

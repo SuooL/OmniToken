@@ -128,7 +128,7 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 // five_hour) — so an hour is still far finer than that, and comfortably coarser
 // than any jitter seen. See TestLatestQuotasIgnoresMultiSecondJitterAcross...
 func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, source, limit_id, scope, window_minutes,
 		        used_percent, resets_at, observed_at, plan_type
 		 FROM (SELECT *, ROW_NUMBER() OVER (
