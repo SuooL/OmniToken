@@ -291,3 +291,46 @@ func TestLatestQuotasIgnoresSubMinuteJitterInDerivedResetTimes(t *testing.T) {
 		t.Errorf("got %.0f%%, want 96%% — sub-minute jitter is not a new window", latest[0].UsedPercent)
 	}
 }
+
+// The jitter is not sub-minute. Minute resolution assumed a derived boundary
+// wobbles by milliseconds; on a real machine one Codex weekly window reported
+// resets_at across an 18-second span (…933s … 951s) that sat astride a minute
+// boundary, so the readings split into two minutes. The stale look that
+// happened to land in the later minute then outranked every fresh one, and the
+// panel's Codex quota froze days behind (10% from three days ago beside 48%
+// from a minute ago). Window identity has to be coarser than the jitter can
+// span: hours, not minutes — still far finer than the ≥5h between real windows.
+func TestLatestQuotasIgnoresMultiSecondJitterAcrossAMinuteBoundary(t *testing.T) {
+	s, err := Open(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// The exact values from the incident: 361 readings agreed on …933 (…04:38:53)
+	// while an outlier reported …951 (…04:39:11) — one weekly window, two minutes.
+	const earlyMinute = int64(1787819933000) // resets_at most readings reported
+	const laterMinute = int64(1787819951000) // an 18s-later outlier, next minute
+	now := time.Now().UnixMilli()
+	mk := func(pct float64, resets, obs int64) model.QuotaSnapshot {
+		return model.QuotaSnapshot{Device: "mac", Source: "codex", LimitID: "codex",
+			Scope: "primary", WindowMinutes: 10080, UsedPercent: pct, ResetsAt: resets, ObservedAt: obs}
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{
+		mk(48, earlyMinute, now),              // the live reading, in the earlier minute
+		mk(10, laterMinute, now-3*86400*1000), // a three-day-old look, later minute
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 {
+		t.Fatalf("want 1 row, got %d: %+v", len(latest), latest)
+	}
+	if latest[0].UsedPercent != 48 {
+		t.Errorf("got %.0f%%, want 48%% — a multi-second jitter across a minute boundary is still one window",
+			latest[0].UsedPercent)
+	}
+}
