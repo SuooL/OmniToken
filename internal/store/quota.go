@@ -115,20 +115,25 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 // report one is preferred — and when nothing reports one, the rule falls back
 // to time on its own.
 //
-// Windows are compared at minute resolution because a boundary can be derived
+// Windows are compared at hour resolution because a boundary can be derived
 // rather than stated: Codex reports "resets in N seconds", so every observation
 // computes a slightly different instant. Comparing raw milliseconds read that
-// jitter as a newer window and let a stale reading win by being 5ms "later" —
-// on real data, an 88% reading from 00:45 beat a 96% one from 01:39 of the same
-// weekly window. A minute is far finer than the hours between real windows and
-// far coarser than the jitter.
+// jitter as a newer window and let a stale reading win by being 5ms "later".
+// Minute resolution was the first fix, on the assumption the jitter stayed
+// sub-minute — but on real data one weekly window's resets_at spanned 18
+// seconds (…933s … 951s) straddling a minute boundary, so the readings split
+// into two minutes and a three-day-old 10% look (in the later minute) outranked
+// a minute-old 48% one, freezing the panel's Codex quota days behind. The gap
+// between real windows is the window length itself — at least 5h (the smallest,
+// five_hour) — so an hour is still far finer than that, and comfortably coarser
+// than any jitter seen. See TestLatestQuotasIgnoresMultiSecondJitterAcross...
 func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
 	rows, err := s.db.Query(
 		`SELECT device, source, limit_id, scope, window_minutes,
 		        used_percent, resets_at, observed_at, plan_type
 		 FROM (SELECT *, ROW_NUMBER() OVER (
 		         PARTITION BY device, source, scope, window_minutes
-		         ORDER BY resets_at / 60000 DESC, observed_at DESC) AS rn
+		         ORDER BY resets_at / 3600000 DESC, observed_at DESC) AS rn
 		       FROM quota_snapshots WHERE observed_at >= ?)
 		 WHERE rn = 1
 		 ORDER BY window_minutes, device`,
