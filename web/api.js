@@ -10,13 +10,22 @@
 // The desktop build therefore swaps the bodies of get / put / stream for calls
 // into its Rust side, which is not bound by the same-origin policy. Nothing
 // outside this file needs to know which transport is in use.
+// A JSON GET that never returns is worse than one that fails: it leaves the
+// view stuck on its loading banner forever (a reverse proxy that buffers, a
+// slow query, a hung upstream). Bound it so the caller's catch runs and the
+// failure becomes visible instead of a blank page. Downloads opt out — an
+// export can legitimately take longer — by not passing a timeout.
+const REQUEST_TIMEOUT_MS = 15000;
+
 class APIError extends Error {
-  constructor(path, status) {
-    const detail = status === 0
-      ? "网络连接失败"
-      : status === 401
-        ? "401 未授权:设置页填写读取 token"
-        : `HTTP ${status}`;
+  constructor(path, status, reason) {
+    const detail = reason
+      ? reason
+      : status === 0
+        ? "网络连接失败"
+        : status === 401
+          ? "401 未授权:设置页填写读取 token"
+          : `HTTP ${status}`;
     super(`${path} → ${detail}`);
     this.name = "APIError";
     this.status = status;
@@ -89,15 +98,27 @@ function renderState(container, { kind, title, detail = "", action = null }) {
 }
 
 async function apiFetch(path, init = {}) {
-  const request = Object.assign({}, init, {
+  const { timeoutMs, ...rest } = init;
+  const request = Object.assign({}, rest, {
     headers: Api.headers(init.headers),
   });
+  let timer = null;
+  if (timeoutMs && !request.signal) {
+    const controller = new AbortController();
+    request.signal = controller.signal;
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  }
   let res;
   try {
     res = await fetch(Api.url(path), request);
   } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new APIError(path, 0, `请求超时(>${Math.round(timeoutMs / 1000)}s),服务无响应`);
+    }
     if (error instanceof TypeError) throw new APIError(path, 0);
     throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (!res.ok) throw new APIError(path, res.status);
   return res;
@@ -181,7 +202,7 @@ const Api = {
   },
 
   async get(path) {
-    const res = await apiFetch(path);
+    const res = await apiFetch(path, { timeoutMs: REQUEST_TIMEOUT_MS });
     // Every caller sits inside a try/catch that surfaces the message, so
     // failing loudly here beats letting res.json() throw a parse error on
     // whatever the server returned instead of JSON. 401 is named: "wrong
