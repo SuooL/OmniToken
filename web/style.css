@@ -156,6 +156,35 @@ body::before { content: none; }
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 .card:hover { border-color: var(--border-strong); box-shadow: none; }
+
+/* Loading / empty / error / unauthorized / stale banners (api.js renderState).
+   Without any rule these messages rendered as unstyled bare text, so a hung or
+   failed /api/v1/overview looked like a blank page instead of saying what went
+   wrong. Styled like a card, with the failing kinds carrying a colour. */
+.view-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 16px 18px;
+  margin-bottom: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(145deg, var(--surface-card), var(--surface-2));
+  color: var(--text-muted);
+}
+.view-state strong { color: var(--text-primary); font: 600 14px/1.4 var(--font-display); }
+.view-state span { font-size: 12px; line-height: 1.6; }
+.view-state .ghost-btn { margin-top: 3px; }
+/* A pulse signals work-in-progress without faking determinate progress. */
+.view-state-loading strong { animation: view-state-pulse 1.4s ease-in-out infinite; }
+@keyframes view-state-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+.view-state-error,
+.view-state-unauthorized { border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
+.view-state-error strong,
+.view-state-unauthorized strong { color: var(--critical); }
+.view-state-stale { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.view-state-stale strong { color: var(--amber); }
 .instrument-card,
 .metric-card,
 .chart-card,
