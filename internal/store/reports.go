@@ -23,7 +23,7 @@ func (s *Store) PeriodRows(granularity string, from, to time.Time) ([]BucketRow,
 	default:
 		return nil, fmt.Errorf("unknown granularity %q", granularity)
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT `+expr+` AS b, `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY b ORDER BY b`,
 		from.UnixMilli(), to.UnixMilli())
@@ -61,7 +61,7 @@ func (s *Store) SessionRows(from, to time.Time, limit int) ([]SessionRow, error)
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT session_id, device, MAX(source), MAX(repo), MAX(model),
 		        COALESCE(MIN(ts),0), COALESCE(MAX(ts),0), `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ?

@@ -41,7 +41,7 @@ type ModelDailyRow struct {
 // descending, sources within a model likewise — so a stacked bar chart can
 // consume them in order without re-sorting.
 func (s *Store) ModelBySource(from, to time.Time) ([]ModelSourceRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, source, `+sums+`,
 		        COALESCE(SUM(cache_1h_tokens),0), COALESCE(SUM(cache_5m_tokens),0),
 		        COALESCE(MIN(ts),0)
@@ -98,7 +98,7 @@ func (s *Store) ModelDaily(from, to time.Time, topN int) ([]ModelDailyRow, error
 	if topN <= 0 {
 		topN = defaultModelTopN
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d, model, `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY d, model`,
 		from.UnixMilli(), to.UnixMilli())

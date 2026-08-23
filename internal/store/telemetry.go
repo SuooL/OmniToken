@@ -84,7 +84,7 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		},
 	}
 
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, COALESCE(SUM(`+telemetryTokenExpression+`),0)
 		 FROM events WHERE ts >= ? AND ts <= ?
 		 GROUP BY model`,
@@ -130,7 +130,7 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		return out.Today.Models[i].Tokens > out.Today.Models[j].Tokens
 	})
 
-	if err := s.db.QueryRow(
+	if err := s.rdb.QueryRow(
 		`SELECT COALESCE(SUM(`+telemetryTokenExpression+`),0)
 		 FROM events WHERE ts >= ? AND ts <= ?`,
 		out.Rolling5H.StartMS, out.Rolling5H.EndMS,
@@ -139,7 +139,7 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 	}
 
 	previousStartMS := now.Add(-10 * time.Hour).UnixMilli()
-	sourceRows, err := s.db.Query(
+	sourceRows, err := s.rdb.Query(
 		`SELECT source,
 		        COALESCE(SUM(CASE WHEN ts >= ? THEN `+telemetryTokenExpression+` ELSE 0 END),0),
 		        COALESCE(SUM(CASE WHEN ts >= ? AND ts < ? THEN `+telemetryTokenExpression+` ELSE 0 END),0)
@@ -226,7 +226,7 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 		grouped[i] = map[string]*speedContributionAcc{}
 	}
 
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT source, ts, gen_ms, output_tokens
 		 FROM events
 		 WHERE ts > ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0`,
@@ -323,7 +323,7 @@ func (s *Store) TelemetrySpeedSeries(from, to time.Time, bucket time.Duration) (
 	// roughly 90% of events (turns Codex did not time, and turns replayed into
 	// a later rollout, have none), and the panel must show that rather than
 	// treating the rest as zero speed.
-	coverageRows, err := s.db.Query(
+	coverageRows, err := s.rdb.Query(
 		`SELECT source,
 		        COUNT(*),
 		        COALESCE(SUM(CASE WHEN gen_ms > 0 THEN 1 ELSE 0 END),0),

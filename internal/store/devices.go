@@ -39,7 +39,7 @@ type DeviceSummaryRow struct {
 // DeviceDaily aggregates tokens/events per (device, local calendar day),
 // ordered by day then device so the caller can stack deterministically.
 func (s *Store) DeviceDaily(from, to time.Time) ([]DeviceDailyRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d, device,
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
 		        COUNT(*)
@@ -69,7 +69,7 @@ func (s *Store) DeviceSummary(from, to time.Time) ([]DeviceSummaryRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, `+sums+`,
 		        COALESCE(MAX(ts),0),
 		        COUNT(DISTINCT CASE WHEN repo != '' THEN repo END)
@@ -129,7 +129,7 @@ func topFoldedModel(rows []ModelUsageRow) (string, int64) {
 // pricing must key on what the tool sent (a folded name is a display name, and
 // need not exist in the pricing table).
 func (s *Store) deviceModelUsage(from, to time.Time) (map[string][]ModelUsageRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, model, MAX(provider), `+sums+`,
 		        COALESCE(SUM(cache_1h_tokens),0), COALESCE(SUM(cache_5m_tokens),0), COALESCE(MIN(ts),0)
 		 FROM events WHERE ts >= ? AND ts < ?

@@ -16,7 +16,7 @@ type DeviceStatus struct {
 }
 
 func (s *Store) DeviceStatuses(todayStart time.Time) ([]DeviceStatus, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, MAX(ts),
 		        COALESCE(SUM(CASE WHEN ts >= ?1 THEN input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens ELSE 0 END),0),
 		        COALESCE(SUM(CASE WHEN ts >= ?1 THEN 1 ELSE 0 END),0)
@@ -51,7 +51,7 @@ type LiveSession struct {
 
 // ActiveSessions lists sessions with any event since the cutoff, newest first.
 func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT session_id, device, source, MAX(repo), MAX(cwd), MAX(model), MAX(ts),
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0), COUNT(*)
 		 FROM events WHERE ts >= ?
@@ -89,7 +89,7 @@ func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
 // and excludes cache_read for the same reason. Cache volume is not lost — the
 // cache page reports it, where repetition is the point.
 func (s *Store) TokensSince(since time.Time) (total, output int64, err error) {
-	err = s.db.QueryRow(
+	err = s.rdb.QueryRow(
 		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens),0),
 		        COALESCE(SUM(output_tokens),0)
 		 FROM events WHERE ts >= ?`, since.UnixMilli()).Scan(&total, &output)

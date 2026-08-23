@@ -54,7 +54,7 @@ func (s *Store) DeviceByID(deviceID string) (DeviceRecord, error) {
 }
 
 func (s *Store) ListDevices() ([]DeviceRecord, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT device_id, display_name, token_hash, capabilities,
 		       created_at, last_seen_at, revoked_at
 		FROM devices
@@ -108,7 +108,7 @@ func (s *Store) SaveHeartbeat(heartbeat model.Heartbeat, receivedAt int64) error
 func (s *Store) LatestHeartbeat(deviceID string) (model.Heartbeat, int64, error) {
 	var encoded string
 	var receivedAt int64
-	if err := s.db.QueryRow(
+	if err := s.rdb.QueryRow(
 		`SELECT heartbeat, received_at FROM device_heartbeats WHERE device_id = ?`,
 		deviceID,
 	).Scan(&encoded, &receivedAt); err != nil {
@@ -232,7 +232,7 @@ func (s *Store) RevokeDevice(deviceID string, revokedAt int64) error {
 func (s *Store) deviceByID(deviceID string) (DeviceRecord, error) {
 	var record DeviceRecord
 	var capabilitiesJSON string
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT device_id, display_name, token_hash, capabilities,
 		       created_at, last_seen_at, revoked_at
 		FROM devices

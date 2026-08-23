@@ -64,7 +64,7 @@ func (s *Store) EventPage(f EventFilter, limit, offset int) ([]model.Event, erro
 		offset = 0
 	}
 	where, args := f.where()
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT event_id, ts, device, source, model, provider, account_label,
 		        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		        cache_1h_tokens, cache_5m_tokens, duration_ms, ttft_ms,
@@ -94,6 +94,6 @@ func (s *Store) EventPage(f EventFilter, limit, offset int) ([]model.Event, erro
 func (s *Store) EventCount(f EventFilter) (int64, error) {
 	where, args := f.where()
 	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM events WHERE `+where, args...).Scan(&n)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM events WHERE `+where, args...).Scan(&n)
 	return n, err
 }

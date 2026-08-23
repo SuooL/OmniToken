@@ -38,7 +38,7 @@ func (s *Store) GetSetting(key string) (string, error) {
 		return "", err
 	}
 	var v string
-	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&v)
+	err := s.rdb.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
