@@ -112,10 +112,19 @@ async fn settings_set(
     server: String,
     token: String,
     panel_url: String,
+    autostart: bool,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
-    let next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    let mut next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    next.autostart = autostart;
     settings::save(&app, &next)?;
+
+    // Register/unregister the LaunchAgent to match what was just stored. Writing
+    // the flag alone is not enough — the OS state only changes here (same step
+    // the tray's "开机自启" item runs, lib.rs `on_menu`).
+    apply_autostart(&app, next.autostart);
+    // Keep the tray's own checkmark honest now that the panel can flip the flag.
+    tray::sync_checks(&app);
 
     // Point the bridge at the new address now instead of waiting for the old
     // connection to break on its own — otherwise the tray would keep reporting
