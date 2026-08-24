@@ -57,6 +57,7 @@ type Config struct {
 	DeviceName        string
 	ClaudeDirs        []string
 	CodexDirs         []string
+	DshDirs           []string
 	StatePath         string
 	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
 	// Claude's quota is read from the rate-limits file beside it (ADR-0011).
@@ -260,7 +261,7 @@ func (a *Agent) RunOnce() (int, error) {
 }
 
 func (a *Agent) scanOnce() (int, error) {
-	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs)
+	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs, a.cfg.DshDirs)
 	sink := func(events []model.Event) error {
 		collect.RefineProvider(events, a.probe) // local logs only (F9)
 		return a.push(events)

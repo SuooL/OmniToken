@@ -29,6 +29,7 @@ MODULE="github.com/suool/omnitoken"
 CRITICAL=(
   "internal/parser/codex:90"
   "internal/parser/claudecode:80"
+  "internal/parser/dsh:85"
   "internal/proxy:88"
 )
 

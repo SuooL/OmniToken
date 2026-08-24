@@ -9,6 +9,7 @@ import (
 
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
+	"github.com/suool/omnitoken/internal/parser/dsh"
 )
 
 // SSHHost is a remote machine mirrored over the user's existing SSH access.
@@ -58,6 +59,7 @@ var remotePullSets = []struct {
 }{
 	{"claude", []string{".claude/projects", ".config/claude/projects"}},
 	{"codex", []string{".codex/sessions", ".codex/archived_sessions"}},
+	{"dsh", []string{".dsh/sessions"}},
 }
 
 // SyncSSHHost mirrors the remote log dirs under mirrorRoot/<name>/.
@@ -73,7 +75,7 @@ func SyncSSHHost(h SSHHost, mirrorRoot string) (string, error) {
 			cmd := exec.Command("rsync",
 				"-az", "--timeout=30",
 				"-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
-				"--include=*/", "--include=*.jsonl", "--exclude=*",
+				"--include=*/", "--include=*.jsonl", "--include=*.jsonl.zstd", "--exclude=*",
 				"--prune-empty-dirs",
 				fmt.Sprintf("%s:%s/", h.Host, rd),
 				local+"/",
@@ -101,9 +103,11 @@ func SyncSSHHost(h SSHHost, mirrorRoot string) (string, error) {
 func MirrorSpecs(mirrorDest string) []SourceSpec {
 	claude := []string{filepath.Join(mirrorDest, "claude-0"), filepath.Join(mirrorDest, "claude-1")}
 	cx := []string{filepath.Join(mirrorDest, "codex-0"), filepath.Join(mirrorDest, "codex-1")}
+	dshDir := []string{filepath.Join(mirrorDest, "dsh-0")}
 	return []SourceSpec{
 		{Dirs: claude, Parse: claudecode.Parse},
 		{Dirs: cx, Parse: codex.Parse, FullReparse: true},
+		{Dirs: dshDir, Parse: dsh.Parse, FullReparse: true},
 	}
 }
 

@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
+	"github.com/suool/omnitoken/internal/parser/dsh"
 )
 
 const sinkBatch = 2000
@@ -44,10 +46,12 @@ type SourceSpec struct {
 }
 
 // LocalSpecs builds the scan specs for logs on this machine.
-func LocalSpecs(claudeDirs, codexDirs []string) []SourceSpec {
+func LocalSpecs(claudeDirs, codexDirs, dshDirs []string) []SourceSpec {
 	return []SourceSpec{
 		{Dirs: claudeDirs, Parse: claudecode.Parse},
 		{Dirs: codexDirs, Parse: codex.Parse, FullReparse: true},
+		// dsh files are zstd-compressed, reparsed whole each scan (ADR-0029).
+		{Dirs: dshDirs, Parse: dsh.Parse, FullReparse: true},
 	}
 }
 
@@ -99,7 +103,9 @@ func listJSONL(dirs []string) []string {
 			if err != nil {
 				return nil // skip unreadable subtrees
 			}
-			if !d.IsDir() && filepath.Ext(path) == ".jsonl" {
+			// dsh compresses its JSONL (session.jsonl.zstd), so match that too —
+			// filepath.Ext sees ".zstd" and would otherwise skip it (ADR-0029).
+			if !d.IsDir() && (filepath.Ext(path) == ".jsonl" || strings.HasSuffix(path, ".jsonl.zstd")) {
 				files = append(files, path)
 			}
 			return nil

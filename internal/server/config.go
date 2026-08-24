@@ -62,6 +62,7 @@ type Config struct {
 		Local           *bool             `json:"local"`                // scan this machine's own logs; default true
 		LocalDirs       []string          `json:"local_dirs,omitempty"` // Claude Code log dirs
 		CodexDirs       []string          `json:"codex_dirs,omitempty"`
+		DshDirs         []string          `json:"dsh_dirs,omitempty"` // DeepSeek Harness sessions (ADR-0029)
 		SSHHosts        []collect.SSHHost `json:"ssh_hosts,omitempty"`
 	} `json:"collect"`
 }
@@ -88,6 +89,17 @@ func DefaultLocalCodexDirs() []string {
 		root = filepath.Join(home, ".codex")
 	}
 	return []string{filepath.Join(root, "sessions"), filepath.Join(root, "archived_sessions")}
+}
+
+// DefaultLocalDshDirs is where DeepSeek Harness writes its per-session logs
+// (~/.dsh/sessions), overridable via $DSH_HOME (ADR-0029).
+func DefaultLocalDshDirs() []string {
+	home, _ := os.UserHomeDir()
+	root := os.Getenv("DSH_HOME")
+	if root == "" {
+		root = filepath.Join(home, ".dsh")
+	}
+	return []string{filepath.Join(root, "sessions")}
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -218,6 +230,9 @@ func (c *Config) applyDefaults() {
 	}
 	if len(c.Collect.CodexDirs) == 0 {
 		c.Collect.CodexDirs = DefaultLocalCodexDirs()
+	}
+	if len(c.Collect.DshDirs) == 0 {
+		c.Collect.DshDirs = DefaultLocalDshDirs()
 	}
 }
 

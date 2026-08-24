@@ -60,6 +60,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F24 | 桌面端:Mac 菜单栏常驻。左键展开实时视图(当前生成总速度为主位、Claude/Codex 近 5h 用量、60 分钟速度热图与覆盖率、今日各模型累计、可加和的速度贡献者、设备状态),右键出菜单(打开完整面板 / 菜单栏数字 / 配额预警 / 开机自启 / 全局快捷键 / 设置 / 退出);**官方配额卡**(Claude / Codex 各自可拿到的官方用量:5h 用量、预估 5h 用量、周用量;短窗口有值优先、无值退周兜底、都无显示「暂无」,三态可区分);数据走一条 SSE 长连接,断流降级为轮询并在界面标注;瘦客户端,连已有服务端 | P2 | v1 完成(ADR-0008);现代化重构见 ADR-0014;弹窗内容由 ADR-0017 重定;配额卡见 **M9**;Windows 端后续 |
 | F25 | 实时会话地面真值:agent 读本机进程表上报正在运行的 agent CLI(pid/工具/启动时间),面板区分「开着但空闲」「已关闭」「无进程数据」(ADR-0012) | **P0** | M5 ✅ Linux 读 /proc,macOS/BSD 走 `ps`,Windows 走 Toolhelp32 + PEB(ADR-0023) |
 | F26 | 访问控制:默认 `listen` 为 `127.0.0.1:8787`;监听非 loopback 地址时读接口与写接口共用同一个 bearer token,未配 token 则启动即拒绝;判定由监听地址推导而非开关。`/api/v1/health` 与面板外壳保持免鉴权,`?access_token=` 仅 `/api/v1/stream` 接受(ADR-0016) | **P0** | ✅ 多设备汇集(F3)的前置条件 |
+| F27 | DeepSeek Harness(dsh)日志解析:被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件,token 四分量取 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`(`reasoningTokens` 是 output 子集,不另计);模型与 provider 取同 turn/step 的 `request/context`;`event_id = f(session_id, seq)` 保证重扫幂等;source=`dsh`。dsh 里 provider 是用户自取的 ID(如 `deepseek-official`/`openai-codex`),均经用户配置的 API key 调用,故计费通道一律记为非订阅(官方 API / 第三方中转),绝不记订阅(ADR-0029) | P2 | ✅ |
 
 ### 待补缺口(GAP)
 
