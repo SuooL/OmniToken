@@ -25,6 +25,7 @@ type Server struct {
 	state                 *collect.State
 	prices                *pricing.Table
 	bcast                 *broadcaster
+	readCache             *respCache
 	now                   func() time.Time
 	streamRefreshInterval time.Duration
 	// hostname is os.Hostname with a seam for tests. It is consulted only to
@@ -47,6 +48,7 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 	srv := &Server{cfg: cfg, store: st, state: state, prices: prices, bcast: newBroadcaster()}
+	srv.readCache = newRespCache(srv.currentTime)
 	// Apply pricing overrides saved through the settings page (they win over
 	// config file entries) before serving anything.
 	if err := srv.ReloadPricing(); err != nil {
@@ -394,9 +396,34 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOverview returns everything the M1 dashboard needs in one call.
+// Short TTLs for the two heaviest read endpoints (ADR-0028). They bound how
+// stale the dashboard can be while letting concurrent polls share one
+// computation. Live is more time-sensitive (burn rate, current sessions) so it
+// gets a tighter window than the accumulate-and-trend overview.
+const (
+	overviewCacheTTL = 10 * time.Second
+	liveCacheTTL     = 3 * time.Second
+)
+
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 30)
-	now := time.Now()
+	body, err := s.cachedJSON(fmt.Sprintf("overview:%d", days), overviewCacheTTL, func() ([]byte, error) {
+		resp, err := s.computeOverview(days)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(resp)
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
+func (s *Server) computeOverview(days int) (map[string]any, error) {
+	now := s.currentTime()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekStart := dayStart.AddDate(0, 0, -int((now.Weekday()+6)%7)) // Monday
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
@@ -473,12 +500,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	resp["work_matrix"] = workMatrix
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	resp["days"] = days
 	resp["generated_at"] = now.UnixMilli()
-	writeJSON(w, resp)
+	return resp, nil
 }
 
 func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
