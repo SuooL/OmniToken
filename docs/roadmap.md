@@ -246,6 +246,13 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | Mac 降为设备 + 身份合并 | 未实施 | Mac 从 hub-self 变 agent,新旧身份本质同一台,必须走 ADR-0019 设备合并(人工、loopback) |
 | omni 面板身份网关 | 未定 | Cloudflare Access / Tailscale / 自建 OIDC 选型待定 |
 
+## M11 — 新来源接入:DeepSeek Harness(dsh)(2026-08-24 起)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| dsh 日志解析(F27 / ADR-0029) | ✅ 完成 | 被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件;token 直取 `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`(`inputTokens` 已是非缓存输入,不减;`reasoningTokens` 是 output 子集不另计);模型/provider 取同 step 的 `request/context`;`event_id = "dsh:"+sha1(session_id\|seq\|四分量)` 幂等,golden 测试钉死;source=`dsh`,provider 原样保留、一律非订阅(dsh 均经用户配置 key)。新增纯 Go `klauspost/compress` zstd 依赖,`FullReparse` + `listJSONL` 放行 `*.jsonl.zstd`,SSH 镜像同步加 dsh。实测本机 7 会话 / 208 用量记录 |
+| dsh 前端专属卡片/配色 | 未实施 | dsh 已计入所有聚合(总量/按模型/设备/项目、报表、明细、速度页独立分桶),但总览页「近 5h 来源卡」仍只硬编码 claude-code/codex 两张;后续补 dsh 卡与 `--source-dsh` 色板 |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试

@@ -29,6 +29,7 @@ type FileConfig struct {
 	IntervalSeconds    int      `json:"interval_seconds,omitempty"`     // scan interval; default 10
 	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
 	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
+	DshDirs            []string `json:"dsh_dirs,omitempty"`             // DeepSeek Harness sessions; default: auto-detect
 	State              string   `json:"state,omitempty"`                // offset state file path
 	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
 	// Claude's quota is read from the rate-limits file beside it (ADR-0011).

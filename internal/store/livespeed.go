@@ -203,7 +203,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 
 func speedSourceKey(source string) string {
 	switch source {
-	case "claude-code", "codex":
+	case "claude-code", "codex", "dsh":
 		return source
 	default:
 		return "api"
