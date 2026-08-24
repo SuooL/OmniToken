@@ -238,12 +238,23 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 // point: burn rate is defined once, so the popover and the Live page cannot
 // drift into reporting different numbers for the same ten minutes.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.livePayload(s.currentTime())
+	// Cached with single-flight (ADR-0028): live is polled from the page and the
+	// menubar bar at once, and rebuilding the payload per request thrashed the
+	// hub. livePayload stays the seam the tests drive directly, so the cache only
+	// affects the HTTP path.
+	body, err := s.cachedJSON("live", liveCacheTTL, func() ([]byte, error) {
+		payload, err := s.livePayload(s.currentTime())
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(payload)
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
 }
 
 // handleStream is the SSE endpoint (docs/API.md). token-monitor-aligned:
