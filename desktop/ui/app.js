@@ -35,6 +35,7 @@ const CONNECTION_LABEL = {
 const sourceName = (source) => ({
   "claude-code": "Claude",
   codex: "Codex",
+  dsh: "DeepSeek",
   api: "Other/API",
   proxy: "Other/API",
   "openai-api": "Other/API",
@@ -169,7 +170,7 @@ const QUOTA_BASIS = {
   weekly: { percent: "weekly_percent", label: "周" },
 };
 
-const SOURCE_TONE = { "claude-code": "claude", codex: "codex" };
+const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
 
 // Whole percent, matching how the Live page writes the same authoritative
 // numbers. A quota moves in points, not in tenths.
@@ -362,6 +363,7 @@ function renderAll() {
   renderHero();
   renderUsageCard("claude-code", "claude");
   renderUsageCard("codex", "codex");
+  renderUsageCard("dsh", "dsh");
   renderQuotas();
   renderSpeedLanes();
   renderStats();

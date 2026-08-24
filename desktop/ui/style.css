@@ -12,6 +12,7 @@ body {
 .panel {
   --claude: var(--source-claude);
   --codex: var(--source-codex);
+  --dsh: var(--source-dsh);
   --other: var(--source-api);
   --hairline: color-mix(in srgb, var(--text-muted) 22%, transparent);
   height: 100%;
@@ -173,8 +174,10 @@ body.degraded #main { opacity: .88; }
 .usage-card .delta { color: var(--text-muted); font-size: 10px; }
 .usage-card.claude .source-title { color: var(--claude); }
 .usage-card.codex .source-title { color: var(--codex); }
+.usage-card.dsh .source-title { color: var(--dsh); }
 .usage-card.claude .source-dot { background: var(--claude); }
 .usage-card.codex .source-dot { background: var(--codex); }
+.usage-card.dsh .source-dot { background: var(--dsh); }
 .delta[data-direction="up"] { color: var(--status-healthy); }
 .delta[data-direction="down"] { color: var(--amber); }
 
@@ -247,6 +250,7 @@ body.degraded #main { opacity: .88; }
 }
 .lane-claude-code .lane-label { color: var(--claude); }
 .lane-codex .lane-label { color: var(--codex); }
+.lane-dsh .lane-label { color: var(--dsh); }
 .lane-bars {
   height: 29px;
   display: flex;
@@ -266,6 +270,9 @@ body.degraded #main { opacity: .88; }
 }
 .lane-codex .lane-bar {
   background: linear-gradient(180deg, var(--source-codex), #315b8e);
+}
+.lane-dsh .lane-bar {
+  background: linear-gradient(180deg, var(--source-dsh), #1c6b59);
 }
 .lane-bar.is-peak {
   background: linear-gradient(180deg, var(--peak), #9d365f);

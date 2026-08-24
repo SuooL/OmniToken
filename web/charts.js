@@ -13,6 +13,8 @@ const ChartRegistry = {
       claudeDeep: cssVar("--source-claude-deep"),
       codex: cssVar("--source-codex"),
       codexDeep: cssVar("--source-codex-deep"),
+      dsh: cssVar("--source-dsh"),
+      dshDeep: cssVar("--source-dsh-deep"),
       api: cssVar("--source-api"),
       apiDeep: cssVar("--source-api-deep"),
       aggregate: cssVar("--source-aggregate"),
@@ -32,6 +34,7 @@ const ChartRegistry = {
       return [palette.claude, palette.claudeDeep];
     }
     if (source === "codex") return [palette.codex, palette.codexDeep];
+    if (source === "dsh") return [palette.dsh, palette.dshDeep];
     return [palette.api, palette.apiDeep];
   },
 
