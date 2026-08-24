@@ -61,6 +61,7 @@ const Overview = {
     const sourceMap = Object.fromEntries(sources.map((row) => [speedSourceKey(row), row]));
     const claude = sourceMap["claude-code"] || {};
     const codex = sourceMap.codex || {};
+    const dsh = sourceMap.dsh || {};
     const summary = payload.summary || {};
     const live = payload.live;
     const liveSpeed = live && live.speed || {};
@@ -79,6 +80,7 @@ const Overview = {
         </article>
         ${this.sourceCard("claude-code", "Claude · 五小时", claude)}
         ${this.sourceCard("codex", "Codex · 五小时", codex)}
+        ${this.sourceCard("dsh", "DeepSeek · 五小时", dsh)}
         <article class="metric-card" data-role="fleet-coverage">
           <div class="metric-label">Fleet coverage</div>
           <div class="metric-value">${live ? devices.length : "—"}</div>
