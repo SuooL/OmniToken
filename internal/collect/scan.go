@@ -176,11 +176,29 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 			events[i].Repo = st.RepoFor(device, events[i].CWD, resolveRepo)
 		}
 	}
+	// A FullReparse file re-reads from byte zero on every growth, so without a
+	// cross-scan record its whole event set would be re-delivered each scan. Only
+	// a non-resumed FullReparse pass consults and rebuilds that record; a resumed
+	// pass or an incremental source keeps the original behaviour (ADR-0032).
+	crossScan := spec.FullReparse && !resuming
+	var nextChunks map[int]string
+	if crossScan {
+		nextChunks = make(map[int]string)
+	}
 	for start := 0; start < len(events); start += sinkBatch {
 		end := min(start+sinkBatch, len(events))
-		key, err := logicalDeliveryKey("events", start/sinkBatch, events[start:end])
+		ordinal := start / sinkBatch
+		key, err := logicalDeliveryKey("events", ordinal, events[start:end])
 		if err != nil {
 			return 0, fmt.Errorf("identify event batch for %s: %w", path, err)
+		}
+		if crossScan {
+			// Carry every ordinal's current key forward, delivered or not, so the
+			// committed record reflects the whole file and prunes stale ordinals.
+			nextChunks[ordinal] = key
+			if st.ChunkDelivered(path, ordinal, key) {
+				continue // identical bytes already delivered under a committed offset
+			}
 		}
 		if st.DeliveryDone(path, key) {
 			continue
@@ -209,7 +227,7 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 
 	// The offset covers the dropped lines as well: they were read and
 	// deliberately left out of the window, not deferred to a later pass.
-	if err := st.Commit(path, end, inFlight.TurnStartMS); err != nil {
+	if err := st.Commit(path, end, inFlight.TurnStartMS, nextChunks); err != nil {
 		return 0, fmt.Errorf("commit state for %s: %w", path, err)
 	}
 	return len(events), nil

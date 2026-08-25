@@ -14,10 +14,10 @@ func TestResetOffsetsClearsPositionsAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Commit("/logs/a.jsonl", 4096, 1785319024000); err != nil {
+	if err := st.Commit("/logs/a.jsonl", 4096, 1785319024000, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Commit("/logs/b.jsonl", 128, 0); err != nil {
+	if err := st.Commit("/logs/b.jsonl", 128, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	// A resolved repo, which the reset must not throw away.
@@ -68,7 +68,7 @@ func TestCommitAndResetClearInFlightDeliveries(t *testing.T) {
 	if err := st.MarkDeliveryDone(file, "events:0:digest"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Commit(file, 128, 42); err != nil {
+	if err := st.Commit(file, 128, 42, nil); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := LoadState(path)
