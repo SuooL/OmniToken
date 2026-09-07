@@ -31,3 +31,10 @@ ADR 标注 supersedes,不改写历史。
 | [0024](0024-caliber-notes-behind-info.md) | 口径说明收进 `i` 提示框,行动指引留在原地 | 已采纳 |
 | [0025](0025-quota-capacity-estimate.md) | 订阅额度容量估计:跨窗口峰值取样,样本不足不给数 | 已采纳 |
 | [0026](0026-central-hub-public-migration.md) | 中心 Hub 上公网:HTTPS+SSE 传输、分面安全,以域名解耦实现可迁移 | 已采纳 |
+| [0027](0027-store-read-write-connection-split.md) | Store 读写连接分离:让面板查询不再排在 ingest 写后面 | 已采纳 |
+| [0028](0028-overview-live-response-cache.md) | overview/live 短 TTL 响应缓存 + single-flight | 已采纳 |
+| [0029](0029-deepseek-harness-log-parser.md) | DeepSeek Harness(dsh)用量采集:被动解析会话日志 | 已采纳 |
+| [0030](0030-ingest-duplicate-fast-path.md) | 重复 ingest 快路径:预载现有状态,跳过证明为 no-op 的探针 | 已采纳 |
+| [0031](0031-overview-all-time-long-cache.md) | overview 的全时段面板:单独的长 TTL 缓存,把全表扫描移出热路径 | 已采纳 |
+| [0032](0032-cross-scan-delivery-dedup.md) | FullReparse 跨扫描交付去重:持久化每块内容 key,跳过未变块 | 已采纳 |
+| [0033](0033-codex-provider-from-config.md) | Codex 订阅归类改用 config.toml 的 `requires_openai_auth`,不再只认 provider 名 | 已采纳 |

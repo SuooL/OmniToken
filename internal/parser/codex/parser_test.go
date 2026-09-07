@@ -652,3 +652,82 @@ func TestDedupKeyIndependentOfProvider(t *testing.T) {
 		}
 	}
 }
+
+// A config switcher renames the provider block and the traffic is still the
+// subscription: `cc-switch-official` on this fleet points at the official
+// ChatGPT endpoint through a local proxy, and the old name-only rule filed a
+// month of it as "third-party relay" — the 5-hour card counted 0 tokens while
+// the provider reported the window 73% full (ADR-0033).
+func TestCodexTrustedProviderIDCountsAsSubscription(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":null,"credits":{"balance":"0","has_credits":false,"unlimited":false}`)
+	meta := strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"cc-switch-official"`, 1)
+	trusted := func(p string) bool { return p == "cc-switch-official" }
+
+	events := ParseWith(trusted)(strings.NewReader(meta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(events) != 1 || events[0].Provider != "openai-chatgpt" {
+		t.Fatalf("events = %+v, want one openai-chatgpt event", events)
+	}
+	// Same file, no probe: the machine said nothing, so the declared name stands.
+	plain := Parse(strings.NewReader(meta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(plain) != 1 || plain[0].Provider != "cc-switch-official" {
+		t.Fatalf("without a probe = %+v, want the declared name kept", plain)
+	}
+}
+
+// The probe replaces the NAME half of the rule, not the account-state half. A
+// provider block that requires the ChatGPT credentials still has to produce a
+// session that shows the real account answered.
+func TestCodexTrustedProviderStillNeedsPlanEvidence(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":null,"credits":null`)
+	meta := strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"cc-switch-official"`, 1)
+	events := ParseWith(func(string) bool { return true })(
+		strings.NewReader(meta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(events) != 1 || events[0].Provider != "cc-switch-official" {
+		t.Fatalf("events = %+v, want the declared name kept without plan evidence", events)
+	}
+}
+
+// A provider the machine does NOT authenticate with the ChatGPT account stays a
+// relay even when it forwards a shared account's plan_type — the case the
+// case-sensitive name match used to be the only guard against.
+func TestCodexUntrustedProviderStaysRelay(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":"plus"`)
+	meta := strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"sub2api"`, 1)
+	trusted := func(p string) bool { return p == "cc-switch-official" }
+	events := ParseWith(trusted)(strings.NewReader(meta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(events) != 1 || events[0].Provider != "sub2api" {
+		t.Fatalf("events = %+v, want the relay name kept", events)
+	}
+}
+
+// Codex's own id keeps working without any probe at all: on an untouched
+// install nothing else carries it, and SSH-pulled logs have no local config to
+// consult.
+func TestCodexBuiltinIDStillWorksWithoutProbe(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":"plus"`)
+	events := ParseWith(func(string) bool { return false })(
+		strings.NewReader(sessionMeta+"\n"+turnCtx+"\n"+line+"\n"), "d", 0).Events
+	if len(events) != 1 || events[0].Provider != "openai-chatgpt" {
+		t.Fatalf("events = %+v, want the built-in id honoured on its own", events)
+	}
+}
+
+// Classification must not move either key (ADR-0004, ADR-0020): the same log
+// line has to produce the same event_id and dedup_key whether or not this
+// machine happens to trust the provider block.
+func TestCodexKeysIndependentOfTrustedProvider(t *testing.T) {
+	line := rateLimited("2026-07-26T03:00:05Z", `,"plan_type":"plus"`)
+	meta := strings.Replace(sessionMeta, `"model_provider":"openai"`, `"model_provider":"cc-switch-official"`, 1)
+	body := meta + "\n" + turnCtx + "\n" + line + "\n"
+	with := ParseWith(func(string) bool { return true })(strings.NewReader(body), "d", 0).Events
+	without := Parse(strings.NewReader(body), "d", 0).Events
+	if len(with) != 1 || len(without) != 1 {
+		t.Fatalf("want one event each, got %d and %d", len(with), len(without))
+	}
+	if with[0].EventID != without[0].EventID {
+		t.Errorf("event_id moved with the probe: %q vs %q", with[0].EventID, without[0].EventID)
+	}
+	if with[0].DedupKey != without[0].DedupKey {
+		t.Errorf("dedup_key moved with the probe: %q vs %q", with[0].DedupKey, without[0].DedupKey)
+	}
+}
