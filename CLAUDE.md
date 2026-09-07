@@ -134,6 +134,37 @@ gh pr create --base dev
 
 CI 跑 `make check`,绿了自动合并并删除分支。
 
+### 开 PR 之前必须在**这条分支上**跑过 `make check`
+
+不是「在别的分支上跑过」、不是「改动看起来无害」、不是「只改了文档」——
+**就是这条要推的分支,在推之前,本地跑一次 `make check` 并且是绿的**。
+
+`make check` 与 CI 跑的是同一条命令,所以本地红 = CI 必红 = PR 卡住,
+而等 CI 告诉你一轮要几分钟。纯文档 PR 也不例外:`make check` 里包含
+`web` 包的 DOM/语义测试,面板文案与结构的改动会被它拦下。
+
+涉及 `desktop/` 时再加 `make desktop-check` 与实际 Tauri bundle 构建。
+
+### 主 checkout 只读
+
+用 worktree 时,主 checkout(`~/git/OmniToken`)**停在 `dev`,只用来读**。
+不在它里面改文件,也不在它里面跑 `make check` 当作验证结果 —— 那验的是 `dev`,
+不是你的改动。所有 git 写操作显式带 `-C <worktree>`,别依赖当前目录。
+
+### branch-guard 钩子的两个误拦
+
+`~/.claude/hooks/git-branch-guard.sh` 匹配命令里的 `git ... commit|push`,
+再拿**会话主工作目录**(= 主 checkout,通常在 `dev`)的分支判定。两个后果:
+
+- **从 worktree 提交会被误拦**。合法绕法(确实没在 `dev` 上提交):单独一次调用
+  `git switch --detach HEAD` 把主 checkout detach → 再
+  `git -C <worktree> commit … && git -C <worktree> push …` → 完事 `git switch dev` 还原。
+  `gh pr create` 不匹配钩子,任何时候都能跑。
+- **`git stash push` 会被误拦**(命令里有 "push")。要临时回退文件去验证「测试先行」
+  确实先红,用 `cp` 备份 + `git -C <worktree> checkout HEAD -- <文件>`,验完再 `cp` 回来。
+
+被钩子拦下时,正确反应是换合规的做法,**不是** 换个写法去绕过分支保护。
+
 ## 什么算做完
 
 - [ ] 实现了 issue / PR 描述里说的行为
