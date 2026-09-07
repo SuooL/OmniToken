@@ -4,6 +4,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"log"
 	"maps"
 	"os"
@@ -95,6 +96,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateCodexCapacitySamples(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Read-only pool. Opened after the writer has created the schema and the WAL
 	// so these connections attach to a ready database. query_only is a safety
 	// belt: a stray write here errors instead of silently becoming a second
@@ -155,6 +160,49 @@ func migrateLegacyFingerprintProviders(db *sql.DB) error {
 	_, err = db.Exec(
 		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, providerReclassKey)
+	return err
+}
+
+const codexCapacityResetKey = "schema.codex_capacity_reset_v1"
+
+// migrateCodexCapacitySamples throws away the Codex capacity calibration once,
+// because every sample in it was computed against a numerator of nearly zero.
+//
+// Until ADR-0033, a renamed Codex provider block (`cc-switch-official`) was
+// filed as a third-party relay, so the subscription tokens behind each window
+// summed to almost nothing while the provider's percentage kept climbing. The
+// samples that came out say a 5-hour window holds 0.5M tokens. They cannot heal
+// on their own: ObserveCapacity refuses to lower a window's peak, and a row
+// recorded at 100% is stuck until it ages out of the 30-window memory — half a
+// year for the weekly window.
+//
+// Deleting here is not the kind of deletion the correctness rules guard: this
+// table holds no counts, only a calibration derived from quota_snapshots and
+// events, and backfillCapacity rebuilds it from both on the next start. Scoped
+// to codex, so the Claude calibration — which was never wrong — is untouched.
+func migrateCodexCapacitySamples(db *sql.DB) error {
+	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
+	var done string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, codexCapacityResetKey).Scan(&done)
+	if err == nil && done != "" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := db.Exec(`DELETE FROM quota_capacity WHERE source = 'codex'`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: 丢弃 %d 个 codex 容量样本 —— 它们是在 provider 归类错误下算出来的,"+
+			"分子接近 0(ADR-0033/0034);下次启动的 backfill 会从快照与事件重建,计数列未改动", n)
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, codexCapacityResetKey)
 	return err
 }
 
