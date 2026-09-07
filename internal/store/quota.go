@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"log"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 	}
 	defer stmt.Close()
 	n := 0
+	var fresh []model.QuotaSnapshot
 	for _, q := range qs {
 		res, err := stmt.Exec(q.Device, q.Source, q.LimitID, q.Scope, q.WindowMinutes,
 			q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType)
@@ -81,9 +83,24 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 		}
 		if c, _ := res.RowsAffected(); c > 0 {
 			n++
+			fresh = append(fresh, q)
 		}
 	}
-	return n, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return n, err
+	}
+	// The calibration follows the snapshot, on every arrival path (ADR-0034),
+	// and after the commit so the token scan never runs inside a write
+	// transaction. A failure is logged rather than returned: the snapshot itself
+	// is stored and correct, and a missed sample only leaves an estimate — one
+	// designed to be absent until it has evidence — slightly less sharp.
+	now := time.Now().UnixMilli()
+	for _, q := range fresh {
+		if err := s.ObserveCapacityFromQuota(q, now); err != nil {
+			log.Printf("quota[capacity]: observe %s/%s/%dm: %v", q.Source, q.Scope, q.WindowMinutes, err)
+		}
+	}
+	return n, nil
 }
 
 // LatestQuotas returns the newest observation per (device, source, scope,
