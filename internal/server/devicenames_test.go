@@ -9,6 +9,23 @@ import (
 	"github.com/suool/omnitoken/internal/store"
 )
 
+// insideLookBack is an instant these tests can seed events at and still find
+// through a `days=30` query.
+//
+// Derived from the real clock on purpose. A fixed calendar date is a time bomb
+// here, because handleBreakdown and handleDevices window against time.Now()
+// rather than the server's injected clock: events pinned to 2026-07-30 fell out
+// of the 30-day look-back on 2026-08-29, and from that day on these three tests
+// failed on every branch, having been touched by nobody.
+//
+// Yesterday noon rather than today's, so the instant is in the past whatever
+// hour the suite runs at.
+func insideLookBack() time.Time {
+	now := time.Now()
+	return time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local).
+		AddDate(0, 0, -1)
+}
+
 func decodeJSON(t *testing.T, recorder *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if recorder.Code != 200 {
@@ -41,7 +58,7 @@ func breakdownByDevice(t *testing.T, s *Server) map[string]string {
 // alone prints 36 characters of hex at the user.
 func TestDeviceBreakdownCarriesTheNameThePanelShouldPrint(t *testing.T) {
 	s := newLiveTestServer(t)
-	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.Local)
+	now := insideLookBack()
 	if _, err := s.store.RegisterDevice(testV2DeviceA, "mypc", "device-token", []string{"events"}, now.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +78,7 @@ func TestDeviceBreakdownCarriesTheNameThePanelShouldPrint(t *testing.T) {
 
 func TestNonDeviceBreakdownsAreUntouched(t *testing.T) {
 	s := newLiveTestServer(t)
-	seedEventOn(t, s, "an-event", "legacy-host", time.Date(2026, 7, 30, 12, 0, 0, 0, time.Local))
+	seedEventOn(t, s, "an-event", "legacy-host", insideLookBack())
 	recorder := httptest.NewRecorder()
 	s.handleBreakdown(recorder, httptest.NewRequest("GET", "/api/v1/breakdown?by=model&days=30", nil))
 	var body struct {
@@ -81,7 +98,7 @@ func TestNonDeviceBreakdownsAreUntouched(t *testing.T) {
 // what the operator typed.
 func TestTypedLabelOutranksSelfReportedDisplayName(t *testing.T) {
 	s := newLiveTestServer(t)
-	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.Local)
+	now := insideLookBack()
 	s.now = func() time.Time { return now }
 	if _, err := s.store.RegisterDevice(testV2DeviceA, "DESKTOP-86HNP05", "device-token", []string{"events"}, now.UnixMilli()); err != nil {
 		t.Fatal(err)
