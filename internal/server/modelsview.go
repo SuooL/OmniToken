@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/store"
 )
 
@@ -21,6 +22,17 @@ type modelSourceEntry struct {
 	Source string `json:"source"`
 	store.Totals
 	CostUSD *float64 `json:"cost_usd,omitempty"`
+}
+
+// addTotals accumulates one aggregate into another, used when two routing
+// variants of a model fold into a single bar.
+func addTotals(dst *store.Totals, src store.Totals) {
+	dst.Events += src.Events
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheRead += src.CacheRead
+	dst.CacheCreation += src.CacheCreation
+	dst.TotalTokens += src.TotalTokens
 }
 
 // modelDailyEntry is one (day, model) segment of the daily composition chart.
@@ -51,20 +63,44 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Price each reported id, then fold the routing variants into one bar —
+	// in that order, because a display name need not exist in the pricing table
+	// (internal/model/canonical.go). ModelBySource already orders rows so the
+	// variants of one slice arrive together, so first-seen order is the display
+	// order.
 	bySource := make([]modelSourceEntry, 0, len(rows))
+	index := map[[2]string]int{}
 	unpricedSet := map[string]bool{}
 	for _, row := range rows {
-		e := modelSourceEntry{Model: row.Model, Source: row.Source, Totals: row.Totals}
 		// Same valuation path as costFromUsage: Resolve first so Codex's
 		// synthetic model names map to the real model of that date.
-		cost, ok := s.Prices().Cost(row.Model, time.UnixMilli(row.MinTS),
+		cost, priced := s.Prices().Cost(row.Model, time.UnixMilli(row.MinTS),
 			row.InputTokens, row.OutputTokens, row.CacheRead, row.CacheCreation, row.Cache1h, row.Cache5m)
-		if ok {
-			e.CostUSD = &cost
-		} else {
+		if !priced {
+			// The reported id, not the display name: this string is what a
+			// pricing_overrides entry has to match.
 			unpricedSet[row.Model] = true
 		}
-		bySource = append(bySource, e)
+		key := [2]string{model.CanonicalModel(row.Model), row.Source}
+		i, seen := index[key]
+		if !seen {
+			index[key] = len(bySource)
+			bySource = append(bySource, modelSourceEntry{
+				Model: key[0], Source: row.Source, Totals: row.Totals,
+			})
+			i = len(bySource) - 1
+		} else {
+			addTotals(&bySource[i].Totals, row.Totals)
+		}
+		if priced {
+			// A variant with no price contributes tokens but no dollars, and the
+			// id it was dropped for is named in `unpriced` — the alternative,
+			// blanking the whole bar, would hide the spend we do know.
+			if bySource[i].CostUSD == nil {
+				bySource[i].CostUSD = new(float64)
+			}
+			*bySource[i].CostUSD += cost
+		}
 	}
 
 	dailyOut := make([]modelDailyEntry, 0, len(daily))
