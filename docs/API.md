@@ -146,6 +146,12 @@ Claude 订阅 5 小时计费窗口(F11,算法对齐 ccusage:起点取整到小�
 `limit`(默认 200),行含 session_id/device/first_ts/last_ts。周桶 `%Y-W%W`
 (周一起始,与总览周口径一致)。
 
+每行末尾附 `cost_usd`:桶内**按模型分别定价再相加**(同一天里 Opus 与 Haiku 的单价
+差 25 倍,拿桶的 token 合计套任何单一费率都是错的)。整行没有任何可定价模型时
+**省略该字段**,CSV 里留空单元格 —— 不写 0,`$0` 与「不知道」是两回事(ADR-0005)。
+响应另有 `unpriced`,列出被跳过的模型 id(保持上报原样,即 `pricing_overrides`
+要匹配的那个串)。
+
 ### GET /api/v1/events?device=&source=&provider=&model=&repo=&session=&days=7&limit=100&offset=0
 
 事件明细(F13)。参数化过滤,limit 上限 500;返回 `{"total": N, "events": [...]}`,

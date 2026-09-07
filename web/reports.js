@@ -6,6 +6,11 @@ const REPORT_GRANULARITIES = [
 ];
 const REPORT_RANGES = [7, 30, 90];
 
+// A row with no cost_usd had no priced model in it. It renders as a dash, never
+// as $0 — the two mean different things and only one of them is a fact
+// (ADR-0005); the ids behind the dash are listed under the table.
+const costCell = (v) => (typeof v === "number" ? usd(v) : "—");
+
 const Reports = {
   granularity: "daily",
   days: 30,
@@ -54,6 +59,7 @@ const Reports = {
     </section>
     <section class="instrument-card">
       <div id="reports-table" class="data-table data-table-shell"></div>
+      <p class="subtle" id="reports-unpriced" hidden></p>
     </section>`;
     root.querySelector("#reports-gran").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-gran]");
@@ -115,6 +121,7 @@ const Reports = {
       this.lastData = d;
       if (d.granularity === "session") this.renderSessions(d.rows || []);
       else this.renderPeriods(d.rows || []);
+      this.renderUnpriced(d.unpriced || []);
       renderState(document.getElementById("view-reports"), {kind: "ready", title: ""});
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
@@ -136,9 +143,9 @@ const Reports = {
       return;
     }
     const label = { daily: "日期", weekly: "周", monthly: "月份" }[this.granularity] || "时间段";
-    el.innerHTML = `<table><thead><tr><th>${label}</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>请求</th></tr></thead><tbody>` +
+    el.innerHTML = `<table><thead><tr><th>${label}</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
       [...rows].reverse().map((r) =>
-        `<tr><td>${esc(r.bucket)}</td><td>${full(r.input_tokens)}</td><td>${full(r.output_tokens)}</td><td>${full(r.cache_read_tokens)}</td><td>${full(r.cache_creation_tokens)}</td><td>${full(r.total_tokens)}</td><td>${full(r.events)}</td></tr>`
+        `<tr><td>${esc(r.bucket)}</td><td>${full(r.input_tokens)}</td><td>${full(r.output_tokens)}</td><td>${full(r.cache_read_tokens)}</td><td>${full(r.cache_creation_tokens)}</td><td>${full(r.total_tokens)}</td><td>${full(r.events)}</td><td>${costCell(r.cost_usd)}</td></tr>`
       ).join("") + `</tbody></table>`;
     this.renderTrend([...rows].reverse(), label);
   },
@@ -150,7 +157,7 @@ const Reports = {
       this.renderTrend([], "会话");
       return;
     }
-    el.innerHTML = `<table><thead><tr><th>会话</th><th>设备</th><th>来源</th><th>项目</th><th>模型</th><th>最后活跃</th><th>合计</th><th>请求</th></tr></thead><tbody>` +
+    el.innerHTML = `<table><thead><tr><th>会话</th><th>设备</th><th>来源</th><th>项目</th><th>模型</th><th>最后活跃</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
       rows.map((r) => {
         const sid = r.session_id || "(无会话)";
         const started = new Date(r.first_ts).toLocaleString("zh-CN", { hour12: false });
@@ -163,9 +170,23 @@ const Reports = {
           <td title="${esc(started)} 开始">${relTime(r.last_ts)}</td>
           <td>${full(r.total_tokens)}</td>
           <td>${full(r.events)}</td>
+          <td>${costCell(r.cost_usd)}</td>
         </tr>`;
       }).join("") + `</tbody></table>`;
     this.renderTrend(rows.slice(0, 30), "会话", (row) => (row.session_id || "(无会话)").slice(0, 8), "bar");
+  },
+
+  // The cost column covers subscription and metered traffic alike, so it is an
+  // "equivalent spend" figure wherever a subscription paid for it — the split
+  // by billing channel lives on the overview (ADR-0005), not in a report row.
+  renderUnpriced(models) {
+    const note = document.getElementById("reports-unpriced");
+    if (!models.length) {
+      note.hidden = true;
+      return;
+    }
+    note.textContent = `以下模型无定价,其用量已计入 token 列但未计入成本:${models.join("、")}`;
+    note.hidden = false;
   },
 
   renderTrend(rows, label, labelOf = (row) => row.bucket, type = "line") {
