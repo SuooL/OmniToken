@@ -46,10 +46,21 @@ type SourceSpec struct {
 }
 
 // LocalSpecs builds the scan specs for logs on this machine.
-func LocalSpecs(claudeDirs, codexDirs, dshDirs []string) []SourceSpec {
+//
+// codexProbe is this machine's config.toml evidence about which model_provider
+// ids spend the ChatGPT subscription (ADR-0033). It is wired in here and
+// deliberately not in SSHSpecs: the provider block lives on the machine that
+// wrote the log, so answering for a remote host out of this host's config would
+// be a guess wearing the label of evidence — the same boundary RefineProvider
+// draws for the Claude probe. A nil probe leaves Codex on its built-in id.
+func LocalSpecs(claudeDirs, codexDirs, dshDirs []string, codexProbe func() CodexAuthProbe) []SourceSpec {
+	var trusted func(string) bool
+	if codexProbe != nil {
+		trusted = func(p string) bool { return codexProbe().Trusts(p) }
+	}
 	return []SourceSpec{
 		{Dirs: claudeDirs, Parse: claudecode.Parse},
-		{Dirs: codexDirs, Parse: codex.Parse, FullReparse: true},
+		{Dirs: codexDirs, Parse: codex.ParseWith(trusted), FullReparse: true},
 		// dsh files are zstd-compressed, reparsed whole each scan (ADR-0029).
 		{Dirs: dshDirs, Parse: dsh.Parse, FullReparse: true},
 	}
