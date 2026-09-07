@@ -134,6 +134,17 @@ gh pr create --base dev
 
 CI 跑 `make check`,绿了自动合并并删除分支。
 
+### 开 PR 之前必须在**这条分支上**跑过 `make check`
+
+不是「在别的分支上跑过」、不是「改动看起来无害」、不是「只改了文档」——
+**就是这条要推的分支,在推之前,本地跑一次 `make check` 并且是绿的**。
+
+`make check` 与 CI 跑的是同一条命令,所以本地红 = CI 必红 = PR 卡住,
+而等 CI 告诉你一轮要几分钟。纯文档 PR 也不例外:`make check` 里包含
+`web` 包的 DOM/语义测试,面板文案与结构的改动会被它拦下。
+
+涉及 `desktop/` 时再加 `make desktop-check` 与实际 Tauri bundle 构建。
+
 ### 主 checkout 只读
 
 用 worktree 时,主 checkout(`~/git/OmniToken`)**停在 `dev`,只用来读**。
