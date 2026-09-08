@@ -72,7 +72,7 @@ func identifyBlocks(entries []blockEntry, durMS, nowMS int64) []Block {
 // believe. A window is a claim about a specific billing relationship, so only
 // events proven to be in that relationship may be counted against it.
 func (s *Store) Blocks(from time.Time, now time.Time) ([]Block, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT ts, input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens, output_tokens
 		 FROM events
 		 WHERE ts >= ? AND source = 'claude-code' AND provider = ?

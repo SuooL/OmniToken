@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
+	"github.com/suool/omnitoken/internal/parser/dsh"
 )
 
 const sinkBatch = 2000
@@ -44,10 +46,23 @@ type SourceSpec struct {
 }
 
 // LocalSpecs builds the scan specs for logs on this machine.
-func LocalSpecs(claudeDirs, codexDirs []string) []SourceSpec {
+//
+// codexProbe is this machine's config.toml evidence about which model_provider
+// ids spend the ChatGPT subscription (ADR-0033). It is wired in here and
+// deliberately not in SSHSpecs: the provider block lives on the machine that
+// wrote the log, so answering for a remote host out of this host's config would
+// be a guess wearing the label of evidence — the same boundary RefineProvider
+// draws for the Claude probe. A nil probe leaves Codex on its built-in id.
+func LocalSpecs(claudeDirs, codexDirs, dshDirs []string, codexProbe func() CodexAuthProbe) []SourceSpec {
+	var trusted func(string) bool
+	if codexProbe != nil {
+		trusted = func(p string) bool { return codexProbe().Trusts(p) }
+	}
 	return []SourceSpec{
 		{Dirs: claudeDirs, Parse: claudecode.Parse},
-		{Dirs: codexDirs, Parse: codex.Parse, FullReparse: true},
+		{Dirs: codexDirs, Parse: codex.ParseWith(trusted), FullReparse: true},
+		// dsh files are zstd-compressed, reparsed whole each scan (ADR-0029).
+		{Dirs: dshDirs, Parse: dsh.Parse, FullReparse: true},
 	}
 }
 
@@ -99,7 +114,9 @@ func listJSONL(dirs []string) []string {
 			if err != nil {
 				return nil // skip unreadable subtrees
 			}
-			if !d.IsDir() && filepath.Ext(path) == ".jsonl" {
+			// dsh compresses its JSONL (session.jsonl.zstd), so match that too —
+			// filepath.Ext sees ".zstd" and would otherwise skip it (ADR-0029).
+			if !d.IsDir() && (filepath.Ext(path) == ".jsonl" || strings.HasSuffix(path, ".jsonl.zstd")) {
 				files = append(files, path)
 			}
 			return nil
@@ -170,11 +187,29 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 			events[i].Repo = st.RepoFor(device, events[i].CWD, resolveRepo)
 		}
 	}
+	// A FullReparse file re-reads from byte zero on every growth, so without a
+	// cross-scan record its whole event set would be re-delivered each scan. Only
+	// a non-resumed FullReparse pass consults and rebuilds that record; a resumed
+	// pass or an incremental source keeps the original behaviour (ADR-0032).
+	crossScan := spec.FullReparse && !resuming
+	var nextChunks map[int]string
+	if crossScan {
+		nextChunks = make(map[int]string)
+	}
 	for start := 0; start < len(events); start += sinkBatch {
 		end := min(start+sinkBatch, len(events))
-		key, err := logicalDeliveryKey("events", start/sinkBatch, events[start:end])
+		ordinal := start / sinkBatch
+		key, err := logicalDeliveryKey("events", ordinal, events[start:end])
 		if err != nil {
 			return 0, fmt.Errorf("identify event batch for %s: %w", path, err)
+		}
+		if crossScan {
+			// Carry every ordinal's current key forward, delivered or not, so the
+			// committed record reflects the whole file and prunes stale ordinals.
+			nextChunks[ordinal] = key
+			if st.ChunkDelivered(path, ordinal, key) {
+				continue // identical bytes already delivered under a committed offset
+			}
 		}
 		if st.DeliveryDone(path, key) {
 			continue
@@ -203,7 +238,7 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 
 	// The offset covers the dropped lines as well: they were read and
 	// deliberately left out of the window, not deferred to a later pass.
-	if err := st.Commit(path, end, inFlight.TurnStartMS); err != nil {
+	if err := st.Commit(path, end, inFlight.TurnStartMS, nextChunks); err != nil {
 		return 0, fmt.Errorf("commit state for %s: %w", path, err)
 	}
 	return len(events), nil

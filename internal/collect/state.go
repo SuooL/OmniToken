@@ -25,6 +25,16 @@ type State struct {
 	// therefore survive process restart without consuming outbox capacity
 	// again when a later batch was blocked.
 	InFlight map[string]InFlightScan `json:"in_flight,omitempty"`
+	// Chunks records, per FullReparse file, the content key of the last chunk
+	// delivered at each ordinal, and unlike InFlight it survives Commit
+	// (ADR-0032). A FullReparse file re-reads from byte zero on every growth, so
+	// without this its whole event set is re-delivered each scan; with it, a
+	// chunk whose bytes are unchanged since its last committed delivery is
+	// skipped. Every key in here names content already delivered under a
+	// committed offset, so a skip is always safe — never data loss, at worst a
+	// stale key that fails to match and re-delivers (which ingestion dedup
+	// absorbs). Only FullReparse scans ever write it.
+	Chunks map[string]map[int]string `json:"chunks,omitempty"`
 }
 
 type InFlightScan struct {
@@ -60,6 +70,9 @@ func LoadState(path string) (*State, error) {
 	if st.InFlight == nil {
 		st.InFlight = map[string]InFlightScan{}
 	}
+	if st.Chunks == nil {
+		st.Chunks = map[string]map[int]string{}
+	}
 	for file, scan := range st.InFlight {
 		if file == "" || scan.Start < 0 || scan.End < scan.Start {
 			delete(st.InFlight, file)
@@ -80,6 +93,7 @@ func newState(path string) *State {
 		RepoByCWD: map[string]string{},
 		TurnStart: map[string]int64{},
 		InFlight:  map[string]InFlightScan{},
+		Chunks:    map[string]map[int]string{},
 	}
 }
 
@@ -106,15 +120,26 @@ func (s *State) ResetOffsets() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := len(s.Files)
-	oldFiles, oldTurnStart, oldInFlight := s.Files, s.TurnStart, s.InFlight
+	oldFiles, oldTurnStart, oldInFlight, oldChunks := s.Files, s.TurnStart, s.InFlight, s.Chunks
 	s.Files = map[string]int64{}
 	s.TurnStart = map[string]int64{}
 	s.InFlight = map[string]InFlightScan{}
+	s.Chunks = map[string]map[int]string{}
 	if err := s.saveLocked(); err != nil {
-		s.Files, s.TurnStart, s.InFlight = oldFiles, oldTurnStart, oldInFlight
+		s.Files, s.TurnStart, s.InFlight, s.Chunks = oldFiles, oldTurnStart, oldInFlight, oldChunks
 		return n, err
 	}
 	return n, nil
+}
+
+// ChunkDelivered reports whether the chunk at this ordinal was last delivered
+// with exactly this content key under a committed offset (ADR-0032). A true
+// result means the identical bytes already reached the sink, so re-delivering
+// them would only be absorbed by ingestion dedup.
+func (s *State) ChunkDelivered(file string, ordinal int, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Chunks[file][ordinal] == key
 }
 
 func (s *State) Offset(file string) int64 {
@@ -189,16 +214,29 @@ func (s *State) MarkDeliveryDone(file, key string) error {
 	return nil
 }
 
+// DiscardScan drops a file's in-flight ledger and its cross-scan chunk keys,
+// used when the file was truncated or replaced (ADR-0032): the byte boundary the
+// keys described no longer exists, so the next pass re-reads and re-establishes
+// them. Clearing is conservative — a replaced file with an identical prefix
+// would be safe to skip anyway, but re-reading it costs only a dedup-absorbed
+// repeat.
 func (s *State) DiscardScan(file string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	scan, ok := s.InFlight[file]
-	if !ok {
+	scan, hadScan := s.InFlight[file]
+	chunks, hadChunks := s.Chunks[file]
+	if !hadScan && !hadChunks {
 		return nil
 	}
 	delete(s.InFlight, file)
+	delete(s.Chunks, file)
 	if err := s.saveLocked(); err != nil {
-		s.InFlight[file] = scan
+		if hadScan {
+			s.InFlight[file] = scan
+		}
+		if hadChunks {
+			s.Chunks[file] = chunks
+		}
 		return err
 	}
 	return nil
@@ -207,17 +245,28 @@ func (s *State) DiscardScan(file string) error {
 // Commit advances a file's offset and its turn-start carry together. They must
 // move as one: the carry describes the boundary the offset sits at, so storing
 // one without the other would make the next read measure from the wrong place.
-func (s *State) Commit(file string, offset, turnStartMS int64) error {
+// Commit advances a file's offset, its turn-start carry, and (for FullReparse
+// scans) its cross-scan chunk keys together, so all three are persisted in the
+// one save that also records the offset. chunks is nil for non-FullReparse or
+// resumed scans, which leave the existing keys untouched (ADR-0032).
+func (s *State) Commit(file string, offset, turnStartMS int64, chunks map[int]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	oldOffset, hadOffset := s.Files[file]
 	oldTurnStart, hadTurnStart := s.TurnStart[file]
 	oldScan, hadScan := s.InFlight[file]
+	oldChunks, hadChunks := s.Chunks[file]
 	s.Files[file] = offset
 	if turnStartMS > 0 {
 		s.TurnStart[file] = turnStartMS
 	}
 	delete(s.InFlight, file)
+	if chunks != nil {
+		if s.Chunks == nil {
+			s.Chunks = map[string]map[int]string{}
+		}
+		s.Chunks[file] = chunks
+	}
 	if err := s.saveLocked(); err != nil {
 		if hadOffset {
 			s.Files[file] = oldOffset
@@ -231,6 +280,13 @@ func (s *State) Commit(file string, offset, turnStartMS int64) error {
 		}
 		if hadScan {
 			s.InFlight[file] = oldScan
+		}
+		if chunks != nil {
+			if hadChunks {
+				s.Chunks[file] = oldChunks
+			} else {
+				delete(s.Chunks, file)
+			}
 		}
 		return err
 	}

@@ -356,3 +356,167 @@ func TestBackfillCapacityCountsOnlySubscriptionTraffic(t *testing.T) {
 }
 
 func itoaTest(i int) string { return string(rune('a' + i)) }
+
+// The weight follows from inverse-variance combination of the two error terms
+// (ADR-0034): the integer percentage's half-point of rounding, 0.5/pct, and the
+// 26% cross-window spread of the learned prior.
+func TestCapacityForWindowShiftsWithThePercentage(t *testing.T) {
+	const prior = 1000
+	// The first three hold the live ratio at 250 (100 tokens at 40%, 25 at 10%,
+	// 5 at 2%) so only the weight moves; the last one is a wild live ratio at a
+	// percentage that means almost nothing.
+	cases := []struct {
+		pct        float64
+		tokens     int64
+		wantLow    int64
+		wantHigh   int64
+		reasonWhat string
+	}{
+		{40, 100, 245, 260, "at 40% the rounding is ±1.25%; the live window must dominate"},
+		{10, 25, 245, 320, "at 10% the live window still carries most of the weight"},
+		{2, 5, 400, 800, "at 2% the two are comparable"},
+		{1, 100, 2400, 3300, "at 1% the rounding is ±50%; the prior must pull a 10000 live ratio most of the way back"},
+	}
+	for _, c := range cases {
+		got, ok := CapacityForWindow(prior, true, c.tokens, c.pct)
+		if !ok {
+			t.Fatalf("pct %v: no estimate", c.pct)
+		}
+		if got < c.wantLow || got > c.wantHigh {
+			t.Errorf("pct %v, tokens %d: capacity = %d, want %d..%d — %s",
+				c.pct, c.tokens, got, c.wantLow, c.wantHigh, c.reasonWhat)
+		}
+	}
+}
+
+// With nothing learned, the window answers for itself only once its percentage
+// is coarse enough to divide by. Below that the honest answer is still none.
+func TestCapacityForWindowWithoutAPrior(t *testing.T) {
+	if got, ok := CapacityForWindow(0, false, 100, 40); !ok || got != 250 {
+		t.Errorf("uncalibrated at 40%% = (%d, %v), want (250, true)", got, ok)
+	}
+	if _, ok := CapacityForWindow(0, false, 100, 9); ok {
+		t.Error("uncalibrated at 9% produced an estimate; rounding there is ±5.6%")
+	}
+}
+
+// A window with no traffic yet cannot say anything about itself, so the prior
+// stands alone — and with neither, nothing is stated.
+func TestCapacityForWindowWithoutALiveReading(t *testing.T) {
+	if got, ok := CapacityForWindow(1000, true, 0, 30); !ok || got != 1000 {
+		t.Errorf("no tokens = (%d, %v), want the prior", got, ok)
+	}
+	if got, ok := CapacityForWindow(1000, true, 500, 0); !ok || got != 1000 {
+		t.Errorf("no percentage = (%d, %v), want the prior", got, ok)
+	}
+	if _, ok := CapacityForWindow(0, false, 0, 0); ok {
+		t.Error("something was stated with no evidence at all")
+	}
+}
+
+// The sample is deposited when the snapshot lands, not when the panel is
+// rendered (ADR-0034) — so it happens whether or not anyone is watching.
+func TestInsertQuotasDepositsACapacitySample(t *testing.T) {
+	s, err := Open(t.TempDir() + "/cap.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	resets := now.Add(3 * time.Hour)
+	start := resets.Add(-5 * time.Hour)
+	if _, err := s.InsertEvents([]model.Event{{
+		EventID: "e1", TS: start.Add(time.Minute).UnixMilli(), Device: "mac",
+		Source: "claude-code", Provider: "anthropic-oauth", Model: "claude-opus-4-8",
+		InputTokens: 400, OutputTokens: 100,
+	}}, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{{
+		Device: "mac", Source: "claude-code", LimitID: "claude-account", Scope: "five_hour",
+		WindowMinutes: 300, UsedPercent: 50, ResetsAt: resets.UnixMilli(),
+		ObservedAt: now.UnixMilli(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	samples, err := s.CapacitySamples("claude-code", "five_hour", 300, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("samples = %+v, want exactly one", samples)
+	}
+	if samples[0].TokensAtPeak != 500 || samples[0].PeakPercent != 50 {
+		t.Errorf("sample = %+v, want 500 tokens at 50%%", samples[0])
+	}
+	if got := samples[0].Capacity(); got != 1000 {
+		t.Errorf("implied capacity = %d, want 1000", got)
+	}
+}
+
+// Only the subscription channel counts against a subscription window
+// (ADR-0018 §7), and that has to hold on the write path too.
+func TestInsertQuotasCountsOnlySubscriptionTokens(t *testing.T) {
+	s, err := Open(t.TempDir() + "/cap2.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	resets := now.Add(3 * time.Hour)
+	at := resets.Add(-5 * time.Hour).Add(time.Minute).UnixMilli()
+	if _, err := s.InsertEvents([]model.Event{
+		{EventID: "sub", TS: at, Device: "mac", Source: "claude-code",
+			Provider: "anthropic-oauth", Model: "claude-opus-4-8", InputTokens: 500},
+		{EventID: "relay", TS: at, Device: "mac", Source: "claude-code",
+			Provider: "relay", Model: "claude-opus-4-8", InputTokens: 9000},
+	}, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{{
+		Device: "mac", Source: "claude-code", LimitID: "claude-account", Scope: "five_hour",
+		WindowMinutes: 300, UsedPercent: 50, ResetsAt: resets.UnixMilli(),
+		ObservedAt: now.UnixMilli(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	samples, err := s.CapacitySamples("claude-code", "five_hour", 300, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 || samples[0].TokensAtPeak != 500 {
+		t.Fatalf("samples = %+v, want relay traffic left out", samples)
+	}
+}
+
+func TestResetCapacityIsScopedToOneSource(t *testing.T) {
+	s, err := Open(t.TempDir() + "/cap3.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, src := range []string{"codex", "claude-code"} {
+		if err := s.ObserveCapacity(CapacityObservation{
+			Source: src, Scope: "five_hour", WindowMinutes: 300,
+			ResetsAt: time.Now().UnixMilli(), UsedPercent: 50, Tokens: 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.ResetCapacity("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("deleted %d rows, want 1", n)
+	}
+	left, err := s.CapacitySamples("claude-code", "five_hour", 300, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 {
+		t.Errorf("claude-code calibration = %+v, want it untouched", left)
+	}
+}

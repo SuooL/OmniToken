@@ -118,7 +118,25 @@ type limitState struct {
 // The turn-start carry (ADR-0009) is unused here: Codex files are re-parsed
 // whole on every growth (FullReparse), so a turn still open at EOF gets its
 // generation interval on the next pass, once its closing record exists.
-func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
+func Parse(r io.Reader, device string, turnStartMS int64) model.ParseResult {
+	return ParseWith(nil)(r, device, turnStartMS)
+}
+
+// ParseWith is Parse plus this machine's own answer to "which model_provider
+// ids spend the ChatGPT subscription" (ADR-0033).
+//
+// trusted is consulted in addition to Codex's built-in id, never instead of it,
+// and a nil trusted leaves Parse on the built-in id alone. That is the right
+// default for logs pulled from another machine over SSH: the provider block
+// that would settle the question lives on that machine, and this one has no
+// business guessing at it.
+func ParseWith(trusted func(string) bool) func(io.Reader, string, int64) model.ParseResult {
+	return func(r io.Reader, device string, _ int64) model.ParseResult {
+		return parse(r, device, trusted)
+	}
+}
+
+func parse(r io.Reader, device string, trusted func(string) bool) (res model.ParseResult) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	var ctx struct {
 		rolloutID, sessionID, cwd, version, provider, model string
@@ -134,7 +152,7 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			applySessionChannel(res.Events, ctx.provider, subscriptionSeen)
+			applySessionChannel(res.Events, ctx.provider, subscriptionSeen, trusted)
 			return res
 		}
 		res.Consumed += int64(len(line))
@@ -514,14 +532,30 @@ func planEvidence(q *rateLimits) bool {
 // usage event. Rollouts are re-parsed whole on every growth
 // (collect.SourceSpec.FullReparse), so a file-scoped conclusion sees every line.
 //
-// Both signals must agree before anything is called a subscription: Codex's
-// built-in provider id AND account state that only the real account emits. Each
-// alone has a known counterexample on this machine — a relay named "OpenAI",
-// and a relay that forwarded a shared account's plan_type — and requiring both
-// removes every observed false positive. When they disagree the label stays as
-// declared, which BillingChannel reads as "not first-party".
-func applySessionChannel(events []model.Event, provider string, subscription bool) {
-	if !subscription || strings.TrimSpace(provider) != builtinOpenAIProvider {
+// Two signals must agree before anything is called a subscription, and the
+// second one — account state only the real account emits — never moves:
+//
+//  1. the rollout's declared provider id is one we have reason to believe
+//     spends the subscription, AND
+//  2. planEvidence held somewhere in the file.
+//
+// Requiring both removes every false positive observed on this fleet: a relay
+// named "OpenAI" fails (1), and a relay that forwarded a shared account's
+// plan_type fails (1) as well.
+//
+// What changed with ADR-0033 is only how (1) is decided. Codex's built-in id is
+// still accepted on its own, because on an untouched install nothing else
+// carries it. Beyond that the caller may supply the ids this machine's
+// config.toml shows are authenticated with the ChatGPT account — the honest
+// version of the same question, since a renamed provider block
+// (`cc-switch-official`) is still the subscription and an id spelled `openai`
+// pointing at a relay still is not.
+func applySessionChannel(events []model.Event, provider string, subscription bool, trusted func(string) bool) {
+	if !subscription {
+		return
+	}
+	p := strings.TrimSpace(provider)
+	if p != builtinOpenAIProvider && (trusted == nil || !trusted(p)) {
 		return
 	}
 	for i := range events {

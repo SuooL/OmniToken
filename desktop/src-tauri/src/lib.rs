@@ -9,10 +9,13 @@
 
 mod gauge;
 mod live;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod notify;
 mod settings;
 mod telemetry;
 mod tray;
+mod update;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -110,10 +113,19 @@ async fn settings_set(
     server: String,
     token: String,
     panel_url: String,
+    autostart: bool,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
-    let next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    let mut next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    next.autostart = autostart;
     settings::save(&app, &next)?;
+
+    // Register/unregister the LaunchAgent to match what was just stored. Writing
+    // the flag alone is not enough — the OS state only changes here (same step
+    // the tray's "开机自启" item runs, lib.rs `on_menu`).
+    apply_autostart(&app, next.autostart);
+    // Keep the tray's own checkmark honest now that the panel can flip the flag.
+    tray::sync_checks(&app);
 
     // Point the bridge at the new address now instead of waiting for the old
     // connection to break on its own — otherwise the tray would keep reporting
@@ -172,6 +184,11 @@ fn show_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
     let Some(window) = app.get_webview_window("panel") else {
         return;
     };
+    // Tahoe re-establishes the opaque backing each time the window is ordered
+    // front, so the corners have to be re-cleared on every show, not only once
+    // at setup (see macos_window).
+    #[cfg(target_os = "macos")]
+    macos_window::harden(&window);
     if let Some(rect) = rect {
         let size = window.outer_size().unwrap_or_default();
         if let (tauri::Position::Physical(pos), tauri::Size::Physical(icon)) =
@@ -261,6 +278,7 @@ fn on_menu(app: &tauri::AppHandle, id: &str) {
             let _ = open_full_panel(app.clone());
         }
         "refresh" => live::respawn(app),
+        "check_update" => update::check_now(app),
         "settings" => {
             show_panel(app, app.state::<tray::State>().rect());
             // The popover owns its own view switching; telling it to show
@@ -296,6 +314,8 @@ fn set_title_mode(app: &tauri::AppHandle, which: settings::TrayTitle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         // The LaunchAgent flavour, not a Login Item: it survives without the app
         // having been in /Applications, which matters for a binary distributed
@@ -342,6 +362,10 @@ pub fn run() {
 
             let stored = settings::load(app.handle());
 
+            // Checks run on a schedule as well as from the menu: an update
+            // nobody clicks for is an update nobody gets (ADR-0035).
+            update::schedule(app.handle().clone());
+
             let (menu, items) = tray::menu(app.handle(), &stored)?;
             let handle = app.handle().clone();
             TrayIconBuilder::with_id(tray::TRAY_ID)
@@ -379,6 +403,13 @@ pub fn run() {
                 })
                 .build(app)?;
             tray::remember_items(app.handle(), items);
+
+            // Clear the opaque backing the transparent window ships behind the
+            // CSS card on macOS 26 before it is ever shown (macos_window).
+            #[cfg(target_os = "macos")]
+            if let Some(panel) = app.get_webview_window("panel") {
+                macos_window::harden(&panel);
+            }
 
             // Keep the OS in step with what the file says. Someone may have
             // removed the LaunchAgent by hand, or the chord may have been taken
@@ -481,6 +512,61 @@ mod ui_contract_tests {
         assert!(
             panel.get("windowEffects").is_none(),
             "the CSS panel owns the background and corners; a native effect leaks outside them"
+        );
+    }
+}
+
+#[cfg(test)]
+mod updater_config_tests {
+    const CONFIG: &str = include_str!("../tauri.conf.json");
+
+    /// A bad updater endpoint is not a quiet degradation: the plugin fails to
+    /// initialise and `Builder::run` panics, so the whole menubar app dies on
+    /// launch. Seen while building this — an `http://` endpoint took the app
+    /// down with "The configured updater endpoint must use a secure protocol".
+    /// The config is data, so the check can be static.
+    #[test]
+    fn updater_endpoints_are_https() {
+        let config: serde_json::Value = serde_json::from_str(CONFIG).expect("tauri.conf.json");
+        let endpoints = config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("plugins.updater.endpoints must be an array");
+        assert!(!endpoints.is_empty(), "no updater endpoint configured");
+        for endpoint in endpoints {
+            let url = endpoint.as_str().expect("endpoint must be a string");
+            assert!(
+                url.starts_with("https://"),
+                "updater endpoint {url} is not https — release builds refuse to start"
+            );
+        }
+    }
+
+    /// Without a public key the updater cannot verify what it downloaded, and
+    /// an updater that installs unverified code is worse than no updater.
+    #[test]
+    fn updater_has_a_public_key() {
+        let config: serde_json::Value = serde_json::from_str(CONFIG).expect("tauri.conf.json");
+        let pubkey = config["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .expect("plugins.updater.pubkey must be set");
+        assert!(!pubkey.trim().is_empty(), "updater pubkey is empty");
+        // The CLI emits a base64 minisign key; a path here is the documented
+        // mistake ("It cannot be a file path!") and would only fail at runtime.
+        assert!(
+            !pubkey.contains('/') && !pubkey.contains('\\'),
+            "pubkey looks like a path, not the key content"
+        );
+    }
+
+    /// The bundler only emits the .tar.gz + .sig the manifest points at when
+    /// this is on. Off, a release publishes a manifest referencing files that
+    /// were never built.
+    #[test]
+    fn updater_artifacts_are_built() {
+        let config: serde_json::Value = serde_json::from_str(CONFIG).expect("tauri.conf.json");
+        assert_eq!(
+            config["bundle"]["createUpdaterArtifacts"],
+            serde_json::Value::Bool(true)
         );
     }
 }

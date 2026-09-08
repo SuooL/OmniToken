@@ -92,27 +92,27 @@ func (c *windowCard) projectToWindowEnd(now time.Time, start time.Time) {
 	}
 }
 
-// fillCapacity feeds this window's live reading into the calibration and reads
-// back what the window is worth (ADR-0025).
+// fillCapacity states what this window holds and what is left in it
+// (ADR-0025, revised by ADR-0034).
 //
-// Both halves live here because this is the only place that holds a window's
-// identity, its authoritative percentage and the tokens this fleet put into it
-// at the same time. The write is an upsert that only ever raises a window's
-// peak, so repeating it on every snapshot is free; a failure is logged and
-// dropped, since a calibration miss must not cost the panel its live view.
+// Read-only. The sample this window contributes is taken when its quota
+// snapshot is stored — Store.ObserveCapacityFromQuota — not when somebody opens
+// the page. A GET that writes was a surprise on its own, and a bug in practice:
+// a window that filled up while nobody was watching taught the estimate
+// nothing, and the response cache (ADR-0028) swallowed most of the rest.
+//
+// What is shown is the learned prior pulled toward this window's own
+// tokens-per-percent, weighted by how coarse the percentage is. That keeps it
+// consistent with the authoritative percentage printed right beside it, which
+// the prior alone was not: "已用 11%" and "还剩 67M" were on screen together,
+// a factor of 2.6 apart.
 func (s *Server) fillCapacity(card *windowCard, source string, w fiveHourWin, windowMinutes int) {
-	if err := s.store.ObserveCapacity(store.CapacityObservation{
-		Source: source, Scope: w.scope, WindowMinutes: windowMinutes,
-		ResetsAt: w.resets.UnixMilli(), UsedPercent: w.pct, Tokens: card.Tokens,
-	}); err != nil {
-		log.Printf("quota[capacity]: observe: %v", err)
-		return
-	}
-	capacity, ok, err := s.store.CapacityEstimate(source, w.scope, windowMinutes)
+	prior, priorOK, err := s.store.CapacityEstimate(source, w.scope, windowMinutes)
 	if err != nil {
 		log.Printf("quota[capacity]: estimate: %v", err)
 		return
 	}
+	capacity, ok := store.CapacityForWindow(prior, priorOK, card.Tokens, w.pct)
 	if !ok {
 		return
 	}

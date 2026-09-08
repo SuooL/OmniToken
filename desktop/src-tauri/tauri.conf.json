@@ -39,6 +39,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY2MEExQ0ZDQzEyRjQxNkUKUldSdVFTL0IvQndLWmxrZk5TL0hVcmxkSm93SzNnNEora1d5RS8wR3czalpDdUVTWlZiTzlXNzEK",
+      "endpoints": [
+        "https://github.com/SuooL/OmniToken/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

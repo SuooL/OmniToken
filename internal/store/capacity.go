@@ -1,8 +1,12 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"sort"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 // Capacity calibration (ADR-0025): how many tokens one subscription window
@@ -103,6 +107,67 @@ func (s *Store) ObserveCapacity(o CapacityObservation) error {
 	return err
 }
 
+// ObserveCapacityFromQuota feeds one freshly stored quota snapshot into the
+// calibration (ADR-0034).
+//
+// It lives on the write path rather than in the panel because a sample must not
+// depend on somebody having the page open. Before, the only caller was the live
+// endpoint: a window that filled up while nobody was watching taught the
+// estimate nothing, and the response cache (ADR-0028) silently skipped most of
+// the rest. Hanging it off snapshot insertion means every arrival path — local
+// scan, agent push, SSH mirror — maintains it, and none of them can forget to.
+//
+// The peak check comes first and is the reason this is affordable: ObserveCapacity
+// only ever raises a window's peak, so a reading at or below the stored peak
+// cannot change anything, and must not pay for a scan of the window's events.
+// Quota snapshots arrive every few seconds and the percentage moves maybe a
+// hundred times per window, so the expensive half runs about that often.
+func (s *Store) ObserveCapacityFromQuota(q model.QuotaSnapshot, now int64) error {
+	if q.ResetsAt <= 0 || q.UsedPercent <= 0 || q.WindowMinutes <= 0 {
+		return nil
+	}
+	var peak float64
+	err := s.rdb.QueryRow(
+		`SELECT peak_percent FROM quota_capacity
+		 WHERE source = ? AND scope = ? AND window_minutes = ? AND window_id = ?`,
+		q.Source, q.Scope, q.WindowMinutes, windowIDMinutes(q.ResetsAt)).Scan(&peak)
+	switch {
+	case err == nil && q.UsedPercent <= peak:
+		return nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	start := q.ResetsAt - int64(q.WindowMinutes)*60_000
+	tokens, err := s.subscriptionTokens(q.Source, start, now)
+	if err != nil {
+		return err
+	}
+	return s.ObserveCapacity(CapacityObservation{
+		Source: q.Source, Scope: q.Scope, WindowMinutes: q.WindowMinutes,
+		ResetsAt: q.ResetsAt, UsedPercent: q.UsedPercent, Tokens: tokens,
+	})
+}
+
+// ResetCapacity drops every learned sample for one source.
+//
+// For when the samples were derived under a classification since proved wrong,
+// and cannot heal on their own: ObserveCapacity refuses to lower a window's
+// peak, so a row recorded at 100% with a numerator of nearly zero is stuck at
+// the capacity it implies until it ages out of the 30-window memory — which for
+// a weekly window is over half a year.
+//
+// Deleting here is safe in a way deleting events never is: this table holds no
+// counts, only a calibration derived from quota_snapshots and events, and
+// BackfillCapacity rebuilds it from those two.
+func (s *Store) ResetCapacity(source string) (int, error) {
+	res, err := s.db.Exec(`DELETE FROM quota_capacity WHERE source = ?`, source)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // capacityMinPeak is the percentage a window must reach to be worth learning
 // from. Measured, not chosen: at 10% the spread across 23 real windows was
 // 40.7%, at 30% it was 26.0%.
@@ -120,7 +185,7 @@ const capacityMinSamples = 3
 // CapacitySamples returns the most recent windows that reached minPeak, newest
 // first.
 func (s *Store) CapacitySamples(source, scope string, windowMinutes int, minPeak float64, limit int) ([]CapacitySample, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT peak_percent, tokens_at_peak, window_id FROM quota_capacity
 		 WHERE source = ? AND scope = ? AND window_minutes = ? AND peak_percent >= ?
 		 ORDER BY window_id DESC LIMIT ?`,
@@ -167,6 +232,68 @@ func (s *Store) CapacityEstimate(source, scope string, windowMinutes int) (int64
 	return caps[len(caps)/4], true, nil
 }
 
+// Anchoring the estimate on the window in front of you (ADR-0034).
+//
+// CapacityEstimate answers "what does a window of this kind hold", learned
+// across past windows. That is the right question to ask when the live window
+// has barely started, and the wrong one to put on screen beside an
+// authoritative percentage: the panel was showing "已用 11%" and "还剩 67M" at
+// the same time, off by a factor of 2.6, because the 25th percentile of past
+// windows knows nothing about this one. The percentage is the number the
+// provider vouches for, so the estimate has to agree with it wherever it can.
+//
+// So the two are combined by precision, and the weight follows from the one
+// error term that can be quantified for the live reading:
+//
+//   - the provider reports an INTEGER percentage, so a reading of `pct` carries
+//     half a point of rounding — relative error 0.5/pct. That is ±50% at 1% and
+//     ±1.7% at 30%.
+//   - using another window's allowance for this one costs the cross-window
+//     spread ADR-0025 measured on 13 real samples: a coefficient of variation
+//     of 26%.
+//
+// Inverse-variance weighting of those two gives w = pct²/(pct² + (0.5/0.26)²),
+// so the live ratio takes over as soon as the percentage is coarse enough to
+// divide by, and the learned prior carries a window that has barely opened.
+const (
+	// capacityPriorCV is the cross-window spread of the learned estimate
+	// (ADR-0025 §2, peak ≥ 30% samples). Measured, not chosen.
+	capacityPriorCV = 0.26
+	// capacityQuantum is the rounding in an integer percentage: half a point.
+	capacityQuantum = 0.5
+	// capacityLiveOnlyMinPercent is how full a window must be before its own
+	// ratio is used with no prior behind it at all — 10% keeps the rounding
+	// error under 5%. Below that, and with nothing learned yet, the honest
+	// answer is still no answer.
+	capacityLiveOnlyMinPercent = 10.0
+)
+
+// CapacityForWindow combines what past windows taught with what this window is
+// currently reporting.
+//
+// tokens is what this fleet has put into the live window and pct the provider's
+// authoritative percentage for it. Returns ok=false when neither source can say
+// anything: no prior, and a percentage too coarse to divide by.
+func CapacityForWindow(prior int64, priorOK bool, tokens int64, pct float64) (int64, bool) {
+	live, liveOK := 0.0, false
+	if tokens > 0 && pct > 0 {
+		live, liveOK = float64(tokens)/pct*100, true
+	}
+	switch {
+	case !liveOK:
+		return prior, priorOK && prior > 0
+	case !priorOK || prior <= 0:
+		if pct < capacityLiveOnlyMinPercent {
+			return 0, false
+		}
+		return int64(live), true
+	}
+	// Inverse-variance weight; see the block comment above.
+	k := capacityQuantum / capacityPriorCV
+	w := pct * pct / (pct*pct + k*k)
+	return int64(w*live + (1-w)*float64(prior)), true
+}
+
 // BackfillCapacity derives samples from history that predates the calibration
 // table, so the estimate does not start from nothing.
 //
@@ -178,7 +305,7 @@ func (s *Store) CapacityEstimate(source, scope string, windowMinutes int) (int64
 // Idempotent, because ObserveCapacity only ever raises a window's peak. Running
 // it again after more history arrives simply sharpens what is there.
 func (s *Store) BackfillCapacity(since time.Time) (int, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT source, scope, window_minutes, resets_at, used_percent, observed_at
 		 FROM (SELECT source, scope, window_minutes, resets_at, used_percent, observed_at,
 		              ROW_NUMBER() OVER (
@@ -238,7 +365,7 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 // from the stored provider, exactly as every read path does it, rather than
 // being spelled out as a provider list in SQL that would drift from the mapping.
 func (s *Store) subscriptionTokens(source string, from, to int64) (int64, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT provider, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0)
 		 FROM events WHERE source = ? AND ts >= ? AND ts <= ? GROUP BY provider`,
 		source, from, to)

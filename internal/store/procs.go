@@ -136,7 +136,7 @@ func (s *Store) ApplyProcReport(r model.ProcReport) (bool, error) {
 // first. The cutoff is what makes an offline device's rows disappear without
 // anyone deleting them.
 func (s *Store) RunningSessions(since time.Time) ([]RunningSession, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, source, pid, started_at, observed_at
 		 FROM live_sessions WHERE observed_at >= ?
 		 ORDER BY started_at, device, pid`, since.UnixMilli())
@@ -158,7 +158,7 @@ func (s *Store) RunningSessions(since time.Time) ([]RunningSession, error) {
 // ProcReporters lists devices whose process state is fresh enough to trust.
 // A device missing from this list has no process data — not zero sessions.
 func (s *Store) ProcReporters(since time.Time) ([]ProcReporter, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT device, observed_at FROM live_reports WHERE observed_at >= ? ORDER BY device`,
 		since.UnixMilli())
 	if err != nil {

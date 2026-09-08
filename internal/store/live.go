@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
@@ -15,26 +16,69 @@ type DeviceStatus struct {
 	TodayEvents int64  `json:"today_events"`
 }
 
+// DeviceStatuses returns, per device, its all-time last-seen instant plus
+// today's token and event totals.
+//
+// The two facts are read in two queries on purpose. Folding them into one
+// `SELECT device, MAX(ts), SUM(CASE WHEN ts>=today …) … GROUP BY device` has no
+// WHERE and names the token columns, so the planner cannot use a covering index:
+// it is a full TABLE scan that reads every row's token columns for the today-sum
+// even though almost all of them predate today (EXPLAIN: SCAN events). Split
+// apart, the last-seen query is a covering-index scan over idx_events_device_ts
+// with no heap access at all, and the today totals read only today's rows; the
+// merge is a small map join in Go. On a large hub table this trades the heap I/O
+// of every historical row for an index-only pass — the live endpoint's residual
+// intrinsic floor once ingest no longer starves it of CPU (ADR-0030).
 func (s *Store) DeviceStatuses(todayStart time.Time) ([]DeviceStatus, error) {
-	rows, err := s.db.Query(
-		`SELECT device, MAX(ts),
-		        COALESCE(SUM(CASE WHEN ts >= ?1 THEN input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens ELSE 0 END),0),
-		        COALESCE(SUM(CASE WHEN ts >= ?1 THEN 1 ELSE 0 END),0)
-		 FROM events GROUP BY device ORDER BY MAX(ts) DESC`,
-		todayStart.UnixMilli())
+	lastSeen, err := s.rdb.Query(`SELECT device, MAX(ts) FROM events GROUP BY device`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer lastSeen.Close()
 	var out []DeviceStatus
-	for rows.Next() {
+	for lastSeen.Next() {
 		var d DeviceStatus
-		if err := rows.Scan(&d.Device, &d.LastTS, &d.TodayTokens, &d.TodayEvents); err != nil {
+		if err := lastSeen.Scan(&d.Device, &d.LastTS); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
 	}
-	return out, rows.Err()
+	if err := lastSeen.Err(); err != nil {
+		return nil, err
+	}
+
+	today, err := s.rdb.Query(
+		`SELECT device,
+		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
+		        COUNT(*)
+		 FROM events WHERE ts >= ? GROUP BY device`,
+		todayStart.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer today.Close()
+	type todayTotals struct{ tokens, events int64 }
+	byDevice := make(map[string]todayTotals, len(out))
+	for today.Next() {
+		var device string
+		var tt todayTotals
+		if err := today.Scan(&device, &tt.tokens, &tt.events); err != nil {
+			return nil, err
+		}
+		byDevice[device] = tt
+	}
+	if err := today.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if tt, ok := byDevice[out[i].Device]; ok {
+			out[i].TodayTokens = tt.tokens
+			out[i].TodayEvents = tt.events
+		}
+	}
+	// Preserve the original ordering: most-recently-seen device first.
+	sort.Slice(out, func(i, j int) bool { return out[i].LastTS > out[j].LastTS })
+	return out, nil
 }
 
 type LiveSession struct {
@@ -51,7 +95,7 @@ type LiveSession struct {
 
 // ActiveSessions lists sessions with any event since the cutoff, newest first.
 func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT session_id, device, source, MAX(repo), MAX(cwd), MAX(model), MAX(ts),
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0), COUNT(*)
 		 FROM events WHERE ts >= ?
@@ -89,7 +133,7 @@ func (s *Store) ActiveSessions(since time.Time) ([]LiveSession, error) {
 // and excludes cache_read for the same reason. Cache volume is not lost — the
 // cache page reports it, where repetition is the point.
 func (s *Store) TokensSince(since time.Time) (total, output int64, err error) {
-	err = s.db.QueryRow(
+	err = s.rdb.QueryRow(
 		`SELECT COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens),0),
 		        COALESCE(SUM(output_tokens),0)
 		 FROM events WHERE ts >= ?`, since.UnixMilli()).Scan(&total, &output)

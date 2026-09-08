@@ -4,6 +4,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"log"
 	"maps"
 	"os"
@@ -50,8 +51,15 @@ CREATE INDEX IF NOT EXISTS idx_events_repo_ts ON events(repo, ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 `
 
+// Store keeps writes and reads on separate connection pools (ADR-0027). The
+// dashboard's overview issues ~18 sequential queries; on the single shared
+// connection every one of them queued behind the constant ingest writer and the
+// panel hung. `db` stays a one-connection writer (writes serialize, so no
+// SQLITE_BUSY), while `rdb` is a small read-only pool that lets those reads run
+// against WAL concurrently with the writer instead of waiting in line.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	rdb *sql.DB
 }
 
 func Open(path string) (*Store, error) {
@@ -88,7 +96,22 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	if err := migrateCodexCapacitySamples(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Read-only pool. Opened after the writer has created the schema and the WAL
+	// so these connections attach to a ready database. query_only is a safety
+	// belt: a stray write here errors instead of silently becoming a second
+	// writer that fights the ingest one (ADR-0027).
+	rdb, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=query_only(true)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(4)
+	rdb.SetMaxIdleConns(4)
+	return &Store{db: db, rdb: rdb}, nil
 }
 
 // providerReclassKey marks the one-time demotion below as done. It has to be a
@@ -137,6 +160,49 @@ func migrateLegacyFingerprintProviders(db *sql.DB) error {
 	_, err = db.Exec(
 		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, providerReclassKey)
+	return err
+}
+
+const codexCapacityResetKey = "schema.codex_capacity_reset_v1"
+
+// migrateCodexCapacitySamples throws away the Codex capacity calibration once,
+// because every sample in it was computed against a numerator of nearly zero.
+//
+// Until ADR-0033, a renamed Codex provider block (`cc-switch-official`) was
+// filed as a third-party relay, so the subscription tokens behind each window
+// summed to almost nothing while the provider's percentage kept climbing. The
+// samples that came out say a 5-hour window holds 0.5M tokens. They cannot heal
+// on their own: ObserveCapacity refuses to lower a window's peak, and a row
+// recorded at 100% is stuck until it ages out of the 30-window memory — half a
+// year for the weekly window.
+//
+// Deleting here is not the kind of deletion the correctness rules guard: this
+// table holds no counts, only a calibration derived from quota_snapshots and
+// events, and backfillCapacity rebuilds it from both on the next start. Scoped
+// to codex, so the Claude calibration — which was never wrong — is untouched.
+func migrateCodexCapacitySamples(db *sql.DB) error {
+	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
+	var done string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, codexCapacityResetKey).Scan(&done)
+	if err == nil && done != "" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := db.Exec(`DELETE FROM quota_capacity WHERE source = 'codex'`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: 丢弃 %d 个 codex 容量样本 —— 它们是在 provider 归类错误下算出来的,"+
+			"分子接近 0(ADR-0033/0034);下次启动的 backfill 会从快照与事件重建,计数列未改动", n)
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, codexCapacityResetKey)
 	return err
 }
 
@@ -227,7 +293,13 @@ func migrateEventsDedupKey(db *sql.DB) error {
 	return err
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	rerr := s.rdb.Close()
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	return rerr
+}
 
 // InsertEvents is idempotent: duplicates (same event_id) are ignored, so
 // agents and collectors can safely re-send anything. Returns inserted count.
@@ -302,10 +374,86 @@ func logEventApply(result eventApplyResult) {
 	}
 }
 
+// priorEventState is the mutable state of a row already in the events table,
+// loaded once per batch so the fill/attribution probes below can be skipped
+// when the pre-loaded state proves they would be no-ops (ADR-0030). It carries
+// exactly the columns the guarded UPDATEs read; the token counts are absent
+// because no path here ever touches them.
+type priorEventState struct {
+	genMS, ttftMS, durationMS                   int64
+	sessionID, cwd, repo, gitBranch, appVersion string
+	source, deviceOrigin, provider, dedupKey    string
+}
+
+// loadPriorEventState fetches the current state of every event_id in the batch
+// that already exists. A Codex rollout is re-parsed whole on each growth
+// (FullReparse) and re-delivered verbatim, so the steady state is a batch of
+// hundreds of already-stored, fully-populated duplicates. Reading their state
+// in one indexed query (event_id is the primary key) lets insertEventsFromTx
+// skip the per-row INSERT-OR-IGNORE and the cascade of guarded UPDATE probes
+// for rows that have nothing left to contribute — the difference between one
+// probe per batch and ~eight per row.
+func loadPriorEventState(tx *sql.Tx, events []model.Event) (map[string]priorEventState, error) {
+	ids := make([]string, 0, len(events))
+	seen := make(map[string]struct{}, len(events))
+	for _, e := range events {
+		if e.EventID == "" {
+			continue
+		}
+		if _, ok := seen[e.EventID]; ok {
+			continue
+		}
+		seen[e.EventID] = struct{}{}
+		ids = append(ids, e.EventID)
+	}
+	out := make(map[string]priorEventState, len(ids))
+	// Chunked to stay well under SQLite's bound-parameter limit even for the
+	// largest sink batch.
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		part := ids[start:min(start+chunk, len(ids))]
+		placeholders := make([]byte, 0, len(part)*2)
+		args := make([]any, len(part))
+		for i, id := range part {
+			if i > 0 {
+				placeholders = append(placeholders, ',')
+			}
+			placeholders = append(placeholders, '?')
+			args[i] = id
+		}
+		rows, err := tx.Query(`SELECT event_id, gen_ms, ttft_ms, duration_ms, session_id, cwd, repo,
+			git_branch, app_version, source, device_origin, provider, dedup_key
+			FROM events WHERE event_id IN (`+string(placeholders)+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var st priorEventState
+			if err := rows.Scan(&id, &st.genMS, &st.ttftMS, &st.durationMS, &st.sessionID, &st.cwd, &st.repo,
+				&st.gitBranch, &st.appVersion, &st.source, &st.deviceOrigin, &st.provider, &st.dedupKey); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = st
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // insertEventsFromTx preserves InsertEventsFrom's merge and attribution rules
 // while allowing v2 payload application and its receipt to share one commit.
 func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, origin DeviceOrigin) (eventApplyResult, error) {
 	result := eventApplyResult{}
+	prior, err := loadPriorEventState(tx, events)
+	if err != nil {
+		return result, err
+	}
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
 		(event_id, ts, device, device_origin, source, model, provider, account_label,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -495,11 +643,30 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 		if e.EventID == "" {
 			continue
 		}
-		stored, err := insert(e)
-		if err != nil {
-			return result, err
+		// Pre-loaded state of this row if it already existed when the batch began.
+		// nil means "unknown to the pre-load" — a genuinely new event_id, or an
+		// intra-batch repeat of one just inserted — and every gate below then
+		// falls back to running its probe, i.e. the original behaviour.
+		var known *priorEventState
+		if st, ok := prior[e.EventID]; ok {
+			known = &st
 		}
-		if !stored && e.DedupKey != "" {
+		stored := false
+		if known == nil {
+			// Not present at batch start: attempt the insert. It settles whether
+			// this is a new row or an intra-batch duplicate of one just inserted.
+			var err error
+			stored, err = insert(e)
+			if err != nil {
+				return result, err
+			}
+		}
+		// Fork/dedup decision (ADR-0020). It is skipped only when the pre-loaded
+		// row is proven to already own this exact key: dedup_key is unique, so a
+		// stored row carrying it IS the owner, and keyOwner could only report a
+		// plain repeat — the branch would fall through unchanged.
+		selfOwnsKey := known != nil && e.DedupKey != "" && known.dedupKey == e.DedupKey
+		if !stored && e.DedupKey != "" && !selfOwnsKey {
 			// Refused: either this event_id is known, or another row already
 			// holds this generation. Only the second case needs deciding.
 			var ownerID string
@@ -535,9 +702,15 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 			result.inserted++
 			continue
 		}
-		// Already known: contribute whatever this observation adds.
+		// Already known: contribute whatever this observation adds. Each guarded
+		// UPDATE runs only when the pre-loaded state (when we have it) shows it
+		// could change something. Every skip is provably a no-op — the SQL guard
+		// is the same predicate and would have affected zero rows — so the
+		// accepted/duplicate/mutated counts are identical to running them all.
+		// This is what turns a re-delivered FullReparse batch from ~eight probes
+		// per row into none (ADR-0030).
 		changed := false
-		if e.DedupKey != "" {
+		if e.DedupKey != "" && (known == nil || known.dedupKey == "") {
 			// Backfill for a row written before ADR-0020. It cannot violate the
 			// index here: the branch above has just established that nothing else
 			// holds this key.
@@ -549,7 +722,7 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 				changed = true
 			}
 		}
-		if e.Provider != "" {
+		if e.Provider != "" && (known == nil || model.ProviderRank(e.Provider) > model.ProviderRank(known.provider)) {
 			r, err := reclassify.Exec(e.Provider, e.EventID, model.ProviderRank(e.Provider))
 			if err != nil {
 				return result, err
@@ -561,7 +734,7 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 				result.reclassified[e.Provider] += int(n)
 			}
 		}
-		if origin == OriginSelf && e.Device != "" {
+		if origin == OriginSelf && e.Device != "" && (known == nil || known.deviceOrigin == string(OriginObserved)) {
 			r, err := reattribute.Exec(e.Device, e.EventID)
 			if err != nil {
 				return result, err
@@ -570,7 +743,8 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 				result.reattributed++
 			}
 		}
-		if e.GenMS > 0 || e.TTFTMS > 0 {
+		if (e.GenMS > 0 || e.TTFTMS > 0) &&
+			(known == nil || (known.genMS == 0 && e.GenMS > 0) || (known.ttftMS == 0 && e.TTFTMS > 0)) {
 			r, err := numFill.Exec(e.GenMS, e.TTFTMS, e.EventID)
 			if err != nil {
 				return result, err
@@ -579,7 +753,8 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 				changed = true
 			}
 		}
-		if e.SessionID != "" || e.CWD != "" || e.Repo != "" || e.GitBranch != "" || e.AppVersion != "" {
+		if (e.SessionID != "" || e.CWD != "" || e.Repo != "" || e.GitBranch != "" || e.AppVersion != "") &&
+			(known == nil || textFillNeeded(known, e)) {
 			r, err := textFill.Exec(e.SessionID, e.CWD, e.Repo, e.GitBranch, e.AppVersion, e.EventID)
 			if err != nil {
 				return result, err
@@ -589,14 +764,20 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 			}
 		}
 		if e.Source != "" && e.Source != "proxy" {
-			r, err := promote.Exec(e.Source, e.EventID)
-			if err != nil {
-				return result, err
+			// promote and durFill share this block because both only apply to a
+			// row the proxy created, but they carry independent guards — a codex
+			// row's duration_ms can still be filled while its source is left
+			// alone — so they are gated separately, not as one.
+			if known == nil || known.source == "proxy" {
+				r, err := promote.Exec(e.Source, e.EventID)
+				if err != nil {
+					return result, err
+				}
+				if n, _ := r.RowsAffected(); n > 0 {
+					changed = true
+				}
 			}
-			if n, _ := r.RowsAffected(); n > 0 {
-				changed = true
-			}
-			if e.DurationMS > 0 {
+			if e.DurationMS > 0 && (known == nil || known.durationMS == 0) {
 				r, err := durFill.Exec(e.DurationMS, e.EventID, e.DurationMS)
 				if err != nil {
 					return result, err
@@ -611,4 +792,16 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 		}
 	}
 	return result, nil
+}
+
+// textFillNeeded reports whether any text column the log channel owns is empty
+// on the stored row but present on this observation — the exact predicate of
+// textFill's WHERE clause, evaluated against the pre-loaded state so the UPDATE
+// is skipped when it would touch nothing.
+func textFillNeeded(p *priorEventState, e model.Event) bool {
+	return (p.sessionID == "" && e.SessionID != "") ||
+		(p.cwd == "" && e.CWD != "") ||
+		(p.repo == "" && e.Repo != "") ||
+		(p.gitBranch == "" && e.GitBranch != "") ||
+		(p.appVersion == "" && e.AppVersion != "")
 }

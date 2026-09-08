@@ -109,7 +109,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		q += ` AND device = ?`
 		args = append(args, device)
 	}
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.rdb.Query(q, args...)
 	if err != nil {
 		return out, err
 	}
@@ -203,7 +203,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 
 func speedSourceKey(source string) string {
 	switch source {
-	case "claude-code", "codex":
+	case "claude-code", "codex", "dsh":
 		return source
 	default:
 		return "api"

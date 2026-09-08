@@ -79,7 +79,8 @@ func (s *Server) runCollectors() {
 		}
 		return err
 	}
-	localSpecs := collect.LocalSpecs(s.cfg.Collect.LocalDirs, s.cfg.Collect.CodexDirs)
+	codexProbe := collect.NewCachedCodexProber(s.cfg.Collect.CodexDirs, 10*time.Minute)
+	localSpecs := collect.LocalSpecs(s.cfg.Collect.LocalDirs, s.cfg.Collect.CodexDirs, s.cfg.Collect.DshDirs, codexProbe)
 	// Claude quota arrives through the status line, not an API call
 	// (ADR-0011): Claude Code hands `omnitoken statusline` its own
 	// account-level numbers, which get dropped in a file this reads.

@@ -22,6 +22,12 @@ LiteLLM 定价;statusline。**缺口**(我们的价值):无服务端/多机、�
 | 速度统计 | adapter/codex/speed.rs | service_tier(standard/priority)影响计价与速度口径,M3 参考 |
 | 定价 | — | LiteLLM `model_prices_and_context_window.json`;cache_read 缺失时按 input 价计 cached |
 
+内嵌定价表用 `go run scripts/refresh-pricing.go` 从上游重新裁剪:只留 `pricing.Price`
+读的 5 个 cost 字段,并保持上游键序,让刷新产出可 review 的 diff 而不是一次重排。
+**上游删掉的模型这里跟着删** —— 本地给它续价会和 ccusage 悄悄对不上账,而
+「对得上账」正是把定价源定在 LiteLLM 的全部理由(ADR-0005);要给某个 id 单独定价,
+用配置里的 `pricing_overrides`。
+
 ## token-monitor(github.com/Javis603/token-monitor)
 
 Electron 桌面应用,多机 hub + SSE 实时。**与本项目差异**:桌面形态(服务器错配)、

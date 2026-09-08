@@ -341,6 +341,21 @@ mod tests {
     }
 
     #[test]
+    fn autostart_round_trips_and_reaches_the_view() {
+        for on in [false, true] {
+            let s = Settings {
+                autostart: on,
+                ..Settings::default()
+            };
+            let back: Settings = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+            assert_eq!(back.autostart, on);
+            // The webview toggle pre-fills from the view, so the flag must survive
+            // the crossing the same way the token's existence does.
+            assert_eq!(SettingsView::from(&back).autostart, on);
+        }
+    }
+
+    #[test]
     fn tray_title_round_trips_through_json() {
         for t in [TrayTitle::Off, TrayTitle::Quota, TrayTitle::Speed] {
             let s = Settings {

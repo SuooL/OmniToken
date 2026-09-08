@@ -37,11 +37,20 @@ type ModelDailyRow struct {
 }
 
 // ModelBySource aggregates usage per (model, source) over [from, to).
-// Rows come back grouped by model — models ordered by their total tokens
-// descending, sources within a model likewise — so a stacked bar chart can
-// consume them in order without re-sorting.
+//
+// Model carries the id the tool reported, NOT the display name: the caller
+// prices it, and a folded name is not guaranteed to exist in the pricing table
+// (internal/model/canonical.go, "fold when displaying, never before a price
+// lookup"). Folding here priced `anthropic.claude-sonnet-4-20250514` as
+// `claude-sonnet-4`, which LiteLLM does not carry, so a real model's spend was
+// dropped and it was reported as unpriced.
+//
+// Rows are nonetheless ORDERED by the folded name — models by their folded
+// total tokens descending, then sources within a model, then variants — so the
+// caller can fold and merge in one forward pass and the stacked bars stay
+// grouped.
 func (s *Store) ModelBySource(from, to time.Time) ([]ModelSourceRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, source, `+sums+`,
 		        COALESCE(SUM(cache_1h_tokens),0), COALESCE(SUM(cache_5m_tokens),0),
 		        COALESCE(MIN(ts),0)
@@ -60,32 +69,43 @@ func (s *Store) ModelBySource(from, to time.Time) ([]ModelSourceRow, error) {
 			&r.Cache1h, &r.Cache5m, &r.MinTS); err != nil {
 			return nil, err
 		}
-		// Fold Bedrock/Vertex routing variants onto one model name; the
-		// channel stays visible through provider elsewhere.
-		r.Model = model.CanonicalModel(r.Model)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out = mergeModelSourceRows(out)
 
+	// Ordering keys off the folded name so routing variants of one model sit
+	// together and their volumes are added up before models are ranked — the
+	// same reason ModelDaily folds before its top-N.
+	type slice struct{ model, source string }
+	folded := make(map[string]string, len(out))
 	byModel := map[string]int64{}
+	bySlice := map[slice]int64{}
 	for _, r := range out {
-		byModel[r.Model] += r.TotalTokens
+		f := model.CanonicalModel(r.Model)
+		folded[r.Model] = f
+		byModel[f] += r.TotalTokens
+		bySlice[slice{f, r.Source}] += r.TotalTokens
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if ta, tb := byModel[a.Model], byModel[b.Model]; ta != tb {
+		fa, fb := folded[a.Model], folded[b.Model]
+		if ta, tb := byModel[fa], byModel[fb]; ta != tb {
 			return ta > tb
 		}
-		if a.Model != b.Model {
-			return a.Model < b.Model // stable tie-break on equal volume
+		if fa != fb {
+			return fa < fb // stable tie-break on equal volume
 		}
-		if a.TotalTokens != b.TotalTokens {
-			return a.TotalTokens > b.TotalTokens
+		// Ranked by the merged slice, not by the individual variant, so the two
+		// halves of one routing-split slice cannot be separated by a third.
+		if sa, sb := bySlice[slice{fa, a.Source}], bySlice[slice{fb, b.Source}]; sa != sb {
+			return sa > sb
 		}
-		return a.Source < b.Source
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		return a.Model < b.Model
 	})
 	return out, nil
 }
@@ -98,7 +118,7 @@ func (s *Store) ModelDaily(from, to time.Time, topN int) ([]ModelDailyRow, error
 	if topN <= 0 {
 		topN = defaultModelTopN
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d, model, `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY d, model`,
 		from.UnixMilli(), to.UnixMilli())
@@ -201,35 +221,4 @@ func addTotals(dst *Totals, src Totals) {
 	dst.CacheRead += src.CacheRead
 	dst.CacheCreation += src.CacheCreation
 	dst.TotalTokens += src.TotalTokens
-}
-
-// mergeModelSourceRows collapses rows that became duplicates once their model
-// ids were canonicalised — the same model reaching one source through two
-// routes is still one bar.
-func mergeModelSourceRows(rows []ModelSourceRow) []ModelSourceRow {
-	type key struct{ model, source string }
-	idx := map[key]int{}
-	out := make([]ModelSourceRow, 0, len(rows))
-	for _, r := range rows {
-		k := key{r.Model, r.Source}
-		i, ok := idx[k]
-		if !ok {
-			idx[k] = len(out)
-			out = append(out, r)
-			continue
-		}
-		a := &out[i]
-		a.Events += r.Events
-		a.InputTokens += r.InputTokens
-		a.OutputTokens += r.OutputTokens
-		a.CacheRead += r.CacheRead
-		a.CacheCreation += r.CacheCreation
-		a.TotalTokens += r.TotalTokens
-		a.Cache1h += r.Cache1h
-		a.Cache5m += r.Cache5m
-		if r.MinTS > 0 && (a.MinTS == 0 || r.MinTS < a.MinTS) {
-			a.MinTS = r.MinTS
-		}
-	}
-	return out
 }

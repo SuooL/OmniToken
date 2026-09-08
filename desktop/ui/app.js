@@ -16,6 +16,8 @@ let SERVER = "";
 let HAS_TOKEN = false;
 // Where "完整面板" opens. Empty means "use SERVER", matching the backend fallback.
 let PANEL_URL = "";
+// Whether the app registers itself to launch at login (LaunchAgent).
+let AUTOSTART = false;
 let latestLive = null;
 let latestTelemetry = null;
 let telemetryError = "";
@@ -33,6 +35,7 @@ const CONNECTION_LABEL = {
 const sourceName = (source) => ({
   "claude-code": "Claude",
   codex: "Codex",
+  dsh: "DeepSeek",
   api: "Other/API",
   proxy: "Other/API",
   "openai-api": "Other/API",
@@ -167,7 +170,7 @@ const QUOTA_BASIS = {
   weekly: { percent: "weekly_percent", label: "周" },
 };
 
-const SOURCE_TONE = { "claude-code": "claude", codex: "codex" };
+const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
 
 // Whole percent, matching how the Live page writes the same authoritative
 // numbers. A quota moves in points, not in tenths.
@@ -360,6 +363,7 @@ function renderAll() {
   renderHero();
   renderUsageCard("claude-code", "claude");
   renderUsageCard("codex", "codex");
+  renderUsageCard("dsh", "dsh");
   renderQuotas();
   renderSpeedLanes();
   renderStats();
@@ -401,6 +405,7 @@ const settingsEls = {
   input: $("server-input"),
   token: $("token-input"),
   panel: $("panel-input"),
+  autostart: $("autostart-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
 };
@@ -418,6 +423,7 @@ function openSettings() {
     ? "已保存访问令牌；留空保持不变"
     : "服务端只监听本机时留空";
   settingsEls.panel.value = PANEL_URL;
+  settingsEls.autostart.checked = AUTOSTART;
   settingsMessage("");
   settingsEls.main.hidden = true;
   settingsEls.settings.hidden = false;
@@ -441,10 +447,12 @@ async function saveSettings() {
       server: settingsEls.input.value,
       token: settingsEls.token.value,
       panelUrl: settingsEls.panel.value,
+      autostart: settingsEls.autostart.checked,
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
     PANEL_URL = stored.panel_url;
+    AUTOSTART = !!stored.autostart;
     latestTelemetry = null;
     closeSettings();
   } catch (error) {
@@ -477,6 +485,7 @@ async function boot() {
   SERVER = stored.server;
   HAS_TOKEN = !!stored.has_token;
   PANEL_URL = stored.panel_url || "";
+  AUTOSTART = !!stored.autostart;
   await listen("live", (event) => onLive(event.payload));
   await listen("open-settings", openSettings);
   await pullTelemetry();

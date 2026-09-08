@@ -30,7 +30,7 @@ type ProviderUsage struct {
 // UsageByProvider aggregates [from, to) grouped by (source, provider, model)
 // so callers can classify and price each slice.
 func (s *Store) UsageByProvider(from, to time.Time) ([]ProviderUsage, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT source, provider, model,
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
 		        COALESCE(SUM(output_tokens),0), COUNT(*),
@@ -92,7 +92,7 @@ type ChannelRow struct {
 // first place. The rows partition the period — each event lands in exactly one
 // channel — so the four Events counts add up to the period's event count.
 func (s *Store) ChannelBreakdown(from, to time.Time) ([]ChannelRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT provider, `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY provider`,
 		from.UnixMilli(), to.UnixMilli())

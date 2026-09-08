@@ -57,6 +57,7 @@ type Config struct {
 	DeviceName        string
 	ClaudeDirs        []string
 	CodexDirs         []string
+	DshDirs           []string
 	StatePath         string
 	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
 	// Claude's quota is read from the rate-limits file beside it (ADR-0011).
@@ -127,11 +128,14 @@ type Agent struct {
 	state  *collect.State
 	client *http.Client
 	probe  func() collect.ClaudeAuthProbe
-	outbox *Outbox
-	bootID string
-	sleep  func(time.Duration)
-	jitter func() float64
-	now    func() time.Time
+	// codexProbe answers which Codex model_provider ids spend the ChatGPT
+	// subscription on THIS machine (ADR-0033); nil outside a real agent.
+	codexProbe func() collect.CodexAuthProbe
+	outbox     *Outbox
+	bootID     string
+	sleep      func(time.Duration)
+	jitter     func() float64
+	now        func() time.Time
 	// procs is a seam for tests; nil means collect.LiveProcesses.
 	procs func(device string, now time.Time) (model.ProcReport, error)
 	// quotaReader picks up what the status line captured for Claude (ADR-0011);
@@ -168,13 +172,14 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	agent := &Agent{
-		cfg:    cfg,
-		state:  st,
-		client: httpClient,
-		probe:  collect.NewCachedProber(10 * time.Minute),
-		sleep:  time.Sleep,
-		jitter: mathrand.Float64,
-		now:    time.Now,
+		cfg:        cfg,
+		state:      st,
+		client:     httpClient,
+		probe:      collect.NewCachedProber(10 * time.Minute),
+		codexProbe: collect.NewCachedCodexProber(cfg.CodexDirs, 10*time.Minute),
+		sleep:      time.Sleep,
+		jitter:     mathrand.Float64,
+		now:        time.Now,
 	}
 	if cfg.ProtocolVersion == model.IngestProtocolV2 {
 		if cfg.DeviceID == "" || cfg.DeviceToken == "" {
@@ -260,7 +265,7 @@ func (a *Agent) RunOnce() (int, error) {
 }
 
 func (a *Agent) scanOnce() (int, error) {
-	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs)
+	specs := collect.LocalSpecs(a.cfg.ClaudeDirs, a.cfg.CodexDirs, a.cfg.DshDirs, a.codexProbe)
 	sink := func(events []model.Event) error {
 		collect.RefineProvider(events, a.probe) // local logs only (F9)
 		return a.push(events)

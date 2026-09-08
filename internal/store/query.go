@@ -35,7 +35,7 @@ const sums = `COUNT(*),
 
 func (s *Store) Summary(from, to time.Time) (Totals, error) {
 	var t Totals
-	err := s.db.QueryRow(
+	err := s.rdb.QueryRow(
 		`SELECT `+sums+` FROM events WHERE ts >= ? AND ts < ?`,
 		from.UnixMilli(), to.UnixMilli(),
 	).Scan(&t.Events, &t.InputTokens, &t.OutputTokens, &t.CacheRead, &t.CacheCreation, &t.TotalTokens)
@@ -44,7 +44,7 @@ func (s *Store) Summary(from, to time.Time) (Totals, error) {
 
 // Daily buckets events by local calendar day.
 func (s *Store) Daily(from, to time.Time) ([]BucketRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT date(ts/1000, 'unixepoch', 'localtime') AS d, `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY d ORDER BY d`,
 		from.UnixMilli(), to.UnixMilli())
@@ -75,7 +75,7 @@ type ModelUsageRow struct {
 }
 
 func (s *Store) ModelUsage(from, to time.Time) ([]ModelUsageRow, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT model, provider, `+sums+`,
 		        COALESCE(SUM(cache_1h_tokens),0), COALESCE(SUM(cache_5m_tokens),0), COALESCE(MIN(ts),0)
 		 FROM events WHERE ts >= ? AND ts < ? GROUP BY model, provider`,
@@ -120,7 +120,7 @@ func (s *Store) Breakdown(dim string, from, to time.Time, limit int) ([]Breakdow
 	if dim == "model" {
 		sqlLimit = -1
 	}
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT `+col+` AS k, COALESCE(MAX(ts),0), `+sums+`
 		 FROM events WHERE ts >= ? AND ts < ?
 		 GROUP BY k

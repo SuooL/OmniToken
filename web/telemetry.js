@@ -103,6 +103,7 @@ function sourceLabelA2(source) {
   return {
     "claude-code": "Claude",
     codex: "Codex",
+    dsh: "DeepSeek",
     api: "Other/API",
   }[source] || sourceLabel(source);
 }

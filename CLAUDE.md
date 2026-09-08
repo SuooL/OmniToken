@@ -10,6 +10,31 @@ make release    # 交叉编译五平台到 dist/
 
 调试时可单跑 `make vet` / `make test` / `make cover`。
 
+菜单栏应用(macOS):
+
+```sh
+make desktop-check    # 改 desktop/ 后跑:同步检查 + node 测试 + clippy + cargo test
+make desktop-install  # 构建 → 装进 /Applications → 重启 → 验证只有一个实例
+```
+
+`desktop-install` 需要更新签名私钥 `~/.omnitoken/tauri-updater.key`(ADR-0035 之后
+打包会顺带产出并签名 updater 的 `.tar.gz`,没有私钥直接构建失败)。路径可用
+`DESKTOP_SIGNING_KEY=...` 覆盖。**注意 `make desktop-check` 和 `make check` 都不构建
+bundle**,所以改了 `desktop/src-tauri/tauri.conf.json` 之后必须另外跑一次
+`make desktop-install` —— 打包期的失败这两个门禁都拦不住(实测踩过)。
+
+菜单栏还能**自己更新**(ADR-0035):应用每 6 小时、以及菜单里点「检查更新…」时,
+去 GitHub Releases 读签名清单,自己下载替换并重启。发布由 `release.yml` 的 `desktop`
+job 产出签名产物,依赖 `TAURI_SIGNING_PRIVATE_KEY` 这个仓库 secret —— **私钥丢了,
+所有已安装副本就再也更新不了**(它们信任的公钥是编进 bundle 的)。
+
+`make desktop-install` 仍然有用:开发时验证本地改动,不必等发一个版本。
+
+**升级本机的菜单栏一律用 `make desktop-install`,不要手工 `cargo tauri build` 完就以为
+装好了** —— 它只写 `target/release/bundle`,不碰 `/Applications`,而运行和开机自启
+(`~/Library/LaunchAgents/OmniToken.plist`)都指向 `/Applications`。漏掉这一步不会报错,
+只是继续跑旧版本:实测有过一份 bundle 比改了 `desktop/ui` 的提交旧四小时,两周没人发现。
+
 ## 架构与依赖方向
 
 ```
@@ -43,6 +68,7 @@ internal/agent        推送 + 中继
 |------|---------|
 | `internal/parser/claudecode/parser.go` | `message.id` + `requestId` |
 | `internal/parser/codex/parser.go` | rollout + 时间戳 + 序号(`token_count` 行无 message id) |
+| `internal/parser/dsh/parser.go` | session id + 行序号 `seq`(`seq` 每会话唯一,ADR-0029) |
 | `internal/proxy/proxy.go` | 能认出同一次请求时复用日志的 id(`message.id` + `request-id`,ADR-0013);认不出时用 设备 + 前缀 + 起始纳秒 + 序号 |
 
 背景见 `docs/adr/0004-event-identity.md`。
@@ -132,6 +158,37 @@ gh pr create --base dev
 ```
 
 CI 跑 `make check`,绿了自动合并并删除分支。
+
+### 开 PR 之前必须在**这条分支上**跑过 `make check`
+
+不是「在别的分支上跑过」、不是「改动看起来无害」、不是「只改了文档」——
+**就是这条要推的分支,在推之前,本地跑一次 `make check` 并且是绿的**。
+
+`make check` 与 CI 跑的是同一条命令,所以本地红 = CI 必红 = PR 卡住,
+而等 CI 告诉你一轮要几分钟。纯文档 PR 也不例外:`make check` 里包含
+`web` 包的 DOM/语义测试,面板文案与结构的改动会被它拦下。
+
+涉及 `desktop/` 时再加 `make desktop-check` 与实际 Tauri bundle 构建。
+
+### 主 checkout 只读
+
+用 worktree 时,主 checkout(`~/git/OmniToken`)**停在 `dev`,只用来读**。
+不在它里面改文件,也不在它里面跑 `make check` 当作验证结果 —— 那验的是 `dev`,
+不是你的改动。所有 git 写操作显式带 `-C <worktree>`,别依赖当前目录。
+
+### branch-guard 钩子的两个误拦
+
+`~/.claude/hooks/git-branch-guard.sh` 匹配命令里的 `git ... commit|push`,
+再拿**会话主工作目录**(= 主 checkout,通常在 `dev`)的分支判定。两个后果:
+
+- **从 worktree 提交会被误拦**。合法绕法(确实没在 `dev` 上提交):单独一次调用
+  `git switch --detach HEAD` 把主 checkout detach → 再
+  `git -C <worktree> commit … && git -C <worktree> push …` → 完事 `git switch dev` 还原。
+  `gh pr create` 不匹配钩子,任何时候都能跑。
+- **`git stash push` 会被误拦**(命令里有 "push")。要临时回退文件去验证「测试先行」
+  确实先红,用 `cp` 备份 + `git -C <worktree> checkout HEAD -- <文件>`,验完再 `cp` 回来。
+
+被钩子拦下时,正确反应是换合规的做法,**不是** 换个写法去绕过分支保护。
 
 ## 什么算做完
 

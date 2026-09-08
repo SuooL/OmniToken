@@ -462,7 +462,7 @@ import {dirname, join} from 'node:path';
 const root = dirname(fileURLToPath(import.meta.url));
 function load(name, extra = {}) {
   const document = {getElementById() { return {addEventListener() {}}; }};
-  const context = vm.createContext({console, Headers, URL, Blob, TypeError, document, ...extra});
+  const context = vm.createContext({console, Headers, URL, Blob, TypeError, document, AbortController, setTimeout, clearTimeout, ...extra});
   vm.runInContext(readFileSync(join(root, name), 'utf8'), context, {filename: name});
   return context;
 }
@@ -485,6 +485,23 @@ test('apiFetch wraps transport TypeError and classifier does not mislabel render
   await assert.rejects(run(context, 'apiFetch("/api/test")'), (error) =>
     error.name === 'APIError' && error.status === 0);
   assert.notEqual(run(context, 'classifyAPIError(new TypeError("render bug")).title'), '服务不可达');
+});
+
+test('a request that never returns times out as an APIError instead of hanging', async () => {
+  // The abort fires against the fetch signal; a real browser rejects with an
+  // AbortError, which must surface as an APIError so the caller's catch runs and
+  // the view shows a failure instead of a permanent loading banner.
+  const context = load('api.js', {
+    localStorage: {getItem() { return ''; }},
+    fetch: async (url, init) => {
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      if (init && init.signal) { throw e; }
+      return {ok: true, status: 200, json: async () => ({})};
+    },
+  });
+  await assert.rejects(run(context, 'apiFetch("/api/v1/overview", {timeoutMs: 15000})'), (error) =>
+    error.name === 'APIError' && error.status === 0 && /超时/.test(error.message));
 });
 
 test('scoped tokens migrate missing admin key but preserve explicit empty admin', () => {

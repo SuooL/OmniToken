@@ -25,6 +25,7 @@ type Server struct {
 	state                 *collect.State
 	prices                *pricing.Table
 	bcast                 *broadcaster
+	readCache             *respCache
 	now                   func() time.Time
 	streamRefreshInterval time.Duration
 	// hostname is os.Hostname with a seam for tests. It is consulted only to
@@ -47,6 +48,7 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 	srv := &Server{cfg: cfg, store: st, state: state, prices: prices, bcast: newBroadcaster()}
+	srv.readCache = newRespCache(srv.currentTime)
 	// Apply pricing overrides saved through the settings page (they win over
 	// config file entries) before serving anything.
 	if err := srv.ReloadPricing(); err != nil {
@@ -394,9 +396,77 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOverview returns everything the M1 dashboard needs in one call.
+// Short TTLs for the two heaviest read endpoints (ADR-0028). They bound how
+// stale the dashboard can be while letting concurrent polls share one
+// computation. Live is more time-sensitive (burn rate, current sessions) so it
+// gets a tighter window than the accumulate-and-trend overview.
+const (
+	overviewCacheTTL = 10 * time.Second
+	liveCacheTTL     = 3 * time.Second
+	// allTimeCacheTTL is deliberately much longer than overviewCacheTTL. The two
+	// all-time panels (lifetime Summary and lifetime cost) are the only overview
+	// queries with no ts bound, so each is a full-table scan — measured as the
+	// ~17s fixed floor of a cold overview on the hub (ADR-0031). A lifetime total
+	// moves imperceptibly between requests, so recomputing it at most once a
+	// minute — rather than on every 10s overview miss — takes that scan off the
+	// hot path without any risk of a drifting incremental aggregate.
+	allTimeCacheTTL = 60 * time.Second
+)
+
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 30)
-	now := time.Now()
+	body, err := s.cachedJSON(fmt.Sprintf("overview:%d", days), overviewCacheTTL, func() ([]byte, error) {
+		resp, err := s.computeOverview(days)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(resp)
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
+// allTimeOverview bundles the two lifetime panels so one cache entry covers the
+// full-table-scan pair (ADR-0031).
+type allTimeOverview struct {
+	Totals store.Totals `json:"totals"`
+	Cost   PeriodCost   `json:"cost"`
+}
+
+// cachedAllTime returns the lifetime Summary and lifetime cost, recomputed at
+// most once per allTimeCacheTTL. Both are unbounded scans; the upper bound only
+// ever sits in the future, so a slightly stale `end` still covers every stored
+// event — the only thing that ages is how recently a just-arrived event is
+// reflected in the lifetime total, which is exactly the staleness being traded
+// for taking the scan off the hot path.
+func (s *Server) cachedAllTime(end time.Time) (store.Totals, PeriodCost, error) {
+	body, err := s.cachedJSON("overview:all_time", allTimeCacheTTL, func() ([]byte, error) {
+		totals, e := s.store.Summary(time.UnixMilli(0), end)
+		if e != nil {
+			return nil, e
+		}
+		cost, e := s.periodCost(time.UnixMilli(0), end)
+		if e != nil {
+			return nil, e
+		}
+		return json.Marshal(allTimeOverview{Totals: totals, Cost: cost})
+	})
+	if err != nil {
+		return store.Totals{}, PeriodCost{}, err
+	}
+	var at allTimeOverview
+	if err := json.Unmarshal(body, &at); err != nil {
+		return store.Totals{}, PeriodCost{}, err
+	}
+	return at.Totals, at.Cost, nil
+}
+
+func (s *Server) computeOverview(days int) (map[string]any, error) {
+	now := s.currentTime()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekStart := dayStart.AddDate(0, 0, -int((now.Weekday()+6)%7)) // Monday
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
@@ -418,8 +488,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	put("week", week, e)
 	month, e := s.store.Summary(monthStart, end)
 	put("month", month, e)
-	all, e := s.store.Summary(time.UnixMilli(0), end)
-	put("all_time", all, e)
+	// all-time Summary and cost share one longer-lived cache entry (ADR-0031):
+	// both are unbounded full-table scans, and computing them together means the
+	// scan pair runs at most once per allTimeCacheTTL instead of on every miss.
+	allTotals, allCost, e := s.cachedAllTime(end)
+	put("all_time", allTotals, e)
 	daily, e := s.store.Daily(rangeStart, end)
 	put("daily", daily, e)
 	for _, dim := range []string{"device", "model", "repo", "provider", "source"} {
@@ -442,8 +515,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	channels, e := s.store.ChannelBreakdown(rangeStart, end)
 	put("by_channel", channels, e)
 	// Costs (ADR-0005): real vs equivalent per period; per-model over the range.
-	costs := map[string]PeriodCost{}
-	for key, start := range map[string]time.Time{"today": dayStart, "week": weekStart, "month": monthStart, "all_time": time.UnixMilli(0)} {
+	costs := map[string]PeriodCost{"all_time": allCost}
+	for key, start := range map[string]time.Time{"today": dayStart, "week": weekStart, "month": monthStart} {
 		pc, e := s.periodCost(start, end)
 		if err == nil && e != nil {
 			err = e
@@ -473,12 +546,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	resp["work_matrix"] = workMatrix
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	resp["days"] = days
 	resp["generated_at"] = now.UnixMilli()
-	writeJSON(w, resp)
+	return resp, nil
 }
 
 func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {

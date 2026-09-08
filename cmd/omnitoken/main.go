@@ -185,6 +185,10 @@ func runAgent(args []string) {
 	if len(codexDirs) == 0 {
 		codexDirs = server.DefaultLocalCodexDirs()
 	}
+	dshDirs := fc.DshDirs
+	if len(dshDirs) == 0 {
+		dshDirs = server.DefaultLocalDshDirs()
+	}
 	intervalSec := *interval
 	if intervalSec <= 0 {
 		intervalSec = fc.IntervalSeconds
@@ -224,6 +228,7 @@ func runAgent(args []string) {
 		Since:               since,
 		ClaudeDirs:          claudeDirs,
 		CodexDirs:           codexDirs,
+		DshDirs:             dshDirs,
 		StatePath:           statePath,
 		StatuslineCachePath: statuslineCachePath,
 		Interval:            time.Duration(intervalSec) * time.Second,

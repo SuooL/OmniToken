@@ -381,7 +381,7 @@ func setSettingsJSONTx(tx *sql.Tx, key string, v any) error {
 // identities for one machine. Observed rows are excluded — a mirror's guess
 // about some other host says nothing about who we are.
 func (s *Store) SelfReportedDevices() ([]string, error) {
-	rows, err := s.db.Query(
+	rows, err := s.rdb.Query(
 		`SELECT DISTINCT device FROM events
 		 WHERE device_origin = 'self' AND device != '' ORDER BY device`)
 	if err != nil {

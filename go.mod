@@ -3,6 +3,7 @@ module github.com/suool/omnitoken
 go 1.26
 
 require (
+	github.com/klauspost/compress v1.19.2
 	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.54.0
 )
