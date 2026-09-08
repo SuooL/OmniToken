@@ -10,6 +10,18 @@ make release    # 交叉编译五平台到 dist/
 
 调试时可单跑 `make vet` / `make test` / `make cover`。
 
+菜单栏应用(macOS):
+
+```sh
+make desktop-check    # 改 desktop/ 后跑:同步检查 + node 测试 + clippy + cargo test
+make desktop-install  # 构建 → 装进 /Applications → 重启 → 验证只有一个实例
+```
+
+**升级本机的菜单栏一律用 `make desktop-install`,不要手工 `cargo tauri build` 完就以为
+装好了** —— 它只写 `target/release/bundle`,不碰 `/Applications`,而运行和开机自启
+(`~/Library/LaunchAgents/OmniToken.plist`)都指向 `/Applications`。漏掉这一步不会报错,
+只是继续跑旧版本:实测有过一份 bundle 比改了 `desktop/ui` 的提交旧四小时,两周没人发现。
+
 ## 架构与依赖方向
 
 ```
