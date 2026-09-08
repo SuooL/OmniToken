@@ -53,8 +53,22 @@ pub fn schedule(app: AppHandle<Wry>) {
             match check_and_install(&app).await {
                 Outcome::UpToDate => log::info!("update: 已是最新"),
                 Outcome::Installed { version } => {
-                    // Nothing after this line runs: the process is replaced.
+                    // Installing replaces the BUNDLE; it does not touch the
+                    // running process. Measured against the real v0.2.0 release:
+                    // the app on disk went 0.1.0 -> 0.2.0 while the pid never
+                    // changed. Without the restart below a menubar app that sits
+                    // there for weeks would keep running the old code
+                    // indefinitely — the update would land and never apply.
+                    //
+                    // Restarting unannounced is acceptable here for the reason
+                    // check_now gives: an accessory with no documents and no
+                    // unsaved state, where the visible cost is the tray icon
+                    // blinking. It is still announced, because a menubar item
+                    // vanishing and reappearing with no explanation reads as a
+                    // crash.
                     log::info!("update: 已安装 {version},正在重启");
+                    notify(&app, "OmniToken 已更新", format!("{version},正在重启"));
+                    app.restart();
                 }
                 // A failed check is not an error the user needs to see — the
                 // network is allowed to be down. It is logged and retried on the
