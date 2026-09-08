@@ -4,6 +4,13 @@
 *.db-wal
 /dist/
 
+# Secrets — never commit signing keys. The updater's Ed25519 private key lives
+# outside the repo (~/.omnitoken/) and in a CI secret; these patterns are the
+# belt to that pair of braces.
+*.pem
+*.key
+tauri-updater.key*
+
 # machine-local, not project config
 .DS_Store
 .claude/settings.local.json

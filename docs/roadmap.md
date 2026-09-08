@@ -253,6 +253,14 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | dsh 日志解析(F27 / ADR-0029) | ✅ 完成 | 被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件;token 直取 `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`(`inputTokens` 已是非缓存输入,不减;`reasoningTokens` 是 output 子集不另计);模型/provider 取同 step 的 `request/context`;`event_id = "dsh:"+sha1(session_id\|seq\|四分量)` 幂等,golden 测试钉死;source=`dsh`,provider 原样保留、一律非订阅(dsh 均经用户配置 key)。新增纯 Go `klauspost/compress` zstd 依赖,`FullReparse` + `listJSONL` 放行 `*.jsonl.zstd`,SSH 镜像同步加 dsh。实测本机 7 会话 / 208 用量记录 |
 | dsh 前端专属卡片/配色 | 未实施 | dsh 已计入所有聚合(总量/按模型/设备/项目、报表、明细、速度页独立分桶),但总览页「近 5h 来源卡」仍只硬编码 claude-code/codex 两张;后续补 dsh 卡与 `--source-dsh` 色板 |
 
+## M12 — 菜单栏发布与自更新(2026-09-08 起)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| `make desktop-install`(#119) | ✅ 完成 | `cargo tauri build` 只写 `target/release/bundle`,不碰 `/Applications` —— 手工升级的静默失败模式:构建成功、应用继续跑旧代码、哪里都不报错(实测在跑的 bundle 比改了 `desktop/ui` 的提交早四小时,两周没发现)。目标做完构建→ditto→重启,并**验证实例数为 1 且路径是 `/Applications`**,否则退非零。`--bundles app` 跳过 dmg:`bundle_dmg.sh` 要挂载卷,上次残留的挂载会让下次失败 |
+| 应用内自更新(F24 / ADR-0035) | ✅ 完成 | 照搬同机 OmniStats 的 Sparkle 方案,换成 `tauri-plugin-updater`:Ed25519 签名的 `latest.json` 作为 Release 资产(静态重定向,不碰限流的 REST API),公钥编进 bundle,私钥只在 CI secret。定时 6h + 菜单「检查更新…」。**实测**:ad-hoc 签名的 app 能自我替换(0.1.0→0.1.1 约 1 秒)、替换后无 `com.apple.quarantine`、能正常启动;release 构建强制 https(端点写成 http 会让应用启动即 panic,已加 3 条契约测试挡住) |
+| 发布 job:desktop bundle | ⚠️ 未经真实发布验证 | `release.yml` 加 `desktop` job(macos-14,`needs: release`),同 tag 构建签名、生成 latest.json、挂到同一个 Release。本地验证覆盖应用侧与签名产物;**workflow 本身要等第一次真实发版才算跑通**。需先在仓库加 `TAURI_SIGNING_PRIVATE_KEY` secret |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试

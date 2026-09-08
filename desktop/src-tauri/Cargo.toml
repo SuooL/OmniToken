@@ -47,6 +47,13 @@ tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+# updater + process: check GitHub Releases for a signed newer bundle, install it,
+# and relaunch. Modelled on the sibling OmniStats project, which does the same
+# with Sparkle: an EdDSA-signed manifest published as a release asset, the
+# private key living only in a CI secret. The static manifest matters — it keeps
+# the check off the rate-limited GitHub REST API.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # The webview runs on tauri://localhost while the server sits elsewhere, and
 # the server deliberately sends no CORS headers (ADR-0008: its read endpoints
 # are unauthenticated, so allowing arbitrary origins would expose usage data to

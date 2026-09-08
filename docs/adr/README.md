@@ -39,3 +39,4 @@ ADR 标注 supersedes,不改写历史。
 | [0032](0032-cross-scan-delivery-dedup.md) | FullReparse 跨扫描交付去重:持久化每块内容 key,跳过未变块 | 已采纳 |
 | [0033](0033-codex-provider-from-config.md) | Codex 订阅归类改用 config.toml 的 `requires_openai_auth`,不再只认 provider 名 | 已采纳 |
 | [0034](0034-capacity-anchored-on-live-window.md) | 窗口余量锚在当前窗口的官方百分比上,历史估计降为先验(修订 0025) | 已采纳 |
+| [0035](0035-desktop-in-app-update.md) | 菜单栏应用自更新:GitHub Releases 上的签名清单,应用自己下载替换 | 已采纳 |

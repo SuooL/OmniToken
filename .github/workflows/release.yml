@@ -35,6 +35,8 @@ jobs:
   release:
     name: release-to-main
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.next }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,5 +141,104 @@ jobs:
             --title "${{ steps.version.outputs.next }}" \
             --notes-file release-notes.md \
             dist/omnitoken-* dist/SHA256SUMS scripts/install.sh scripts/install.ps1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The menubar app ships from the same tag, on a macOS runner because a .app
+  # bundle cannot be cross-compiled. It runs after the release exists so the
+  # artifacts can be attached to it rather than creating a second one.
+  #
+  # `latest.json` is what the in-app updater reads (ADR-0035). It is published as
+  # a release asset so the check resolves through
+  # releases/latest/download/latest.json — a static redirect, not the
+  # rate-limited REST API. Same arrangement as the sibling OmniStats project.
+  desktop:
+    name: desktop-bundle
+    needs: release
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.version }}
+
+      # The bundle carries its version in two files, and the updater compares
+      # the one baked into the app against the manifest. If they disagree the
+      # app either re-installs forever or never updates, so both are set from
+      # the tag rather than maintained by hand.
+      - name: Stamp version from the tag
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.release.outputs.version }}"
+          VERSION="${VERSION#v}"
+          python3 - "$VERSION" <<'PY'
+          import json, re, sys
+          version = sys.argv[1]
+          p = "desktop/src-tauri/tauri.conf.json"
+          conf = json.load(open(p))
+          conf["version"] = version
+          json.dump(conf, open(p, "w"), indent=2, ensure_ascii=False)
+          open(p, "a").write("\n")
+          c = "desktop/src-tauri/Cargo.toml"
+          src = open(c).read()
+          open(c, "w").write(re.sub(r'^version = "[^"]+"', f'version = "{version}"', src, count=1, flags=re.M))
+          PY
+          echo "stamped $VERSION"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Signed here, verified in the app against the public key compiled into
+      # the bundle. The private half exists only as this secret — losing it
+      # means no installed copy can ever be updated again, because the pubkey it
+      # trusts is baked in.
+      - name: Build signed bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is empty — generate a key with \`cargo tauri signer generate\` and add it before releasing."
+            exit 1
+          fi
+          cd desktop/src-tauri && cargo tauri build --bundles app
+
+      - name: Write latest.json
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.release.outputs.version }}"
+          OUT=desktop/src-tauri/target/release/bundle/macos
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 - "$VERSION" "$OUT" "$PUB_DATE" <<'PY'
+          import json, pathlib, sys
+          tag, out, pub_date = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
+          sig = (out / "OmniToken.app.tar.gz.sig").read_text().strip()
+          url = f"https://github.com/${{ github.repository }}/releases/download/{tag}/OmniToken.app.tar.gz"
+          # Both macOS arches point at the same bundle: the runner builds for its
+          # own arch, and an Intel Mac running it under Rosetta is still served a
+          # working app. Publishing only darwin-aarch64 would make the updater
+          # report "up to date" on an Intel Mac forever, which is worse.
+          entry = {"signature": sig, "url": url}
+          json.dump({
+              "version": tag.lstrip("v"),
+              "pub_date": pub_date,
+              "platforms": {"darwin-aarch64": entry, "darwin-x86_64": entry},
+          }, open("latest.json", "w"), indent=2)
+          PY
+          cat latest.json
+
+      - name: Attach to the release
+        run: |
+          gh release upload "${{ needs.release.outputs.version }}" \
+            desktop/src-tauri/target/release/bundle/macos/OmniToken.app.tar.gz \
+            desktop/src-tauri/target/release/bundle/macos/OmniToken.app.tar.gz.sig \
+            latest.json --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

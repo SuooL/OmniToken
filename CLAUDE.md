@@ -17,6 +17,13 @@ make desktop-check    # 改 desktop/ 后跑:同步检查 + node 测试 + clippy 
 make desktop-install  # 构建 → 装进 /Applications → 重启 → 验证只有一个实例
 ```
 
+菜单栏还能**自己更新**(ADR-0035):应用每 6 小时、以及菜单里点「检查更新…」时,
+去 GitHub Releases 读签名清单,自己下载替换并重启。发布由 `release.yml` 的 `desktop`
+job 产出签名产物,依赖 `TAURI_SIGNING_PRIVATE_KEY` 这个仓库 secret —— **私钥丢了,
+所有已安装副本就再也更新不了**(它们信任的公钥是编进 bundle 的)。
+
+`make desktop-install` 仍然有用:开发时验证本地改动,不必等发一个版本。
+
 **升级本机的菜单栏一律用 `make desktop-install`,不要手工 `cargo tauri build` 完就以为
 装好了** —— 它只写 `target/release/bundle`,不碰 `/Applications`,而运行和开机自启
 (`~/Library/LaunchAgents/OmniToken.plist`)都指向 `/Applications`。漏掉这一步不会报错,
