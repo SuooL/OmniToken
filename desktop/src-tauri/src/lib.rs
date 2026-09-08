@@ -347,13 +347,22 @@ pub fn run() {
             open_full_panel
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Logging in release builds too, at warn, and info for the
+            // updater. A feature that replaces the app's own binary has to be
+            // observable when it misbehaves: debugging an update that silently
+            // did nothing, on a build with logging compiled out, is guesswork.
+            // Everything else stays quiet — this writes to a file the user
+            // never asked for.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Info
+                    } else {
+                        log::LevelFilter::Warn
+                    })
+                    .level_for("omnitoken_desktop_lib::update", log::LevelFilter::Info)
+                    .build(),
+            )?;
 
             // Accessory: menubar-only, no dock icon and no app-switcher entry.
             // See show_panel for the activation this makes necessary.
