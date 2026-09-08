@@ -22,6 +22,9 @@ SHARED_UI := tokens.css format-core.js
 DESKTOP_APP    := /Applications/OmniToken.app
 DESKTOP_BUNDLE := desktop/src-tauri/target/release/bundle/macos/OmniToken.app
 DESKTOP_PLIST  := $(HOME)/Library/LaunchAgents/OmniToken.plist
+# The updater's Ed25519 private key (ADR-0035). Outside the repo on purpose;
+# CI uses the TAURI_SIGNING_PRIVATE_KEY secret instead of this file.
+DESKTOP_SIGNING_KEY ?= $(HOME)/.omnitoken/tauri-updater.key
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/omnitoken
@@ -116,7 +119,22 @@ desktop-sync-check:
 desktop-install: desktop-check
 	@[ "$$(uname)" = "Darwin" ] || { echo "desktop-install 只支持 macOS"; exit 1; }
 	@[ -f "$(DESKTOP_PLIST)" ] || { echo "找不到自启配置 $(DESKTOP_PLIST)"; exit 1; }
-	cd desktop/src-tauri && cargo tauri build --bundles app
+	@# Since ADR-0035 the bundler also emits the updater's .tar.gz and signs it,
+	@# so a build with a pubkey configured but no private key available fails
+	@# outright ("A public key has been found, but no private key"). Checking
+	@# here turns that into one sentence naming the file, instead of a cargo
+	@# error 200 lines into the log.
+	@[ -f "$(DESKTOP_SIGNING_KEY)" ] || { \
+		echo "找不到更新签名私钥 $(DESKTOP_SIGNING_KEY)"; \
+		echo "  生成:cargo tauri signer generate -w $(DESKTOP_SIGNING_KEY)"; \
+		echo "  生成后公钥要同步进 desktop/src-tauri/tauri.conf.json 的 plugins.updater.pubkey"; \
+		echo "  —— 换了密钥对,已安装的旧副本就再也验不过新包(ADR-0035)"; \
+		exit 1; \
+	}
+	cd desktop/src-tauri && \
+		TAURI_SIGNING_PRIVATE_KEY="$$(cat $(DESKTOP_SIGNING_KEY))" \
+		TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+		cargo tauri build --bundles app
 	@[ -d "$(DESKTOP_BUNDLE)" ] || { echo "构建产物不存在: $(DESKTOP_BUNDLE)"; exit 1; }
 	ditto "$(DESKTOP_BUNDLE)" "$(DESKTOP_APP)"
 	@echo "--- 重启菜单栏 ---"

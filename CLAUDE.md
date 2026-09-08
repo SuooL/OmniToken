@@ -17,6 +17,12 @@ make desktop-check    # 改 desktop/ 后跑:同步检查 + node 测试 + clippy 
 make desktop-install  # 构建 → 装进 /Applications → 重启 → 验证只有一个实例
 ```
 
+`desktop-install` 需要更新签名私钥 `~/.omnitoken/tauri-updater.key`(ADR-0035 之后
+打包会顺带产出并签名 updater 的 `.tar.gz`,没有私钥直接构建失败)。路径可用
+`DESKTOP_SIGNING_KEY=...` 覆盖。**注意 `make desktop-check` 和 `make check` 都不构建
+bundle**,所以改了 `desktop/src-tauri/tauri.conf.json` 之后必须另外跑一次
+`make desktop-install` —— 打包期的失败这两个门禁都拦不住(实测踩过)。
+
 菜单栏还能**自己更新**(ADR-0035):应用每 6 小时、以及菜单里点「检查更新…」时,
 去 GitHub Releases 读签名清单,自己下载替换并重启。发布由 `release.yml` 的 `desktop`
 job 产出签名产物,依赖 `TAURI_SIGNING_PRIVATE_KEY` 这个仓库 secret —— **私钥丢了,
