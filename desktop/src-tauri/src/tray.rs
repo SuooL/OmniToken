@@ -56,6 +56,7 @@ impl State {
 pub fn menu(app: &tauri::AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Items)> {
     let open = MenuItem::with_id(app, "open_panel", "打开完整面板", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
+    let check_update = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
 
     // Three mutually exclusive choices. tray-icon has no radio item, so these
     // are check items the handler keeps exclusive — which is also why the tick
@@ -130,6 +131,7 @@ pub fn menu(app: &tauri::AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, I
             &hotkey,
             &PredefinedMenuItem::separator(app)?,
             &settings_item,
+            &check_update,
             &PredefinedMenuItem::about(app, Some("关于 OmniToken"), None)?,
             &PredefinedMenuItem::quit(app, Some("退出 OmniToken"))?,
         ],
