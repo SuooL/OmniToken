@@ -12,11 +12,16 @@ LDFLAGS := -X main.version=$(VERSION)
 GOSRC   := ./cmd ./internal
 
 .PHONY: build test vet fmt fmt-check cover check clean release desktop desktop-check \
-        desktop-sync desktop-sync-check
+        desktop-sync desktop-sync-check desktop-install
 
 # Files the web panel and the menubar popover share verbatim (ADR-0014).
 # web/ is the source of truth; desktop/ui/ holds copies.
 SHARED_UI := tokens.css format-core.js
+
+# Where the menubar app runs from on macOS, and where the autostart job points.
+DESKTOP_APP    := /Applications/OmniToken.app
+DESKTOP_BUNDLE := desktop/src-tauri/target/release/bundle/macos/OmniToken.app
+DESKTOP_PLIST  := $(HOME)/Library/LaunchAgents/OmniToken.plist
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/omnitoken
@@ -84,6 +89,62 @@ desktop-sync-check:
 		exit 1; \
 	fi
 	@echo "shared ui: in sync"
+
+# Build the menubar app and put the result where it actually runs from.
+#
+# This target exists because `cargo tauri build` writes only to
+# target/release/bundle — it does NOT touch /Applications. Upgrading by hand
+# therefore has a silent failure mode: build succeeds, app keeps running the old
+# code, and nothing anywhere says so. That happened — the bundle in use was four
+# hours older than a commit that changed desktop/ui, and it went unnoticed for
+# two weeks. Same stance as desktop-sync-check: a step that can be mechanised
+# should not depend on anyone remembering it.
+#
+# ditto rather than rm -rf + cp: it overwrites in place, which keeps the app's
+# code-signature metadata intact and avoids the window where /Applications holds
+# no app at all.
+#
+# `--bundles app` skips the .dmg. Nothing here installs from a disk image, and
+# building one is not free of consequences: bundle_dmg.sh mounts a volume, and a
+# mount left behind by an earlier build makes the next one fail. That is exactly
+# how this target failed the first time it ran, with two stale /Volumes/dmg.*
+# entries. A DMG belongs to distribution, not to installing on this machine.
+#
+# The verification at the end is the point of the target, not decoration. It
+# fails loudly on the two states that look fine but are not: a second instance
+# still alive, and an instance running from somewhere other than DESKTOP_APP.
+desktop-install: desktop-check
+	@[ "$$(uname)" = "Darwin" ] || { echo "desktop-install 只支持 macOS"; exit 1; }
+	@[ -f "$(DESKTOP_PLIST)" ] || { echo "找不到自启配置 $(DESKTOP_PLIST)"; exit 1; }
+	cd desktop/src-tauri && cargo tauri build --bundles app
+	@[ -d "$(DESKTOP_BUNDLE)" ] || { echo "构建产物不存在: $(DESKTOP_BUNDLE)"; exit 1; }
+	ditto "$(DESKTOP_BUNDLE)" "$(DESKTOP_APP)"
+	@echo "--- 重启菜单栏 ---"
+	@# Both are no-ops when nothing is running, and a no-op is a success here:
+	@# without `|| true` make prints "Error 1 (ignored)" on a perfectly good run.
+	@launchctl bootout gui/$$(id -u)/OmniToken 2>/dev/null || true
+	@pkill -f "omnitoken-desktop" 2>/dev/null || true
+	@for i in $$(seq 1 10); do \
+		[ -z "$$(pgrep -f omnitoken-desktop)" ] && break; sleep 1; \
+	done
+	@launchctl bootstrap gui/$$(id -u) "$(DESKTOP_PLIST)"
+	@for i in $$(seq 1 15); do \
+		[ -n "$$(pgrep -f omnitoken-desktop)" ] && break; sleep 1; \
+	done
+	@echo "--- 验证 ---"; \
+	n=$$(pgrep -f omnitoken-desktop | wc -l | tr -d ' '); \
+	if [ "$$n" != "1" ]; then \
+		echo "菜单栏实例数 = $$n,应为 1(两份同时在跑会出现两个托盘图标)"; exit 1; \
+	fi; \
+	pid=$$(pgrep -f omnitoken-desktop); \
+	running=$$(ps -p $$pid -o comm=); \
+	case "$$running" in \
+		$(DESKTOP_APP)/*) ;; \
+		*) echo "跑的是 $$running,不是 $(DESKTOP_APP)"; exit 1;; \
+	esac; \
+	echo "  实例数 1,PID $$pid"; \
+	echo "  路径   $$running"; \
+	echo "desktop-install: 完成"
 
 # Cross-compile the common personal-fleet targets into dist/.
 release: clean
