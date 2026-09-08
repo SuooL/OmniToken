@@ -1,5 +1,6 @@
 // In-app update: check a signed manifest on GitHub Releases, download the new
-// bundle, install it, relaunch.
+// bundle, install it. The new version takes effect at the next launch — see
+// installed_note for why nothing here restarts the app.
 //
 // Shape borrowed from the sibling OmniStats project, which solves the same
 // problem with Sparkle:
@@ -66,9 +67,8 @@ pub fn schedule(app: AppHandle<Wry>) {
                     // blinking. It is still announced, because a menubar item
                     // vanishing and reappearing with no explanation reads as a
                     // crash.
-                    log::info!("update: 已安装 {version},正在重启");
-                    notify(&app, "OmniToken 已更新", format!("{version},正在重启"));
-                    app.restart();
+                    log::info!("update: 已安装 {version},重启后生效");
+                    notify(&app, "OmniToken 已更新", installed_note(&version));
                 }
                 // A failed check is not an error the user needs to see — the
                 // network is allowed to be down. It is logged and retried on the
@@ -117,13 +117,42 @@ pub fn check_now(app: &AppHandle<Wry>) {
     tauri::async_runtime::spawn(async move {
         match check_and_install(&app).await {
             Outcome::Installed { version } => {
-                log::info!("update: 已安装 {version},重启中");
-                app.restart();
+                log::info!("update: 已安装 {version},重启后生效");
+                notify(&app, "OmniToken 已更新", installed_note(&version));
             }
             Outcome::UpToDate => notify(&app, "已是最新版本", current_version(&app)),
             Outcome::Failed(why) => notify(&app, "检查更新失败", why),
         }
     });
+}
+
+/// Why nothing here restarts the app.
+///
+/// Installing an update replaces the BUNDLE on disk; the running process keeps
+/// executing the old image either way. The obvious follow-up is to relaunch,
+/// and two attempts at it were measured on the real thing:
+///
+///   - `AppHandle::restart` spawns the replacement as a child and exits. The
+///     menubar app is a launchd job (`~/Library/LaunchAgents/OmniToken.plist`)
+///     and launchd owns the job's lifecycle: the process exited, the child went
+///     with it, and nothing came back. `launchctl list` showed `- 0 OmniToken`
+///     and the menubar icon was simply gone. The plist has no `KeepAlive`, so
+///     nothing restarted it either.
+///   - `open -n` + immediate exit failed the same way, for the same reason:
+///     `open` is still a child of the dying job.
+///
+/// So the app installs the update and says so, and the new version takes effect
+/// the next time it starts — at the next login, or immediately if the user
+/// quits and reopens. That is worse than a seamless restart and much better
+/// than a menubar item that silently disappears: an update that applies late is
+/// an inconvenience, an app that vanishes looks like a crash and costs the user
+/// their quota alerts until they notice.
+///
+/// Doing this properly needs the relaunch to happen outside the job's lifetime
+/// — a `KeepAlive` plist, or a detached helper — and needs to be verified
+/// before it ships, not after.
+fn installed_note(version: &str) -> String {
+    format!("{version} 已下载,重新打开 OmniToken 后生效")
 }
 
 fn current_version(app: &AppHandle<Wry>) -> String {
