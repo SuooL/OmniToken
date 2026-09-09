@@ -17,6 +17,11 @@ make desktop-check    # 改 desktop/ 后跑:同步检查 + node 测试 + clippy 
 make desktop-install  # 构建 → 装进 /Applications → 重启 → 验证只有一个实例
 ```
 
+**发版之后要把 `desktop/src-tauri/{Cargo.toml,tauri.conf.json}` 的 version 同步成刚发
+的那个 tag**。CI 打包时按 tag 打戳,仓库里的值只有本地构建会用到 —— 落后于线上 release
+的本地构建,启动一分钟内就会被自更新替换掉(ADR-0035)。`make desktop-check` 里的
+`desktop-version-check` 会在落后时报错,不用靠记。
+
 `desktop-install` 需要更新签名私钥 `~/.omnitoken/tauri-updater.key`(ADR-0035 之后
 打包会顺带产出并签名 updater 的 `.tar.gz`,没有私钥直接构建失败)。路径可用
 `DESKTOP_SIGNING_KEY=...` 覆盖。**注意 `make desktop-check` 和 `make check` 都不构建
