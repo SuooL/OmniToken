@@ -136,6 +136,14 @@ async fn settings_set(
 
 /// The tray's own poll is gone: the bridge pushes every snapshot to both the
 /// glyph and the popover, so "refresh" means "reconnect", not "fetch once".
+/// The settings pane's 「检查更新」button. Returns the outcome so the popover can
+/// state it in place, rather than firing a notification the user has to go look
+/// for while staring at the button they just pressed.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> update::CheckResult {
+    update::check(app).await
+}
+
 #[tauri::command]
 fn refresh_now(app: tauri::AppHandle) {
     live::respawn(&app);
@@ -344,7 +352,8 @@ pub fn run() {
             settings_get,
             settings_set,
             refresh_now,
-            open_full_panel
+            open_full_panel,
+            check_update
         ])
         .setup(|app| {
             // Logging in release builds too, at warn, and info for the
@@ -521,6 +530,34 @@ mod ui_contract_tests {
         assert!(
             panel.get("windowEffects").is_none(),
             "the CSS panel owns the background and corners; a native effect leaks outside them"
+        );
+    }
+}
+
+#[cfg(test)]
+mod updater_ui_contract_tests {
+    const HTML: &str = include_str!("../../ui/index.html");
+    const APP: &str = include_str!("../../ui/app.js");
+
+    /// The settings pane is where a user looks for "am I on the latest
+    /// version"; the tray item alone is a right-click away and easy to miss.
+    /// Both halves have to exist or the button is inert.
+    #[test]
+    fn settings_carries_a_check_update_control() {
+        for hook in [
+            r#"id="check-update""#,
+            r#"id="update-version""#,
+            r#"id="update-msg""#,
+        ] {
+            assert!(HTML.contains(hook), "settings markup is missing {hook}");
+        }
+        assert!(
+            APP.contains(r#"invoke("check_update")"#),
+            "the button never reaches the Rust command"
+        );
+        assert!(
+            APP.contains(r#"$("check-update")"#),
+            "the button is never bound"
         );
     }
 }

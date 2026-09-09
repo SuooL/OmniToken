@@ -538,3 +538,16 @@ button { font: inherit; cursor: pointer; }
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Settings > 软件更新: the button and the current version share a line, because
+   the version is the answer to "update to what from what" and reads as a label
+   on the button rather than as its own field. */
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-version {
+  color: var(--text-muted);
+  font-size: 11px;
+}

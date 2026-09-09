@@ -114,6 +114,13 @@
       <span>开机自动启动</span>
     </label>
     <div class="hint">登录时在后台自动启动 OmniToken 菜单栏。改动在点「保存」后生效。</div>
+    <label class="eyebrow">软件更新</label>
+    <div class="update-row">
+      <button type="button" id="check-update">检查更新</button>
+      <span class="update-version" id="update-version"></span>
+    </div>
+    <div class="hint">每 6 小时自动检查一次。更新从 GitHub Releases 下载,经签名校验后安装并重启。</div>
+    <div class="msg" id="update-msg" aria-live="polite"></div>
     <div class="msg" id="settings-msg" aria-live="polite"></div>
     <div class="actions">
       <button type="button" id="settings-cancel">取消</button>

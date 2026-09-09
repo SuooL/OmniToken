@@ -1,6 +1,5 @@
 // In-app update: check a signed manifest on GitHub Releases, download the new
-// bundle, install it. The new version takes effect at the next launch — see
-// installed_note for why nothing here restarts the app.
+// bundle, install it, and relaunch into it.
 //
 // Shape borrowed from the sibling OmniStats project, which solves the same
 // problem with Sparkle:
@@ -32,6 +31,9 @@ use tauri_plugin_updater::UpdaterExt;
 /// sit in the menubar for weeks, so anything rarer means updates arrive only
 /// when someone thinks to ask.
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How long the popover gets to show "正在重启…" before the process goes away.
+const RELAUNCH_GRACE: Duration = Duration::from_secs(2);
 
 /// Delay before the first check. Startup is already busy bringing up the tray,
 /// the SSE bridge and the first snapshot; the update check is the least urgent
@@ -67,8 +69,9 @@ pub fn schedule(app: AppHandle<Wry>) {
                     // blinking. It is still announced, because a menubar item
                     // vanishing and reappearing with no explanation reads as a
                     // crash.
-                    log::info!("update: 已安装 {version},重启后生效");
-                    notify(&app, "OmniToken 已更新", installed_note(&version));
+                    log::info!("update: 已安装 {version},正在重启");
+                    notify(&app, "OmniToken 已更新", format!("{version},正在重启"));
+                    relaunch(&app);
                 }
                 // A failed check is not an error the user needs to see — the
                 // network is allowed to be down. It is logged and retried on the
@@ -105,54 +108,116 @@ pub async fn check_and_install(app: &AppHandle<Wry>) -> Outcome {
     Outcome::Installed { version }
 }
 
-/// The "检查更新" menu item's handler: check, and if something was installed,
-/// restart into it.
+/// What a settings-initiated check concluded, in the shape the popover renders.
+#[derive(serde::Serialize)]
+pub struct CheckResult {
+    pub status: &'static str,
+    pub version: String,
+    pub message: String,
+}
+
+/// The check behind both the tray item and the settings button.
 ///
-/// Restarting immediately is the right default *here* specifically because the
-/// app is a menubar accessory with no documents and no unsaved state — the cost
-/// of a restart is a tray icon blinking. An app with a text buffer open would
-/// have to ask first.
+/// On success this returns BEFORE relaunching, and the relaunch is scheduled a
+/// moment later. The popover is a webview inside this process: relaunch first
+/// and the window dies mid-call, so the user's last frame is a button stuck on
+/// "检查中…" and an app that vanished. Answering first costs two seconds and
+/// makes the restart look like the consequence of what they just clicked.
+pub async fn check(app: AppHandle<Wry>) -> CheckResult {
+    let current = current_version(&app);
+    match check_and_install(&app).await {
+        Outcome::UpToDate => CheckResult {
+            status: "up_to_date",
+            version: current.clone(),
+            message: format!("已是最新版本({current})"),
+        },
+        Outcome::Installed { version } => {
+            log::info!("update: 已安装 {version},正在重启");
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(RELAUNCH_GRACE).await;
+                relaunch(&handle);
+            });
+            CheckResult {
+                status: "installed",
+                version: version.clone(),
+                message: format!("已更新到 {version},正在重启…"),
+            }
+        }
+        Outcome::Failed(why) => CheckResult {
+            status: "failed",
+            version: current,
+            message: format!("检查失败:{why}"),
+        },
+    }
+}
+
+/// The tray item's handler. The tray has no surface to render a result on, so
+/// it reports through the same notifications the quota alerts use.
 pub fn check_now(app: &AppHandle<Wry>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match check_and_install(&app).await {
-            Outcome::Installed { version } => {
-                log::info!("update: 已安装 {version},重启后生效");
-                notify(&app, "OmniToken 已更新", installed_note(&version));
-            }
-            Outcome::UpToDate => notify(&app, "已是最新版本", current_version(&app)),
-            Outcome::Failed(why) => notify(&app, "检查更新失败", why),
-        }
+        let result = check(app.clone()).await;
+        let title = match result.status {
+            "installed" => "OmniToken 已更新",
+            "up_to_date" => "已是最新版本",
+            _ => "检查更新失败",
+        };
+        notify(&app, title, result.message);
     });
 }
 
-/// Why nothing here restarts the app.
+/// Restart into the freshly installed bundle.
 ///
-/// Installing an update replaces the BUNDLE on disk; the running process keeps
-/// executing the old image either way. The obvious follow-up is to relaunch,
-/// and two attempts at it were measured on the real thing:
+/// NOT `AppHandle::restart`, which spawns the replacement as a child and exits.
+/// The menubar app is a launchd job (`~/Library/LaunchAgents/OmniToken.plist`)
+/// and launchd owns the job's lifecycle: measured, the process exited, the child
+/// went with it, and nothing came back — `launchctl list` showed `- 0 OmniToken`
+/// and the icon was gone until the job was bootstrapped by hand. Adding
+/// `KeepAlive` to the plist is not an option either: tauri-plugin-autostart owns
+/// that file and rewrites it with exactly Label/ProgramArguments/RunAtLoad.
 ///
-///   - `AppHandle::restart` spawns the replacement as a child and exits. The
-///     menubar app is a launchd job (`~/Library/LaunchAgents/OmniToken.plist`)
-///     and launchd owns the job's lifecycle: the process exited, the child went
-///     with it, and nothing came back. `launchctl list` showed `- 0 OmniToken`
-///     and the menubar icon was simply gone. The plist has no `KeepAlive`, so
-///     nothing restarted it either.
-///   - `open -n` + immediate exit failed the same way, for the same reason:
-///     `open` is still a child of the dying job.
+/// `open` hands the launch to LaunchServices, which starts the app outside this
+/// job's process tree. Two details make it work:
 ///
-/// So the app installs the update and says so, and the new version takes effect
-/// the next time it starts — at the next login, or immediately if the user
-/// quits and reopens. That is worse than a seamless restart and much better
-/// than a menubar item that silently disappears: an update that applies late is
-/// an inconvenience, an app that vanishes looks like a crash and costs the user
-/// their quota alerts until they notice.
-///
-/// Doing this properly needs the relaunch to happen outside the job's lifetime
-/// — a `KeepAlive` plist, or a detached helper — and needs to be verified
-/// before it ships, not after.
-fn installed_note(version: &str) -> String {
-    format!("{version} 已下载,重新打开 OmniToken 后生效")
+///   - `status()`, not `spawn()`: `open` has to finish talking to LaunchServices
+///     before this process exits, or it dies with the job mid-handoff — the same
+///     failure as `restart`, just a moment later.
+///   - `-n`, or `open` finds the still-running instance and merely activates it,
+///     and the exit below then leaves nothing running at all.
+#[cfg(target_os = "macos")]
+fn relaunch(app: &AppHandle<Wry>) {
+    let Some(bundle) = bundle_path() else {
+        log::error!("update: 找不到 .app 路径,新版本将在下次启动时生效");
+        return;
+    };
+    match std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg(&bundle)
+        .status()
+    {
+        // Exit only once the replacement is genuinely on its way. Exiting after
+        // a failed launch would kill the menubar for an update that is already
+        // on disk and would have applied at the next start anyway.
+        Ok(status) if status.success() => app.exit(0),
+        Ok(status) => log::error!("update: open 退出码 {status},新版本将在下次启动时生效"),
+        Err(e) => log::error!("update: 重启失败({e}),新版本将在下次启动时生效"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn relaunch(app: &AppHandle<Wry>) {
+    app.restart();
+}
+
+/// The `.app` three levels above the executable
+/// (`OmniToken.app/Contents/MacOS/omnitoken-desktop`). None when the binary is
+/// not inside a bundle — a `cargo run` build, which has no bundle to reopen.
+#[cfg(target_os = "macos")]
+fn bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.parent()?.parent()?.parent()?;
+    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
 }
 
 fn current_version(app: &AppHandle<Wry>) -> String {
