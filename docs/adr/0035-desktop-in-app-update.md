@@ -100,6 +100,14 @@ updater 模块单独放到 info。
   私钥在本机 `~/.omnitoken/tauri-updater.key`(0600,仓库外),`.gitignore` 另加了
   `*.pem` / `*.key` 作为第二道。
 
+## 发版之后
+
+`Cargo.toml` 与 `tauri.conf.json` 里的 version 要同步成刚发的 tag。CI 按 tag 打戳,
+仓库里的值只有本地构建用得到 —— **落后于线上 release 的本地构建,启动一分钟内就会被
+自更新替换掉**(实测:`make desktop-install` 产出 0.1.0,还没来得及看就被换成了 0.2.0)。
+`make desktop-check` 里的 `desktop-version-check` 会在落后时报错,所以这条是被检查的
+约定而不是要记住的约定。
+
 ## 局限
 
 - 不是「热更新」。它下载整个 bundle(约 5.5MB)、替换、重启,没有 JS 级热补丁。
