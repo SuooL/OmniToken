@@ -408,7 +408,36 @@ const settingsEls = {
   autostart: $("autostart-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
+  checkUpdate: $("check-update"),
+  updateVersion: $("update-version"),
+  updateMessage: $("update-msg"),
 };
+
+function updateMessage(text, kind) {
+  settingsEls.updateMessage.textContent = text || "";
+  settingsEls.updateMessage.className = "msg" + (kind ? ` ${kind}` : "");
+  fitWindow();
+}
+
+// The button answers in place. A menubar popover has no room for a modal, and
+// firing only a notification would send the user hunting for the reply to
+// something they are looking straight at.
+async function checkUpdate() {
+  if (settingsEls.checkUpdate.disabled) return;
+  settingsEls.checkUpdate.disabled = true;
+  updateMessage("检查中…");
+  try {
+    const result = await invoke("check_update");
+    settingsEls.updateVersion.textContent = `当前 ${result.version}`;
+    updateMessage(result.message, result.status === "failed" ? "err" : "ok");
+    // On "installed" the app is about to be replaced by its successor, so the
+    // button stays disabled: a second check would race the restart.
+    if (result.status !== "installed") settingsEls.checkUpdate.disabled = false;
+  } catch (e) {
+    updateMessage(`检查失败:${e}`, "err");
+    settingsEls.checkUpdate.disabled = false;
+  }
+}
 
 function settingsMessage(text, kind) {
   settingsEls.message.textContent = text || "";
@@ -424,6 +453,9 @@ function openSettings() {
     : "服务端只监听本机时留空";
   settingsEls.panel.value = PANEL_URL;
   settingsEls.autostart.checked = AUTOSTART;
+  settingsEls.checkUpdate.disabled = false;
+  settingsEls.updateVersion.textContent = "";
+  updateMessage("");
   settingsMessage("");
   settingsEls.main.hidden = true;
   settingsEls.settings.hidden = false;
@@ -465,6 +497,7 @@ async function saveSettings() {
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 settingsEls.save.addEventListener("click", saveSettings);
+settingsEls.checkUpdate.addEventListener("click", checkUpdate);
 for (const input of [settingsEls.input, settingsEls.token, settingsEls.panel]) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveSettings();
