@@ -296,3 +296,8 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 设备凭据保持一致;变更前二进制、配置和一致性数据库备份位于
 `/var/backups/omnitoken/20261028T044250Z-daily-usage`。发布工作流显式进行 ad-hoc
 应用签名并执行严格 bundle 校验,同时保留现有 Ed25519 更新包签名。
+
+
+0.2.2 发布准备:纳入已确认的余量同行两列布局与不换行重置倒计时;保留原 v0.2.1 tag
+及其未完成发布草稿,不改写已有版本。用户自行更新本机正式应用;发布成功后清理本地
+OmniToken 安装包与构建副本,保留 `/Applications/OmniToken.app`。
