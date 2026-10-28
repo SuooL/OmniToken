@@ -29,25 +29,21 @@
       </div>
     </section>
 
-    <section class="usage-grid" aria-label="滚动五小时实际用量">
-      <article class="usage-card claude" id="claude-5h">
-        <div class="source-title"><span class="source-dot"></span>Claude · 最近 5h</div>
-        <strong class="fig" id="claude-5h-value">—</strong>
-        <span class="delta" id="claude-5h-change">比较未知</span>
-      </article>
-      <article class="usage-card codex" id="codex-5h">
-        <div class="source-title"><span class="source-dot"></span>Codex · 最近 5h</div>
-        <strong class="fig" id="codex-5h-value">—</strong>
-        <span class="delta" id="codex-5h-change">比较未知</span>
-      </article>
-      <article class="usage-card dsh" id="dsh-5h">
-        <div class="source-title"><span class="source-dot"></span>DeepSeek · 最近 5h</div>
-        <strong class="fig" id="dsh-5h-value">—</strong>
-        <span class="delta" id="dsh-5h-change">比较未知</span>
-      </article>
+    <section class="usage-section" aria-labelledby="today-title">
+      <div class="section-head usage-section-head">
+        <h2 class="eyebrow" id="today-title">今日使用</h2>
+        <span class="section-total"><span class="fig" id="today-total">—</span> tokens</span>
+      </div>
+      <div class="daily-grid" id="today-sources"></div>
+      <div class="daily-other" id="today-other" hidden></div>
     </section>
 
-    <section class="usage-grid quota-grid" id="quota-grid" aria-label="官方配额"></section>
+    <section class="usage-section" aria-labelledby="quota-title">
+      <div class="section-head usage-section-head">
+        <h2 class="eyebrow" id="quota-title">用量预估</h2>
+      </div>
+      <div class="usage-grid quota-grid" id="quota-grid"></div>
+    </section>
 
     <section class="instrument-card speed-history" aria-labelledby="history-title">
       <div class="section-head">
@@ -64,18 +60,6 @@
       <article><span class="eyebrow">1h 峰值</span><strong class="fig" id="peak-1h">—</strong></article>
       <article><span class="eyebrow">活跃占比</span><strong class="fig" id="active-ratio">—</strong></article>
       <article><span class="eyebrow">已测来源</span><strong class="fig" id="measured-source-count">—</strong></article>
-    </section>
-
-    <section class="instrument-card today" aria-labelledby="today-title">
-      <div class="section-head">
-        <div>
-          <div class="eyebrow" id="today-title">今日各模型累计</div>
-          <div class="today-total"><span class="fig" id="today-total">—</span> tokens</div>
-        </div>
-        <span class="model-count" id="model-count">—</span>
-      </div>
-      <div class="composition-strip" id="model-strip" aria-hidden="true"></div>
-      <div class="model-list" id="model-list"></div>
     </section>
 
     <section class="instrument-card contributors" aria-labelledby="contributors-title">

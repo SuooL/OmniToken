@@ -200,6 +200,9 @@ jobs:
       # trusts is baked in.
       - name: Build signed bundle
         env:
+          # Seal the app bundle as well as signing the updater archive. A bare
+          # linker signature has no resource seal and fails strict validation.
+          APPLE_SIGNING_IDENTITY: "-"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
@@ -209,6 +212,7 @@ jobs:
             exit 1
           fi
           cd desktop/src-tauri && cargo tauri build --bundles app
+          codesign --verify --deep --strict target/release/bundle/macos/OmniToken.app
 
       - name: Write latest.json
         run: |
