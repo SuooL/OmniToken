@@ -171,8 +171,8 @@ function renderDailyUsage() {
 }
 
 const QUOTA_WINDOWS = [
-  { key: "five_hour", label: "5h", estimate: "预估 5h 剩余" },
-  { key: "weekly", label: "Week", estimate: "预估周剩余" },
+  { key: "five_hour", label: "5h" },
+  { key: "weekly", label: "Week" },
 ];
 
 const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
@@ -216,16 +216,14 @@ function renderQuotas() {
     <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
     <div class="quota-values">${QUOTA_WINDOWS.map((window) => {
       const percent = quota[`${window.key}_percent`];
+      const remaining = quotaRemaining(quota, window.key);
+      const remainder = finite(remaining) ? `余 ${compact(remaining)} tokens` : "暂无估算";
       return `<div class="quota-window" data-window="${window.key}">
         <span class="quota-window-label">${window.label} 已用</span>
         <strong class="fig" data-severity="${quotaSeverity(percent)}">${percentLabel(percent)}</strong>
         <span class="quota-reset">${quotaResetLabel(quota[`${window.key}_resets_at_ms`])}</span>
+        <span class="quota-remainder" title="预估剩余额度">${remainder}</span>
       </div>`;
-    }).join("")}</div>
-    <div class="quota-estimates">${QUOTA_WINDOWS.map((window) => {
-      const remaining = quotaRemaining(quota, window.key);
-      const label = finite(remaining) && remaining >= 0 ? `${compact(remaining)} tokens` : "暂无估算";
-      return `<div class="quota-estimate"><span>${window.estimate}</span><b>${label}</b></div>`;
     }).join("")}</div>
   </article>`).join("");
 }
