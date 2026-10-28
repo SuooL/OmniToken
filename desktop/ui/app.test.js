@@ -114,107 +114,87 @@ const showQuotas = (quotas) => {
   return document.getElementById("quota-grid").innerHTML;
 };
 
-test("a five-hour card leads with it and still shows the projection and the week", () => {
-  const html = showQuotas([{
-    source: "claude-code",
-    label: "Claude",
-    basis: "five_hour",
-    five_hour_percent: 24,
-    projected_percent: 36.5,
-    weekly_percent: 12,
-    resets_in_minutes: 102,
-    used_tokens: 144_000_000,
-    remaining_tokens: 170_000_000,
-  }]);
+const quotaReading = (html, window) => {
+  const match = html.match(new RegExp(`<div class="quota-window" data-window="${window}">([\\s\\S]*?)</div>`));
+  assert.ok(match, `missing ${window} reading`);
+  return match[1];
+};
 
-  // The percentage keeps the headline and the tokens join it there.
-  assert.match(html, /<strong[^>]*>24%<span class="fig-aside">144M<\/span><\/strong>/);
-  assert.ok(html.includes("5h · 还剩 170M · 1h42m"));
-  assert.ok(html.includes("预估 37%"));
-  assert.ok(html.includes("周 12%"));
+test("5h and Week percentages independently step at 70, 80 and 90 percent", () => {
+  for (const window of ["five_hour", "weekly"]) {
+    for (const [percent, expected] of [
+      [0, ""], [50, ""], [69.9, ""], [70, "warn"], [75, "warn"], [79.9, "warn"],
+      [80, "serious"], [89.9, "serious"], [90, "critical"], [100, "critical"], [120, "critical"],
+      [0, ""], [null, ""], [undefined, ""], [NaN, ""], [Infinity, ""],
+    ]) {
+      const html = showQuotas([{
+        source: "claude-code", label: "Claude",
+        five_hour_percent: 100, weekly_percent: 100,
+        [`${window}_percent`]: percent,
+      }]);
+      assert.equal(quotaReading(html, window).match(/data-severity="([^"]*)"/)[1], expected,
+        `${window} at ${percent}%`);
+    }
+  }
 });
 
-// Codex has had no 5-hour window since its `primary` limit became weekly, so
-// this is its permanent state and has to read as a stated fact, not a fault.
-test("a weekly fallback names the window it fell back to", () => {
+test("low five-hour usage cannot hide a near-full weekly quota", () => {
   const html = showQuotas([{
-    source: "codex",
-    label: "Codex",
-    basis: "weekly",
-    five_hour_percent: null,
-    projected_percent: null,
-    weekly_percent: 72,
-    resets_in_minutes: 9575,
-    used_tokens: 15_000_000,
-    remaining_tokens: 114_000_000,
+    source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+    five_hour_remaining_tokens: 132_000_000, weekly_remaining_tokens: 8_000_000,
   }]);
-
-  assert.match(html, /<strong[^>]*>72%<span class="fig-aside">15M<\/span><\/strong>/);
-  assert.ok(html.includes("周 · 还剩 114M · 159h"));
-  // The sentence "无官方 5h 数据" only repeated the 周 beside it, on a card
-  // 170px wide.
-  assert.ok(!html.includes("无官方 5h 数据"));
+  assert.match(quotaReading(html, "five_hour"), /5h 已用/);
+  assert.match(quotaReading(html, "five_hour"), /data-severity="">2%/);
+  assert.match(quotaReading(html, "weekly"), /Week 已用/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="critical">96%/);
+  assert.match(html, /预估 5h 剩余<\/span><b>132M tokens<\/b>/);
+  assert.match(html, /预估周剩余<\/span><b>8.0M tokens<\/b>/);
+  assert.ok(html.indexOf("quota-estimates") > html.indexOf('data-window="weekly"'));
 });
 
-// Absent data is not zero usage: rendering "0%" here would tell the user they
-// have a full quota when what we actually have is no reading.
-test("a source with no official quota says so instead of showing zero", () => {
+test("a missing window stays visible as unavailable instead of borrowing another window", () => {
   const html = showQuotas([{
-    source: "codex",
-    label: "Codex",
-    basis: "none",
-    five_hour_percent: null,
-    projected_percent: null,
-    weekly_percent: null,
-    resets_in_minutes: null,
+    source: "codex", label: "Codex", five_hour_percent: null, weekly_percent: 72,
+    five_hour_remaining_tokens: null, weekly_remaining_tokens: 114_000_000,
   }]);
+  assert.match(quotaReading(html, "five_hour"), />暂无<\/strong>/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="warn">72%/);
+  assert.match(html, /预估 5h 剩余<\/span><b>暂无估算<\/b>/);
+  assert.match(html, /预估周剩余<\/span><b>114M tokens<\/b>/);
+});
 
-  assert.ok(html.includes("暂无"));
+test("missing or invalid estimates are not rendered as zero or reused from the old headline", () => {
+  for (const invalid of [null, undefined, NaN, Infinity, -1]) {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_remaining_tokens: invalid, weekly_remaining_tokens: invalid,
+      used_tokens: 2_200_000, remaining_tokens: 132_000_000, projected_percent: 3,
+    }]);
+    assert.equal((html.match(/暂无估算/g) || []).length, 2);
+    assert.ok(!html.includes("2.2M"));
+    assert.ok(!html.includes("132M"));
+    assert.ok(!html.includes("3%"));
+  }
+});
+
+test("zero usage and zero remaining are real readings", () => {
+  const html = showQuotas([{
+    source: "claude-code", label: "Claude", five_hour_percent: 0, weekly_percent: 100,
+    five_hour_remaining_tokens: 132_000_000, weekly_remaining_tokens: 0,
+  }]);
+  assert.match(quotaReading(html, "five_hour"), /data-severity="">0%/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="critical">100%/);
+  assert.match(html, /预估周剩余<\/span><b>0 tokens<\/b>/);
+});
+
+test("an unavailable source never claims either window is untouched", () => {
+  const html = showQuotas([{ source: "codex", label: "Codex" }]);
+  assert.equal((html.match(/>暂无<\/strong>/g) || []).length, 2);
+  assert.equal((html.match(/暂无估算/g) || []).length, 2);
   assert.ok(!html.includes("0%"));
-  assert.ok(!html.includes("后重置"));
-});
-
-// A quota already at 0% is a reading, and the card must not confuse it with the
-// case above.
-test("an untouched authoritative window is a reading, not a blank", () => {
-  const html = showQuotas([{
-    source: "claude-code",
-    label: "Claude",
-    basis: "five_hour",
-    five_hour_percent: 0,
-    projected_percent: null,
-    weekly_percent: null,
-    resets_in_minutes: 300,
-  }]);
-
-  assert.match(html, /<strong[^>]*>0%<\/strong>/);
-  assert.ok(!html.includes("暂无"));
-  // Nothing to project from yet, and the popover says that rather than 0%.
-  assert.ok(html.includes("预估 —"));
 });
 
 test("no quota rows at all leaves the card empty rather than inventing sources", () => {
   assert.ok(showQuotas([]).includes("官方配额不可用"));
   assert.ok(showQuotas(undefined).includes("官方配额不可用"));
-});
-
-test("配额卡把已用 token 放在百分比旁,把推断的剩余量放进副行", () => {
-  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
-  // The tokens ride the headline, inside the same <strong> as the percentage,
-  // so the two share a baseline instead of stacking into another row.
-  assert.match(source, /fig-aside/);
-  assert.match(source, /finite\(quota\.used_tokens\)/);
-  // The remainder is inferred and often absent; the sub-line has to close up
-  // around it rather than render an empty separator.
-  assert.match(source, /finite\(quota\.remaining_tokens\)/);
-  assert.match(source, /\.filter\(Boolean\)\.join\(" · "\)/);
-});
-
-// The basis names the window in as many characters as the window needs. It
-// used to read 官方周用量 / 官方 5h 用量, which spent a third of a 170px card
-// on the word 官方 — already implied by the card's own title.
-test("配额卡的窗口标签只写窗口本身", () => {
-  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
-  assert.match(source, /label: "周"/);
-  assert.match(source, /label: "5h"/);
 });

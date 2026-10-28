@@ -162,39 +162,21 @@ function renderUsageCard(source, prefix) {
   delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
 }
 
-// Which window a quota card is leading with, and how that window is named on
-// screen. The server decides the basis; the popover only has to say it out loud,
-// because "24% of the 5 hours" and "24% of the week" are not the same warning.
-const QUOTA_BASIS = {
-  five_hour: { percent: "five_hour_percent", label: "5h" },
-  weekly: { percent: "weekly_percent", label: "周" },
-};
+const QUOTA_WINDOWS = [
+  { key: "five_hour", label: "5h", estimate: "预估 5h 剩余" },
+  { key: "weekly", label: "Week", estimate: "预估周剩余" },
+];
 
 const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
+const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "暂无";
 
-// Whole percent, matching how the Live page writes the same authoritative
-// numbers. A quota moves in points, not in tenths.
-const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "—";
-
-function quotaDetail(quota) {
-  if (quota.basis === "five_hour") {
-    // The projection is absent until the window has enough elapsed time to
-    // extrapolate from — an em dash, not 0%, because nothing has been ruled out.
-    return `预估 ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
-  }
-  // A weekly-only card used to spell out "无官方 5h 数据". The basis beside the
-  // number already says 周, so the sentence only repeated it — and this card is
-  // 170px wide.
-  if (quota.basis === "weekly") return "";
-  return "官方端点未报配额";
-}
-
-// Compact remaining time for a card this narrow. Not untilReset(): that one is
-// shared with the web panel (ADR-0014), which has the room to say 后重置.
-function quotaReset(minutes) {
-  if (!(minutes > 0)) return "即将重置";
-  const hours = Math.floor(minutes / 60);
-  return hours >= 24 ? `${hours}h` : `${hours}h${minutes % 60}m`;
+// Compare official readings before rounding. Each window carries its own risk.
+function quotaSeverity(percent) {
+  if (!finite(percent)) return "";
+  if (percent >= 90) return "critical";
+  if (percent >= 80) return "serious";
+  if (percent >= 70) return "warn";
+  return "";
 }
 
 function renderQuotas() {
@@ -204,32 +186,21 @@ function renderQuotas() {
     root.innerHTML = `<div class="empty">官方配额不可用</div>`;
     return;
   }
-  root.innerHTML = quotas.map((quota) => {
-    const basis = QUOTA_BASIS[quota.basis];
-    const percent = basis ? quota[basis.percent] : null;
-    const reset = basis && finite(quota.resets_in_minutes) ? quotaReset(quota.resets_in_minutes) : "";
-    // The percentage answers "how full", the tokens answer it again in the unit
-    // the user actually writes in. Both describe the same window, so they share
-    // the headline line rather than being stacked.
-    const used = finite(quota.used_tokens) ? compact(quota.used_tokens) : "";
-    // The remainder is inferred (ADR-0025) and simply absent until the
-    // calibration has evidence; the line closes up around it.
-    const sub = [
-      basis ? basis.label : "无官方配额",
-      finite(quota.remaining_tokens) ? `还剩 ${compact(quota.remaining_tokens)}` : "",
-      reset,
-    ].filter(Boolean).join(" · ");
-    const detail = quotaDetail(quota);
-    return `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}"
-      data-basis="${esc(quota.basis)}">
-      <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
-      <strong class="fig" data-severity="${finite(percent) ? severity(percent) : ""}">${
-        finite(percent) ? percentLabel(percent) : "暂无"}${
-        used ? `<span class="fig-aside">${esc(used)}</span>` : ""}</strong>
-      <span class="quota-basis">${esc(sub)}</span>
-      ${detail ? `<span class="delta">${esc(detail)}</span>` : ""}
-    </article>`;
-  }).join("");
+  root.innerHTML = quotas.map((quota) => `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}">
+    <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
+    <div class="quota-values">${QUOTA_WINDOWS.map((window) => {
+      const percent = quota[`${window.key}_percent`];
+      return `<div class="quota-window" data-window="${window.key}">
+        <span class="quota-window-label">${window.label} 已用</span>
+        <strong class="fig" data-severity="${quotaSeverity(percent)}">${percentLabel(percent)}</strong>
+      </div>`;
+    }).join("")}</div>
+    <div class="quota-estimates">${QUOTA_WINDOWS.map((window) => {
+      const remaining = quota[`${window.key}_remaining_tokens`];
+      const label = finite(remaining) && remaining >= 0 ? `${compact(remaining)} tokens` : "暂无估算";
+      return `<div class="quota-estimate"><span>${window.estimate}</span><b>${label}</b></div>`;
+    }).join("")}</div>
+  </article>`).join("");
 }
 
 function sourceRows(bucket) {

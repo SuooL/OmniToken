@@ -181,26 +181,19 @@ body.degraded #main { opacity: .88; }
 .delta[data-direction="up"] { color: var(--status-healthy); }
 .delta[data-direction="down"] { color: var(--amber); }
 
-/* The tokens ride the headline at a size that reads as its companion rather
-   than as a second number competing with it. Baseline-aligned by sitting
-   inside the same <strong>. */
-.quota-card .fig-aside {
-  margin-left: 5px;
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--text-secondary);
-  letter-spacing: 0;
-}
-.quota-card .quota-basis { color: var(--text-secondary); font-size: 10px; }
-.quota-card .delta { color: var(--text-muted); font-size: 10px; }
-/* Fixed steps from severity() in format-core.js, not a gradient: the reader
-   needs "is this fine or not", not a hue to interpolate. */
-.quota-card strong[data-severity="warn"] { color: var(--meter-warn); }
+/* Each official window keeps its own percentage and warning colour. */
+.quota-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+.quota-window { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.quota-window-label { color: var(--text-secondary); font-size: 10px; }
+.quota-window strong { font-size: 22px; }
+.quota-card strong[data-severity="warn"] { color: #f5d58b; }
 .quota-card strong[data-severity="serious"] { color: var(--meter-serious); }
 .quota-card strong[data-severity="critical"] { color: var(--meter-critical); }
-/* No reading at all reads as muted, so it can never be mistaken for a healthy
-   low number. */
-.quota-card[data-basis="none"] strong { color: var(--text-muted); }
+.quota-estimates { display: flex; flex-direction: column; gap: 4px; }
+.quota-estimate { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 6px; font-size: 10px; }
+.quota-estimate span { color: var(--text-secondary); }
+.quota-estimate b { color: var(--text-secondary); font-weight: 500; }
+
 
 .speed-history {
   padding: 12px 12px 9px;
