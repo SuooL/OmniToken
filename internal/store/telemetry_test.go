@@ -312,3 +312,62 @@ func TestTelemetrySpeedSeriesSortsBucketSourcesByKey(t *testing.T) {
 		t.Errorf("source order = %+v, want stable key order independent of contribution", got.Series[0].Sources)
 	}
 }
+
+func TestTelemetryTodaySourcesKeepModelsAndYesterdayComparisonSeparate(t *testing.T) {
+	st := speedStore(t)
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// DST starts today: yesterday's same local time is 23 hours before now.
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, loc)
+	midnight := time.Date(2026, 3, 8, 0, 0, 0, 0, loc)
+	previous := time.Date(2026, 3, 7, 12, 0, 0, 0, loc)
+	events := []model.Event{
+		telemetryEvent("claude-midnight", midnight, "claude-code", "anthropic.claude-opus-4-8", 100),
+		telemetryEvent("claude-alias", now, "claude-code", "claude-opus-4-8", 200),
+		telemetryEvent("codex-same-model", now, "codex", "claude-opus-4-8", 70),
+		telemetryEvent("deepseek", now.Add(-6*time.Hour), "dsh", "deepseek-v4", 400),
+		telemetryEvent("api", now, "proxy", "claude-opus-4-8", 50),
+		telemetryEvent("previous-at-noon", previous, "claude-code", "claude-opus-4-8", 150),
+		telemetryEvent("previous-after-noon", previous.Add(time.Millisecond), "claude-code", "claude-opus-4-8", 900),
+		telemetryEvent("before-previous-day", midnight.AddDate(0, 0, -1).Add(-time.Millisecond), "claude-code", "claude-opus-4-8", 900),
+		telemetryEvent("future", now.Add(time.Millisecond), "dsh", "deepseek-v4", 999),
+	}
+	if _, err := st.InsertEvents(events, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.TelemetryUsage(midnight, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySource := map[string]TelemetryDailySourceUsage{}
+	var total int64
+	for _, row := range got.Today.Sources {
+		bySource[row.Source] = row
+		total += row.Tokens
+		var models int64
+		for _, m := range row.Models {
+			models += m.Tokens
+		}
+		if models != row.Tokens {
+			t.Fatalf("source %s models=%d total=%d", row.Source, models, row.Tokens)
+		}
+	}
+	if total != got.Today.TotalTokens || total != 820 {
+		t.Fatalf("sources=%d today=%d", total, got.Today.TotalTokens)
+	}
+	claude := bySource["claude-code"]
+	if claude.Tokens != 300 || claude.PreviousTokens != 150 || claude.ChangePercent == nil || *claude.ChangePercent != 100 {
+		t.Fatalf("Claude daily comparison = %+v", claude)
+	}
+	if len(claude.Models) != 1 || claude.Models[0].Model != "claude-opus-4-8" {
+		t.Fatalf("canonical models=%+v", claude.Models)
+	}
+	if bySource["codex"].Tokens != 70 || bySource["dsh"].Tokens != 400 || bySource["api"].Tokens != 50 {
+		t.Fatalf("source attribution=%+v", bySource)
+	}
+	if bySource["codex"].ChangePercent != nil {
+		t.Fatal("zero previous usage must not invent a comparison")
+	}
+}

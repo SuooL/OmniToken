@@ -45,7 +45,7 @@ require("node:vm").runInThisContext(
   require("node:fs").readFileSync(`${__dirname}/format-core.js`, "utf8"),
 );
 
-const { coverageLabel, onLive, renderAll } = require("./app.js");
+const { coverageLabel, onLive, onTelemetry, renderAll } = require("./app.js");
 
 const text = (id) => document.getElementById(id).textContent;
 
@@ -242,4 +242,62 @@ test("countdowns distinguish unknown reset times from an expired deadline", () =
       assert.ok(quotaReading(html, "five_hour").includes(expected));
     }
   } finally { Date.now = originalNow; }
+});
+
+test("today usage uses source-attributed daily models and omits invalid comparisons", () => {
+ onTelemetry({ today: { total_tokens: 450, sources: [
+  { source: "claude-code", tokens: 300, previous_tokens: 150, change_percent: 100, models: [{ model: "claude-opus", tokens: 300 }] },
+  { source: "codex", tokens: 50, previous_tokens: 0, change_percent: null, models: [{ model: "claude-opus", tokens: 50 }] },
+  { source: "dsh", tokens: 100, previous_tokens: 200, change_percent: -50, models: [{ model: "deepseek-v4", tokens: 100 }] },
+ ] }, rolling_5h: { sources: [{ source: "claude-code", tokens: 999999 }] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.match(html, /data-source="claude-code"[\s\S]*?300[\s\S]*?claude-opus[\s\S]*?昨日同时段 \+100.0%/);
+ assert.match(html, /data-source="dsh"[\s\S]*?昨日同时段 -50.0%/);
+ const codex = html.match(/data-source="codex"([\s\S]*?)<\/article>/)[1];
+ assert.ok(!codex.includes("delta"));
+ assert.ok(!html.includes("不可用"));
+ assert.ok(!html.includes("999"));
+});
+
+test("daily cards show all models safely and preserve empty known sources", () => {
+ onTelemetry({ today: { total_tokens: 10, sources: [
+  { source: "dsh", tokens: 10, models: [{ model: "<unsafe>", tokens: 6 }, { model: "second", tokens: 3 }, { model: "third", tokens: 1 }] },
+ ] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.equal((html.match(/<article/g) || []).length, 3);
+ assert.ok(html.includes("&lt;unsafe&gt;"));
+ assert.ok(html.includes("third"));
+ assert.ok(!html.includes("<unsafe>"));
+ assert.match(html, /data-source="claude-code"[\s\S]*?>0<\/strong>/);
+});
+
+test("older server payloads never invent source attribution from model names", () => {
+ onTelemetry({ today: { total_tokens: 100, models: [{ model: "claude-opus", tokens: 100 }] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.ok(!html.includes("claude-opus"));
+ assert.equal((html.match(/>—<\/strong>/g) || []).length, 3);
+ assert.ok(!html.includes("不可用"));
+});
+
+
+test("usage sections keep daily sources together and remove duplicate daily-model panel", () => {
+ const fs = require("node:fs");
+ const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
+ const css = fs.readFileSync(`${__dirname}/style.css`, "utf8");
+ assert.ok(html.includes('id="today-title">今日使用'));
+ assert.ok(html.includes('id="quota-title">用量预估'));
+ assert.ok(html.indexOf('id="today-sources"') < html.indexOf('id="quota-grid"'));
+ assert.ok(!html.includes("最近 5h"));
+ assert.ok(!html.includes('id="model-list"'));
+ assert.match(css, /\.daily-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+});
+
+test("other measured sources remain visible so totals do not silently omit API usage", () => {
+ onTelemetry({ today: { total_tokens: 150, sources: [
+  { source: "codex", tokens: 100, models: [{ model: "gpt-5", tokens: 100 }] },
+  { source: "api", tokens: 50, models: [{ model: "other-model", tokens: 50 }] },
+ ] } });
+ assert.equal(document.getElementById("today-other").hidden, false);
+ assert.ok(document.getElementById("today-other").innerHTML.includes("other-model"));
+ assert.equal(text("today-total"), "150");
 });

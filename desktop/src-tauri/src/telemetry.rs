@@ -12,11 +12,22 @@ pub struct ModelUsage {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct DailySourceUsage {
+    pub source: String,
+    pub tokens: u64,
+    pub previous_tokens: u64,
+    pub change_percent: Option<f64>,
+    pub models: Vec<ModelUsage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct TodayUsage {
     pub start_ms: i64,
     pub end_ms: i64,
     pub total_tokens: u64,
     pub models: Vec<ModelUsage>,
+    #[serde(default)]
+    pub sources: Option<Vec<DailySourceUsage>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -143,6 +154,41 @@ fn validate(raw: &WireTelemetry) -> Result<(), String> {
         .ok_or_else(|| "telemetry today models overflow".to_string())?;
     if model_tokens != raw.today.total_tokens {
         return Err("telemetry today models do not sum to total".into());
+    }
+    if let Some(sources) = &raw.today.sources {
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0_u64;
+        for row in sources {
+            if row.source.trim().is_empty()
+                || !seen.insert(&row.source)
+                || row.change_percent.is_some_and(|p| !p.is_finite())
+            {
+                return Err("telemetry daily source is invalid".into());
+            }
+            let mut model_names = std::collections::HashSet::new();
+            let mut tokens = 0_u64;
+            for model in &row.models {
+                if model.model.trim().is_empty()
+                    || !model_names.insert(&model.model)
+                    || !finite_non_negative(model.share)
+                    || model.share > 1.0
+                {
+                    return Err("telemetry daily source model is invalid".into());
+                }
+                tokens = tokens
+                    .checked_add(model.tokens)
+                    .ok_or("telemetry daily models overflow")?;
+            }
+            if tokens != row.tokens {
+                return Err("telemetry daily models do not sum to source".into());
+            }
+            total = total
+                .checked_add(row.tokens)
+                .ok_or("telemetry daily sources overflow")?;
+        }
+        if total != raw.today.total_tokens {
+            return Err("telemetry daily sources do not sum to total".into());
+        }
     }
     if raw.rolling_5h.sources.iter().any(|row| {
         row.source.trim().is_empty() || row.change_percent.is_some_and(|value| !value.is_finite())
@@ -459,6 +505,33 @@ mod tests {
             json!("claude-code")
         );
         assert!(webview["speed"]["coverage"][1].get("key").is_none());
+    }
+
+    #[test]
+    fn daily_source_models_reconcile_without_guessing_from_model_names() {
+        let mut payload = complete_payload();
+        payload["today"]["sources"] = json!([
+            {"source":"claude-code","tokens":4_910_000,"previous_tokens":2_455_000,"change_percent":100.0,
+             "models":[{"model":"claude-sonnet","tokens":3_040_000,"share":0.6191},
+                       {"model":"claude-opus","tokens":1_870_000,"share":0.3809}]},
+            {"source":"codex","tokens":2_010_000,"previous_tokens":0,"change_percent":null,
+             "models":[{"model":"gpt-5","tokens":2_010_000,"share":1.0}]},
+            {"source":"dsh","tokens":0,"previous_tokens":0,"change_percent":null,"models":[]}
+        ]);
+        let view = parse_payload(payload.clone()).unwrap();
+        let sources = view.today.sources.unwrap();
+        assert_eq!(sources[0].models.len(), 2);
+        assert_eq!(sources[1].change_percent, None);
+        assert_eq!(sources[2].tokens, 0);
+        payload["today"]["sources"][0]["models"][0]["tokens"] = json!(1);
+        assert!(parse_payload(payload)
+            .unwrap_err()
+            .contains("sum to source"));
+        // Older servers are accepted without synthesizing source attribution.
+        assert_eq!(
+            parse_payload(complete_payload()).unwrap().today.sources,
+            None
+        );
     }
 
     #[test]

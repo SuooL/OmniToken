@@ -142,24 +142,32 @@ function renderHero() {
     : "设备未知";
 }
 
-function renderUsageCard(source, prefix) {
-  const rows = latestTelemetry && latestTelemetry.rolling_5h.sources || [];
-  const row = rows.find((item) => item.source === source);
-  $(`${prefix}-5h-value`).textContent = row ? tokenLabel(row.tokens) : "—";
-  const delta = $(`${prefix}-5h-change`);
-  if (!row) {
-    delta.textContent = "用量不可用";
-    delta.dataset.direction = "unknown";
-    return;
-  }
-  if (!finite(row.change_percent)) {
-    delta.textContent = "前窗为 0 · 比较不可用";
-    delta.dataset.direction = "unknown";
-    return;
-  }
-  const sign = row.change_percent > 0 ? "+" : "";
-  delta.textContent = `较前 5h ${sign}${row.change_percent.toFixed(1)}%`;
-  delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
+const DAILY_SOURCES = ["claude-code", "codex", "dsh"];
+
+function dailyCard(source, row, known) {
+  const models = row && Array.isArray(row.models) ? row.models : [];
+  const change = row && row.previous_tokens > 0 && finite(row.change_percent) ? row.change_percent : null;
+  return `<article class="usage-card daily-card ${esc(SOURCE_TONE[source] || "other")}" data-source="${esc(source)}">
+    <div class="source-title"><span class="source-dot"></span>${esc(sourceName(source))}</div>
+    <strong class="fig">${row ? tokenLabel(row.tokens) : known ? "0" : "—"}</strong>
+    <div class="daily-models">${models.map((model) => `<div class="daily-model">
+      <span title="${esc(model.model)}">${esc(model.model)}</span><b class="fig">${tokenLabel(model.tokens)}</b>
+    </div>`).join("")}</div>
+    ${change == null ? "" : `<span class="delta" data-direction="${change > 0 ? "up" : change < 0 ? "down" : "flat"}">昨日同时段 ${change > 0 ? "+" : ""}${change.toFixed(1)}%</span>`}
+  </article>`;
+}
+
+function renderDailyUsage() {
+  const today = latestTelemetry && latestTelemetry.today;
+  const known = !!(today && Array.isArray(today.sources));
+  const sources = known ? today.sources : [];
+  $("today-total").textContent = today ? tokenLabel(today.total_tokens) : "—";
+  $("today-title").title = latestTelemetry && latestTelemetry.timezone ? `日界时区：${latestTelemetry.timezone}` : "";
+  $("today-sources").innerHTML = DAILY_SOURCES.map((source) =>
+    dailyCard(source, sources.find((row) => row.source === source), known)).join("");
+  const others = sources.filter((row) => !DAILY_SOURCES.includes(row.source) && row.tokens > 0);
+  $("today-other").hidden = !others.length;
+  $("today-other").innerHTML = others.map((row) => dailyCard(row.source, row, true)).join("");
 }
 
 const QUOTA_WINDOWS = [
@@ -293,23 +301,6 @@ function renderStats() {
     ? String((speed.measured_sources || []).length) : "—";
 }
 
-function renderModels() {
-  const today = latestTelemetry && latestTelemetry.today;
-  const models = today && today.models || [];
-  $("today-total").textContent = today ? tokenLabel(today.total_tokens) : "—";
-  $("model-count").textContent = today ? `${models.length} 个模型` : "—";
-  $("model-strip").innerHTML = models.map((model, index) =>
-    `<span class="model-segment tone-${index % 5}" style="flex-grow:${Math.max(0, model.tokens)}"></span>`
-  ).join("");
-  $("model-list").innerHTML = !today ? `<div class="empty">今日用量不可用</div>` : models.length ? models.map((model, index) => `
-    <div class="model-row">
-      <span class="model-dot tone-${index % 5}"></span>
-      <span class="model-name" title="${esc(model.model)}">${esc(model.model)}</span>
-      <span class="model-share">${finite(model.share) ? (model.share * 100).toFixed(1) + "%" : "—"}</span>
-      <span class="fig">${tokenLabel(model.tokens)}</span>
-    </div>`).join("") : `<div class="empty">今日暂无用量</div>`;
-}
-
 function renderContributors() {
   const sessions = (latestLive && latestLive.sessions || [])
     .filter((session) => finite(session.contribution_rate))
@@ -351,13 +342,10 @@ function renderDevices() {
 function renderAll() {
   renderFreshness();
   renderHero();
-  renderUsageCard("claude-code", "claude");
-  renderUsageCard("codex", "codex");
-  renderUsageCard("dsh", "dsh");
+  renderDailyUsage();
   renderQuotas();
   renderSpeedLanes();
   renderStats();
-  renderModels();
   renderContributors();
   renderDevices();
   fitWindow();
@@ -368,13 +356,18 @@ function onLive(update) {
   renderAll();
 }
 
+function onTelemetry(telemetry) {
+  latestTelemetry = telemetry;
+  telemetryError = telemetry && telemetry.error || "";
+  renderAll();
+}
+
 async function pullTelemetry() {
   const generation = ++telemetryGeneration;
   try {
     const telemetry = await invoke("telemetry_get", { range: "1h" });
     if (generation !== telemetryGeneration) return;
-    latestTelemetry = telemetry;
-    telemetryError = latestTelemetry.error || "";
+    onTelemetry(telemetry);
   } catch (error) {
     if (generation !== telemetryGeneration) return;
     telemetryError = String(error);
@@ -527,5 +520,5 @@ if (!invoke || !listen) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { coverageLabel, onLive, renderAll };
+  module.exports = { coverageLabel, onLive, onTelemetry, renderAll };
 }
