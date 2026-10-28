@@ -301,3 +301,17 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 0.2.2 发布准备:纳入已确认的余量同行两列布局与不换行重置倒计时;保留原 v0.2.1 tag
 及其未完成发布草稿,不改写已有版本。用户自行更新本机正式应用;发布成功后清理本地
 OmniToken 安装包与构建副本,保留 `/Applications/OmniToken.app`。
+
+
+### Web calendar-day overview (2026-10-27)
+
+| Item | Status | Behavior |
+|---|---|---|
+| Daily source usage and speed | ✅ Complete | Overview reads `today.sources`; source speed uses `range=today`, server midnight to now with five-minute buckets. No rolling-five-hour totals or unavailable comparison messages. |
+| Readable event devices | ✅ Complete | Event responses include shared-resolver display names; rows no longer depend on filter-option request timing. Stable IDs remain filter keys. |
+| Missing model explanation | ✅ Complete | Displays “日志未记录模型”; preserves events and token totals without assigning later session models retroactively. |
+
+Pricing maintenance audit: LiteLLM prices are embedded at build time, refreshed manually with
+`go run scripts/refresh-pricing.go`; no scheduled refresh or runtime download is configured.
+Model normalization and date-based Codex pricing fallbacks are maintained in code. Price lookup
+fallbacks are valuation assumptions, not evidence of a missing event's actual model.
