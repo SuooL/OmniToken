@@ -84,3 +84,15 @@ a100 使用 `https://ingest.suool.net`,198 自采 agent 用 `http://127.0.0.1:87
 Mac 旧 server/tunnel job 未加载。七个注册节点中 suool-mac、mypc、hzsmini、a100、
 aliyun198 在线,pathzl、h200 离线。此为时点观测,不是永久状态。
 hzsmini 配置未能通过 SSH 复核,不把旧文档中的传输方式当作已确认现状。
+
+## 本次部署验收(2026-10-27)
+
+PR #126 已由 CI 合入 dev(e578741),部署的应用源码与合入后的树一致,
+二进制版本标记为 `b4ec8f0-site-auth`。备份位于 198:
+`/var/backups/omnitoken/20261028T033218Z-site-passkey`。
+
+部署前后用量事件均为 166,228 条,七台注册设备的 identity/credential hash
+逐项一致。公网 `/` 重定向本站 `/login`,未授权 API 返回 401;
+真实浏览器加载本站登录页,无脚本错误。生产验证通过登录码单次消费、跨站拒绝、
+只读权限、SSE 与退出撤销。生产测试会话已退出,未向生产库添加虚拟 Passkey。
+Mac 实际注册留给用户在系统验证弹窗中完成。
