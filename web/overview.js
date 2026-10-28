@@ -243,7 +243,7 @@ const Overview = {
       el.innerHTML = `<p class="empty">成功查询，但此范围暂无可测生成区间。</p>`;
       return;
     }
-    const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", timeZone: snapshot.timezone || undefined}));
+    const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", timeZone: snapshot.timezone && snapshot.timezone !== "Local" ? snapshot.timezone : undefined}));
     const grids = sourceKeys.map((_, index) => ({
       left: 58, right: 18, top: 16 + index * (220 / sourceKeys.length),
       height: Math.max(38, 170 / sourceKeys.length),
