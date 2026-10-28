@@ -179,6 +179,24 @@ function quotaSeverity(percent) {
   return "";
 }
 
+function quotaResetLabel(deadline) {
+  if (!finite(deadline) || deadline <= 0) return "重置时间暂无";
+  const minutes = Math.ceil(Math.max(0, deadline - Date.now()) / 60000);
+  return `${Math.floor(minutes / 60)}h${minutes % 60}min 后重置`;
+}
+
+function quotaRemaining(quota, key) {
+  const remaining = quota[`${key}_remaining_tokens`];
+  const known = finite(remaining) && remaining >= 0;
+  if (key !== "five_hour") return known ? remaining : null;
+  const weekly = quota.weekly_remaining_tokens;
+  if (finite(weekly) && weekly >= 0) {
+    if (weekly === 0 && finite(quota.five_hour_percent)) return 0;
+    return known ? Math.min(remaining, weekly) : null;
+  }
+  return known ? remaining : null;
+}
+
 function renderQuotas() {
   const quotas = latestLive && latestLive.quotas;
   const root = $("quota-grid");
@@ -193,10 +211,11 @@ function renderQuotas() {
       return `<div class="quota-window" data-window="${window.key}">
         <span class="quota-window-label">${window.label} 已用</span>
         <strong class="fig" data-severity="${quotaSeverity(percent)}">${percentLabel(percent)}</strong>
+        <span class="quota-reset">${quotaResetLabel(quota[`${window.key}_resets_at_ms`])}</span>
       </div>`;
     }).join("")}</div>
     <div class="quota-estimates">${QUOTA_WINDOWS.map((window) => {
-      const remaining = quota[`${window.key}_remaining_tokens`];
+      const remaining = quotaRemaining(quota, window.key);
       const label = finite(remaining) && remaining >= 0 ? `${compact(remaining)} tokens` : "暂无估算";
       return `<div class="quota-estimate"><span>${window.estimate}</span><b>${label}</b></div>`;
     }).join("")}</div>
@@ -508,5 +527,5 @@ if (!invoke || !listen) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { coverageLabel, onLive };
+  module.exports = { coverageLabel, onLive, renderAll };
 }

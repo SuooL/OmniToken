@@ -185,6 +185,7 @@ body.degraded #main { opacity: .88; }
 .quota-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
 .quota-window { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .quota-window-label { color: var(--text-secondary); font-size: 10px; }
+.quota-reset { color: var(--text-secondary); font-size: 9px; white-space: nowrap; }
 .quota-window strong { font-size: 22px; }
 .quota-card strong[data-severity="warn"] { color: #f5d58b; }
 .quota-card strong[data-severity="serious"] { color: var(--meter-serious); }

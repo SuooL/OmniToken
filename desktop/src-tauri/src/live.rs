@@ -225,6 +225,8 @@ struct QuotaView {
     label: String,
     five_hour_percent: Option<f64>,
     weekly_percent: Option<f64>,
+    five_hour_resets_at_ms: Option<i64>,
+    weekly_resets_at_ms: Option<i64>,
     /// Estimates from the matching authoritative window card (ADR-0025/0034).
     five_hour_remaining_tokens: Option<i64>,
     weekly_remaining_tokens: Option<i64>,
@@ -330,7 +332,7 @@ fn remaining_tokens(window: Option<&Value>, percent: Option<f64>) -> Option<i64>
     Some(capacity.saturating_sub(used).max(0))
 }
 
-/// The tightest weekly reading, consistent with the server's window card.
+/// The tightest weekly reading and its reset deadline, matching the server card.
 fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
     quotas
         .iter()
@@ -341,7 +343,10 @@ fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
         .filter_map(|quota| {
             Some((
                 quota.get("used_percent").and_then(Value::as_f64)?,
-                quota.get("remaining_minutes").and_then(Value::as_i64),
+                quota
+                    .get("resets_at")
+                    .and_then(Value::as_i64)
+                    .filter(|n| *n > 0),
             ))
         })
         .fold(
@@ -377,20 +382,31 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0)
             });
-            let weekly_percent = weekly_quota(quotas, source).map(|(percent, _)| percent);
+            let weekly = weekly_quota(quotas, source);
+            let weekly_percent = weekly.map(|(percent, _)| percent);
+            let weekly_remaining_tokens =
+                remaining_tokens(window_card(windows, source, true), weekly_percent);
+            let five_hour_remaining_tokens =
+                remaining_tokens(window_card(windows, source, false), five_hour_percent);
+            // Both limits apply. A 5h allowance is not spendable beyond the
+            // remaining weekly allowance, even just after the 5h reset.
+            let five_hour_remaining_tokens =
+                match (five_hour_remaining_tokens, weekly_remaining_tokens) {
+                    (_, Some(0)) if five_hour_percent.is_some() => Some(0),
+                    (Some(five_hour), Some(weekly)) => Some(five_hour.min(weekly)),
+                    (five_hour, _) => five_hour,
+                };
             QuotaView {
                 source: source.to_string(),
                 label: source_label(source),
                 five_hour_percent,
                 weekly_percent,
-                five_hour_remaining_tokens: remaining_tokens(
-                    window_card(windows, source, false),
-                    five_hour_percent,
-                ),
-                weekly_remaining_tokens: remaining_tokens(
-                    window_card(windows, source, true),
-                    weekly_percent,
-                ),
+                five_hour_resets_at_ms: five_hour
+                    .and_then(|window| window.get("resets_at").and_then(Value::as_i64))
+                    .filter(|n| *n > 0),
+                weekly_resets_at_ms: weekly.and_then(|(_, resets_at)| resets_at),
+                five_hour_remaining_tokens,
+                weekly_remaining_tokens,
             }
         })
         .collect()
@@ -1598,10 +1614,12 @@ mod tests {
             [
                 "five_hour_percent",
                 "five_hour_remaining_tokens",
+                "five_hour_resets_at_ms",
                 "label",
                 "source",
                 "weekly_percent",
                 "weekly_remaining_tokens",
+                "weekly_resets_at_ms",
             ]
         );
 
@@ -1928,7 +1946,7 @@ mod tests {
             ]),
         );
         let encoded = serde_json::to_value(quotas_of(&payload)).unwrap();
-        assert_eq!(encoded[0]["five_hour_remaining_tokens"], json!(132_000_000));
+        assert_eq!(encoded[0]["five_hour_remaining_tokens"], json!(8_000_000));
         assert_eq!(encoded[0]["weekly_remaining_tokens"], json!(8_000_000));
         assert_eq!(encoded[1]["five_hour_remaining_tokens"], Value::Null);
         assert_eq!(encoded[1]["weekly_remaining_tokens"], json!(150));
@@ -1957,6 +1975,30 @@ mod tests {
         assert_eq!(claude.five_hour_percent, None);
         assert_eq!(claude.five_hour_remaining_tokens, None);
         assert_eq!(claude.weekly_remaining_tokens, None);
+    }
+
+    #[test]
+    fn five_hour_available_tokens_are_limited_by_the_weekly_window() {
+        for (five_hour, weekly, expected) in [(132, 8, 8), (5, 8, 5), (132, 0, 0)] {
+            let payload = payload_with_windows(
+                json!([
+                    {"key":"claude-code","authoritative":true,"used_percent":2.0,
+                     "remaining_tokens":five_hour,"resets_at":6_000_000},
+                    {"key":"claude-code:weekly","authoritative":true,"used_percent":96.0,
+                     "remaining_tokens":weekly}
+                ]),
+                json!([
+                    {"source":"claude-code","window_minutes":10080,"used_percent":96.0,"resets_at":900_000_000},
+                    {"source":"claude-code","window_minutes":10080,"used_percent":10.0,"resets_at":100_000_000}
+                ]),
+            );
+            let view = serde_json::to_value(quotas_of(&payload)).unwrap();
+            assert_eq!(view[0]["five_hour_remaining_tokens"], json!(expected));
+            assert_eq!(view[0]["weekly_remaining_tokens"], json!(weekly));
+            assert_eq!(view[0]["five_hour_resets_at_ms"], json!(6_000_000));
+            // The reset must belong to the tightest weekly scope, not the first/last row.
+            assert_eq!(view[0]["weekly_resets_at_ms"], json!(900_000_000));
+        }
     }
 
     /// Each estimate must describe its own percentage window.
