@@ -62,6 +62,8 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F26 | 访问控制:默认 `listen` 为 `127.0.0.1:8787`;监听非 loopback 地址时读接口与写接口共用同一个 bearer token,未配 token 则启动即拒绝;判定由监听地址推导而非开关。`/api/v1/health` 与面板外壳保持免鉴权,`?access_token=` 仅 `/api/v1/stream` 接受(ADR-0016) | **P0** | ✅ 多设备汇集(F3)的前置条件 |
 | F27 | DeepSeek Harness(dsh)日志解析:被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件,token 四分量取 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`(`reasoningTokens` 是 output 子集,不另计);模型与 provider 取同 turn/step 的 `request/context`;`event_id = f(session_id, seq)` 保证重扫幂等;source=`dsh`。dsh 里 provider 是用户自取的 ID(如 `deepseek-official`/`openai-codex`),均经用户配置的 API key 调用,故计费通道一律记为非订阅(官方 API / 第三方中转),绝不记订阅(ADR-0029) | P2 | ✅ |
 
+| F28 | 站点独立认证:单用户、短时一次性登录码、Mac 平台 Passkey 注册及登录、独立安全会话、退出撤销;CLI 生成恢复码,不依赖 auth.suool.net,不提供公开注册;设备和桌面端 bearer 凭据保持独立(ADR-0036) | P1 | M13 |
+
 ### 待补缺口(GAP)
 
 初版页面规格(与用户讨论时列出的 10 个页面)与当前实现的差异,逐条登记以免遗漏:

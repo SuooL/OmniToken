@@ -11,7 +11,42 @@ import (
 	"testing"
 
 	"github.com/suool/omnitoken/internal/agent"
+	"github.com/suool/omnitoken/internal/siteauth"
 )
+
+func TestAuthCodeCommandUsesSeparateDatabase(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.json")
+	data, _ := json.Marshal(map[string]any{"db": filepath.Join(dir, "usage.db"), "site_auth_origin": "https://omni.example.test"})
+	if err := os.WriteFile(config, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runAuthCodeWith([]string{"-config", config, "-ttl", "15m"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "usage.db")); !os.IsNotExist(err) {
+		t.Fatal("code command touched usage database")
+	}
+	a, err := siteauth.Open(filepath.Join(dir, "site-auth.db"), "https://omni.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	mux := http.NewServeMux()
+	a.RegisterRoutes(mux)
+	body, _ := json.Marshal(map[string]string{"code": strings.TrimSpace(output.String())})
+	r := httptest.NewRequest("POST", "https://omni.example.test/auth/code", bytes.NewReader(body))
+	r.Header.Set("Origin", "https://omni.example.test")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("generated code rejected: %d", w.Code)
+	}
+	if err := runAuthCodeWith([]string{"-config", config, "-ttl", "2h"}, &output); err == nil {
+		t.Fatal("overlong lifetime accepted")
+	}
+}
 
 func TestAgentEnrollPersistsStableIdentityAndDoesNotPrintCredentials(t *testing.T) {
 	var requests []map[string]any

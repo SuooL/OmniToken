@@ -261,6 +261,14 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 应用内自更新(F24 / ADR-0035) | ✅ 完成 | 照搬同机 OmniStats 的 Sparkle 方案,换成 `tauri-plugin-updater`:Ed25519 签名的 `latest.json` 作为 Release 资产(静态重定向,不碰限流的 REST API),公钥编进 bundle,私钥只在 CI secret。定时 6h + 菜单「检查更新…」。**实测**:ad-hoc 签名的 app 能自我替换(0.1.0→0.1.1 约 1 秒)、替换后无 `com.apple.quarantine`、能正常启动;release 构建强制 https(端点写成 http 会让应用启动即 panic,已加 3 条契约测试挡住) |
 | 发布 job:desktop bundle | ✅ 完成 | `release.yml` 加 `desktop` job(macos-14,`needs: release`),同 tag 构建签名、生成 latest.json、挂到同一个 Release。2026-09-08 随 **v0.2.0** 首次真实发布跑通(8m37s),三个更新资产都挂上了 Release;本机 0.1.0 实例从真实端点自更新到 0.2.0,约 20 秒。验证中发现安装只替换 bundle、不动进程(pid 不变),必须显式重启;`app.restart()` 与 `open -n`+`spawn()` 在 launchd job 下都会让应用直接死掉(#122/#123),**`open -n`+`status()` 成立**(等 LaunchServices 接手后再退出,实测 0.1.9→0.2.0、pid 换新、单实例存活,#125);并给 release 构建补上 updater 日志 |
 
+## M13 — 站点独立认证(2026-10-27)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 单用户登录码与安全会话(F28) | ✅ 实现 | 短时单次消费、会话撤销、Origin 校验、认证库与事件库分离;ADR-0036 |
+| 平台 Passkey 注册与免用户名登录 | ✅ 实现 | 浏览器虚拟平台认证器验收;真实 Mac Touch ID 注册由用户完成 |
+| 现网认证切换 | 待部署 | 仅移除 omni 站点的 Authelia 与 read token 注入;runbook 记录实际 198 部署 |
+
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试
