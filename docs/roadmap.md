@@ -267,7 +267,7 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 |---|---|---|
 | 单用户登录码与安全会话(F28) | ✅ 实现 | 短时单次消费、会话撤销、Origin 校验、认证库与事件库分离;ADR-0036 |
 | 平台 Passkey 注册与免用户名登录 | ✅ 实现 | 浏览器虚拟平台认证器验收;真实 Mac Touch ID 注册由用户完成 |
-| 现网认证切换 | 待部署 | 仅移除 omni 站点的 Authelia 与 read token 注入;runbook 记录实际 198 部署 |
+| 现网认证切换 | ✅ 完成 | aliyun198 已部署,omni 站点移除 Authelia 与 read token 注入;公网登录码/重放拒绝/退出撤销/SSE/bearer 验收通过;节点凭据保留 |
 
 ## 工程事项(持续)
 
