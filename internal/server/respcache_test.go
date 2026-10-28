@@ -88,3 +88,24 @@ func TestRespCacheCollapsesConcurrentMisses(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseCacheClearDoesNotLetOldFailureEvictNewPrices(t *testing.T) {
+	c := newRespCache(time.Now)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.bytes("prices", time.Hour, func() ([]byte, error) { close(started); <-release; return nil, errors.New("old request failed") })
+	}()
+	<-started
+	c.clear()
+	got, err := c.bytes("prices", time.Hour, func() ([]byte, error) { return []byte("new prices"), nil })
+	if err != nil || string(got) != "new prices" {
+		t.Fatalf("new response: %s %v", got, err)
+	}
+	close(release)
+	<-done
+	got, err = c.bytes("prices", time.Hour, func() ([]byte, error) { t.Error("old failure evicted fresh result"); return nil, nil })
+	if err != nil || string(got) != "new prices" {
+		t.Fatalf("cached response: %s %v", got, err)
+	}
+}

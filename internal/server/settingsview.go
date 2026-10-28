@@ -42,14 +42,7 @@ const (
 	settingsSavedMsg = "saved"
 )
 
-// pricesMu guards Server.prices against the hot swap done by
-// handlePutSettings. It lives here (package-level) so this file compiles
-// without touching server.go; moving it into the Server struct is the
-// preferred end state — see the integration notes.
-//
-// NOTE: this protects the *pointer*, not pricing.Table's internal lookup memo,
-// which is written by Lookup() and is already raced on by concurrent request
-// handlers today. Fixing that belongs in internal/pricing.
+// pricesMu guards the live immutable table pointer during hot reload.
 var pricesMu sync.RWMutex
 
 // Prices returns the live price table. All cost paths should read through
@@ -71,26 +64,36 @@ func (s *Server) setPrices(t *pricing.Table) {
 // DB-stored ones (DB wins on conflict) and swaps it in atomically. Call it
 // from New() so DB overrides apply at startup, and after every settings save.
 func (s *Server) ReloadPricing() error {
-	merged := map[string]pricing.Override{}
-	for k, v := range s.cfg.PricingOverrides {
-		merged[k] = v
-	}
-	var stored map[string]pricing.Override
-	if err := s.store.GetSettingsJSON(settingsKeyPricing, &stored); err != nil {
-		return err
-	}
-	for k, v := range stored {
-		merged[k] = v
-	}
-	table, err := pricing.Load(merged)
+	s.pricingUpdateMu.Lock()
+	defer s.pricingUpdateMu.Unlock()
+	table, err := s.priceTable(s.pricingCatalog)
 	if err != nil {
 		return err
 	}
 	s.setPrices(table)
+	s.invalidatePriceCaches()
 	return nil
 }
 
+// Caller holds pricingUpdateMu so catalog refresh and settings reload cannot
+// overwrite one another with an older base snapshot.
+func (s *Server) priceTable(catalog map[string]pricing.Price) (*pricing.Table, error) {
+	merged := map[string]pricing.Override{}
+	for k, v := range s.cfg.PricingOverrides {
+		merged[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	var stored map[string]pricing.Override
+	if err := s.store.GetSettingsJSON(settingsKeyPricing, &stored); err != nil {
+		return nil, err
+	}
+	for k, v := range stored {
+		merged[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	return pricing.LoadCatalog(catalog, merged)
+}
+
 type settingsResponse struct {
+	PricingUpdate    pricingRefreshStatus        `json:"pricing_update"`
 	PricingOverrides map[string]pricing.Override `json:"pricing_overrides"`
 	DeviceLabels     map[string]string           `json:"device_labels"`
 	// DeviceMerges is the audit log of ADR-0019 merges, oldest first. It is
@@ -115,6 +118,7 @@ type settingsRequest struct {
 // stay in force but are not editable from the panel (the panel says so).
 func (s *Server) currentSettings() (settingsResponse, error) {
 	resp := settingsResponse{
+		PricingUpdate:    s.pricingUpdateStatus(),
 		PricingOverrides: map[string]pricing.Override{},
 		DeviceLabels:     map[string]string{},
 	}
