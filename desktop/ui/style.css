@@ -195,18 +195,16 @@ body.degraded #main { opacity: .88; }
 .delta[data-direction="down"] { color: var(--amber); }
 
 /* Each official window keeps its own percentage and warning colour. */
-.quota-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+.usage-card.quota-card { padding: 12px 9px; }
+.quota-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 4px 0; }
 .quota-window { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .quota-window-label { color: var(--text-secondary); font-size: 10px; }
-.quota-reset { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
+.quota-reset { color: var(--text-secondary); font-size: 9px; line-height: 1.4; white-space: nowrap; }
 .quota-window strong { font-size: 22px; }
 .quota-card strong[data-severity="warn"] { color: #f5d58b; }
 .quota-card strong[data-severity="serious"] { color: var(--meter-serious); }
 .quota-card strong[data-severity="critical"] { color: var(--meter-critical); }
-.quota-estimates { display: flex; flex-direction: column; gap: 4px; }
-.quota-estimate { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 6px; font-size: 10px; }
-.quota-estimate span { color: var(--text-secondary); }
-.quota-estimate b { color: var(--text-secondary); font-weight: 500; }
+.quota-remainder { color: var(--text-secondary); font-size: 9px; line-height: 1.4; white-space: nowrap; }
 
 
 .speed-history {
