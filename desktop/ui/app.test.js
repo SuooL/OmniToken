@@ -45,7 +45,7 @@ require("node:vm").runInThisContext(
   require("node:fs").readFileSync(`${__dirname}/format-core.js`, "utf8"),
 );
 
-const { coverageLabel, onLive } = require("./app.js");
+const { coverageLabel, onLive, renderAll } = require("./app.js");
 
 const text = (id) => document.getElementById(id).textContent;
 
@@ -147,7 +147,7 @@ test("low five-hour usage cannot hide a near-full weekly quota", () => {
   assert.match(quotaReading(html, "five_hour"), /data-severity="">2%/);
   assert.match(quotaReading(html, "weekly"), /Week 已用/);
   assert.match(quotaReading(html, "weekly"), /data-severity="critical">96%/);
-  assert.match(html, /预估 5h 剩余<\/span><b>132M tokens<\/b>/);
+  assert.match(html, /预估 5h 剩余<\/span><b>8.0M tokens<\/b>/);
   assert.match(html, /预估周剩余<\/span><b>8.0M tokens<\/b>/);
   assert.ok(html.indexOf("quota-estimates") > html.indexOf('data-window="weekly"'));
 });
@@ -197,4 +197,49 @@ test("an unavailable source never claims either window is untouched", () => {
 test("no quota rows at all leaves the card empty rather than inventing sources", () => {
   assert.ok(showQuotas([]).includes("官方配额不可用"));
   assert.ok(showQuotas(undefined).includes("官方配额不可用"));
+});
+
+
+test("five-hour usable allowance is capped by weekly allowance, including exhaustion", () => {
+  for (const [fiveHour, weekly, expected] of [[132_000_000, 8_000_000, "8.0M"], [5_000_000, 8_000_000, "5.0M"], [132_000_000, 0, "0"], [null, 0, "0"]]) {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_remaining_tokens: fiveHour, weekly_remaining_tokens: weekly,
+    }]);
+    assert.ok(html.includes(`预估 5h 剩余</span><b>${expected} tokens</b>`));
+  }
+});
+
+test("both countdowns use total hours and minutes and advance without a new snapshot", () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_resets_at_ms: now + 91 * 60_000,
+      weekly_resets_at_ms: now + (72 * 60 + 5) * 60_000,
+    }]);
+    assert.match(quotaReading(html, "five_hour"), /1h31min 后重置/);
+    assert.match(quotaReading(html, "weekly"), /72h5min 后重置/);
+    now += 60_000;
+    renderAll();
+    const updated = document.getElementById("quota-grid").innerHTML;
+    assert.match(quotaReading(updated, "five_hour"), /1h30min 后重置/);
+    assert.match(quotaReading(updated, "weekly"), /72h4min 后重置/);
+  } finally { Date.now = originalNow; }
+});
+
+test("countdowns distinguish unknown reset times from an expired deadline", () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_800_000_000_000;
+  try {
+    for (const [deadline, expected] of [[null, "重置时间暂无"], [0, "重置时间暂无"], [NaN, "重置时间暂无"], [1_800_000_000_000 - 1, "0h0min 后重置"], [1_800_000_000_000 + 31 * 60_000, "0h31min 后重置"]]) {
+      const html = showQuotas([{
+        source: "claude-code", label: "Claude", five_hour_percent: 2,
+        five_hour_resets_at_ms: deadline,
+      }]);
+      assert.ok(quotaReading(html, "five_hour").includes(expected));
+    }
+  } finally { Date.now = originalNow; }
 });
