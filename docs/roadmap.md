@@ -198,6 +198,13 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 菜单栏官方配额卡 | ✅ 完成 | 弹窗新增 Claude/Codex 官方配额卡:主位取**短窗口优先**的权威百分比,细行给出预估 5h 与周用量。Claude 的 5h 是机会性的(只在渲染状态栏时捕获、窗口一重置即被服务端滤掉),Codex 自 2026-07-09 起 `primary` 变成周窗口、`secondary` 停报 —— 所以周兜底是 Codex 的常态而非异常。三态严格分开且都不画成 0%:有权威值 / 该窗口无权威数据(退周并标注) / 完全没有(「暂无」);`used_percent` 是 omitempty,5h 是否存在按 `authoritative` 判定,否则真实的 0% 会被降级成「暂无」。周用量取同来源最紧窗口,与托盘 `gauge::tightest_percent` 同规则。同一 PR 去掉连接状态行里恒为「1s 前」的年龄(降级时页脚的数据年龄保留)与三处「近 10m」字样 —— 速度口径不变 |
 | A2 遗留清理 | ✅ 完成 | A2 换掉弹窗主位后，`PopoverView` 仍在算并序列化 `risk` / `quota_summary` / `quotas_more` / `quota_reset_minutes` / `burn_per_minute`,而 `desktop/ui/app.js` 一处都不读 —— 只有单测还在断言它们。已删除,并补一条序列化断言防止再长回来。配额的三个真实去处(托盘图标 `tray_readings`、菜单栏数字、`Alerts` 预警)都不经 `popover_view`,不受影响。requirements 的 F24 描述同步改为 A2 实际形态 |
 
+菜单栏配额卡调整(2026-10-27):每个来源上方并列显示 5h / Week 官方已用百分比,
+各自按 70% 浅黄、80% 橙色、90% 红色提示;下方分别显示两种窗口的预估剩余 tokens。
+两种余量分别读取对应窗口,不再按短窗口优先折叠,缺失与真实 0 分开表达;
+删除原先主位已用 tokens 与用量外推,避免将 5h 余量误读为账户总余量。
+后续补齐各窗口的实时重置倒计时(如 `1h31min`);5h 可用余量取自身与周估算余量的较小值,
+周额度耗尽时同步归零,防止把独立窗口上限误当作当前可用余额。
+
 ## M9 — 计费通道、设备身份与 Codex 速度(2026-07-31 起)
 
 用户复盘提出六条调整,查证后其中两条的事实与原判断不符,详见
@@ -259,10 +266,30 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 |---|---|---|
 | `make desktop-install`(#119) | ✅ 完成 | `cargo tauri build` 只写 `target/release/bundle`,不碰 `/Applications` —— 手工升级的静默失败模式:构建成功、应用继续跑旧代码、哪里都不报错(实测在跑的 bundle 比改了 `desktop/ui` 的提交早四小时,两周没发现)。目标做完构建→ditto→重启,并**验证实例数为 1 且路径是 `/Applications`**,否则退非零。`--bundles app` 跳过 dmg:`bundle_dmg.sh` 要挂载卷,上次残留的挂载会让下次失败 |
 | 应用内自更新(F24 / ADR-0035) | ✅ 完成 | 照搬同机 OmniStats 的 Sparkle 方案,换成 `tauri-plugin-updater`:Ed25519 签名的 `latest.json` 作为 Release 资产(静态重定向,不碰限流的 REST API),公钥编进 bundle,私钥只在 CI secret。定时 6h + 菜单「检查更新…」。**实测**:ad-hoc 签名的 app 能自我替换(0.1.0→0.1.1 约 1 秒)、替换后无 `com.apple.quarantine`、能正常启动;release 构建强制 https(端点写成 http 会让应用启动即 panic,已加 3 条契约测试挡住) |
-| 发布 job:desktop bundle | ⚠️ 未经真实发布验证 | `release.yml` 加 `desktop` job(macos-14,`needs: release`),同 tag 构建签名、生成 latest.json、挂到同一个 Release。本地验证覆盖应用侧与签名产物;**workflow 本身要等第一次真实发版才算跑通**。需先在仓库加 `TAURI_SIGNING_PRIVATE_KEY` secret |
+| 发布 job:desktop bundle | ✅ 完成 | `release.yml` 加 `desktop` job(macos-14,`needs: release`),同 tag 构建签名、生成 latest.json、挂到同一个 Release。2026-09-08 随 **v0.2.0** 首次真实发布跑通(8m37s),三个更新资产都挂上了 Release;本机 0.1.0 实例从真实端点自更新到 0.2.0,约 20 秒。验证中发现安装只替换 bundle、不动进程(pid 不变),必须显式重启;`app.restart()` 与 `open -n`+`spawn()` 在 launchd job 下都会让应用直接死掉(#122/#123),**`open -n`+`status()` 成立**(等 LaunchServices 接手后再退出,实测 0.1.9→0.2.0、pid 换新、单实例存活,#125);并给 release 构建补上 updater 日志 |
+
+## M13 — 站点独立认证(2026-10-27)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 单用户登录码与安全会话(F28) | ✅ 实现 | 短时单次消费、会话撤销、Origin 校验、认证库与事件库分离;ADR-0036 |
+| 平台 Passkey 注册与免用户名登录 | ✅ 实现 | 浏览器虚拟平台认证器验收;真实 Mac Touch ID 注册由用户完成 |
+| 现网认证切换 | ✅ 完成 | aliyun198 已部署,omni 站点移除 Authelia 与 read token 注入;公网登录码/重放拒绝/退出撤销/SSE/bearer 验收通过;节点凭据保留 |
 
 ## 工程事项(持续)
 
 - 单测:每个解析器必须有基于真实样本结构的用例;去重/offset 协议有回归测试
 - 发布:goreleaser 交叉编译产物(待 M2 收尾时加入)
 - 文档:docs/ 与代码同 PR 更新;对外 README 保持可独立上手
+
+
+## 菜单栏用量区域整理(2026-10-27)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 今日使用与用量预估 | ✅ 完成 | 上方 Claude / Codex / DeepSeek 三列按今日来源及模型显示用量，只有有效昨日同时段对比才显示变化；原单独今日模型区域合并到来源卡。下方限额、颜色、余量约束及倒计时保持，增加「用量预估」分区标题。telemetry.today.sources 提供真实来源和模型关联，保留旧字段兼容。 |
+
+0.2.1 发布准备:今日来源/模型接口已更新到现网 Hub,来源和模型用量与今日总量对账通过,
+设备凭据保持一致;变更前二进制、配置和一致性数据库备份位于
+`/var/backups/omnitoken/20261028T044250Z-daily-usage`。发布工作流显式进行 ad-hoc
+应用签名并执行严格 bundle 校验,同时保留现有 Ed25519 更新包签名。

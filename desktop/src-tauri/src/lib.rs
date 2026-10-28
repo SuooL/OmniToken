@@ -136,6 +136,14 @@ async fn settings_set(
 
 /// The tray's own poll is gone: the bridge pushes every snapshot to both the
 /// glyph and the popover, so "refresh" means "reconnect", not "fetch once".
+/// The settings pane's 「检查更新」button. Returns the outcome so the popover can
+/// state it in place, rather than firing a notification the user has to go look
+/// for while staring at the button they just pressed.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> update::CheckResult {
+    update::check(app).await
+}
+
 #[tauri::command]
 fn refresh_now(app: tauri::AppHandle) {
     live::respawn(&app);
@@ -344,16 +352,26 @@ pub fn run() {
             settings_get,
             settings_set,
             refresh_now,
-            open_full_panel
+            open_full_panel,
+            check_update
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Logging in release builds too, at warn, and info for the
+            // updater. A feature that replaces the app's own binary has to be
+            // observable when it misbehaves: debugging an update that silently
+            // did nothing, on a build with logging compiled out, is guesswork.
+            // Everything else stays quiet — this writes to a file the user
+            // never asked for.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Info
+                    } else {
+                        log::LevelFilter::Warn
+                    })
+                    .level_for("omnitoken_desktop_lib::update", log::LevelFilter::Info)
+                    .build(),
+            )?;
 
             // Accessory: menubar-only, no dock icon and no app-switcher entry.
             // See show_panel for the activation this makes necessary.
@@ -458,15 +476,14 @@ mod ui_contract_tests {
             r#"id="freshness""#,
             r#"id="current-speed""#,
             "已测总吞吐",
-            r#"id="claude-5h""#,
-            r#"id="codex-5h""#,
+            r#"id="today-sources""#,
+            r#"id="quota-title""#,
             r#"id="quota-grid""#,
             r#"id="speed-lanes""#,
             r#"id="peak-1h""#,
             r#"id="active-ratio""#,
             r#"id="measured-source-count""#,
             r#"id="today-total""#,
-            r#"id="model-list""#,
             r#"id="contributor-list""#,
             r#"id="device-list""#,
             r#"id="open-full""#,
@@ -512,6 +529,34 @@ mod ui_contract_tests {
         assert!(
             panel.get("windowEffects").is_none(),
             "the CSS panel owns the background and corners; a native effect leaks outside them"
+        );
+    }
+}
+
+#[cfg(test)]
+mod updater_ui_contract_tests {
+    const HTML: &str = include_str!("../../ui/index.html");
+    const APP: &str = include_str!("../../ui/app.js");
+
+    /// The settings pane is where a user looks for "am I on the latest
+    /// version"; the tray item alone is a right-click away and easy to miss.
+    /// Both halves have to exist or the button is inert.
+    #[test]
+    fn settings_carries_a_check_update_control() {
+        for hook in [
+            r#"id="check-update""#,
+            r#"id="update-version""#,
+            r#"id="update-msg""#,
+        ] {
+            assert!(HTML.contains(hook), "settings markup is missing {hook}");
+        }
+        assert!(
+            APP.contains(r#"invoke("check_update")"#),
+            "the button never reaches the Rust command"
+        );
+        assert!(
+            APP.contains(r#"$("check-update")"#),
+            "the button is never bound"
         );
     }
 }

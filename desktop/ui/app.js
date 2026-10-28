@@ -142,59 +142,67 @@ function renderHero() {
     : "设备未知";
 }
 
-function renderUsageCard(source, prefix) {
-  const rows = latestTelemetry && latestTelemetry.rolling_5h.sources || [];
-  const row = rows.find((item) => item.source === source);
-  $(`${prefix}-5h-value`).textContent = row ? tokenLabel(row.tokens) : "—";
-  const delta = $(`${prefix}-5h-change`);
-  if (!row) {
-    delta.textContent = "用量不可用";
-    delta.dataset.direction = "unknown";
-    return;
-  }
-  if (!finite(row.change_percent)) {
-    delta.textContent = "前窗为 0 · 比较不可用";
-    delta.dataset.direction = "unknown";
-    return;
-  }
-  const sign = row.change_percent > 0 ? "+" : "";
-  delta.textContent = `较前 5h ${sign}${row.change_percent.toFixed(1)}%`;
-  delta.dataset.direction = row.change_percent > 0 ? "up" : row.change_percent < 0 ? "down" : "flat";
+const DAILY_SOURCES = ["claude-code", "codex", "dsh"];
+
+function dailyCard(source, row, known) {
+  const models = row && Array.isArray(row.models) ? row.models : [];
+  const change = row && row.previous_tokens > 0 && finite(row.change_percent) ? row.change_percent : null;
+  return `<article class="usage-card daily-card ${esc(SOURCE_TONE[source] || "other")}" data-source="${esc(source)}">
+    <div class="source-title"><span class="source-dot"></span>${esc(sourceName(source))}</div>
+    <strong class="fig">${row ? tokenLabel(row.tokens) : known ? "0" : "—"}</strong>
+    <div class="daily-models">${models.map((model) => `<div class="daily-model">
+      <span title="${esc(model.model)}">${esc(model.model)}</span><b class="fig">${tokenLabel(model.tokens)}</b>
+    </div>`).join("")}</div>
+    ${change == null ? "" : `<span class="delta" data-direction="${change > 0 ? "up" : change < 0 ? "down" : "flat"}">昨日同时段 ${change > 0 ? "+" : ""}${change.toFixed(1)}%</span>`}
+  </article>`;
 }
 
-// Which window a quota card is leading with, and how that window is named on
-// screen. The server decides the basis; the popover only has to say it out loud,
-// because "24% of the 5 hours" and "24% of the week" are not the same warning.
-const QUOTA_BASIS = {
-  five_hour: { percent: "five_hour_percent", label: "5h" },
-  weekly: { percent: "weekly_percent", label: "周" },
-};
+function renderDailyUsage() {
+  const today = latestTelemetry && latestTelemetry.today;
+  const known = !!(today && Array.isArray(today.sources));
+  const sources = known ? today.sources : [];
+  $("today-total").textContent = today ? tokenLabel(today.total_tokens) : "—";
+  $("today-title").title = latestTelemetry && latestTelemetry.timezone ? `日界时区：${latestTelemetry.timezone}` : "";
+  $("today-sources").innerHTML = DAILY_SOURCES.map((source) =>
+    dailyCard(source, sources.find((row) => row.source === source), known)).join("");
+  const others = sources.filter((row) => !DAILY_SOURCES.includes(row.source) && row.tokens > 0);
+  $("today-other").hidden = !others.length;
+  $("today-other").innerHTML = others.map((row) => dailyCard(row.source, row, true)).join("");
+}
+
+const QUOTA_WINDOWS = [
+  { key: "five_hour", label: "5h", estimate: "预估 5h 剩余" },
+  { key: "weekly", label: "Week", estimate: "预估周剩余" },
+];
 
 const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
+const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "暂无";
 
-// Whole percent, matching how the Live page writes the same authoritative
-// numbers. A quota moves in points, not in tenths.
-const percentLabel = (value) => finite(value) ? `${value.toFixed(0)}%` : "—";
-
-function quotaDetail(quota) {
-  if (quota.basis === "five_hour") {
-    // The projection is absent until the window has enough elapsed time to
-    // extrapolate from — an em dash, not 0%, because nothing has been ruled out.
-    return `预估 ${percentLabel(quota.projected_percent)} · 周 ${percentLabel(quota.weekly_percent)}`;
-  }
-  // A weekly-only card used to spell out "无官方 5h 数据". The basis beside the
-  // number already says 周, so the sentence only repeated it — and this card is
-  // 170px wide.
-  if (quota.basis === "weekly") return "";
-  return "官方端点未报配额";
+// Compare official readings before rounding. Each window carries its own risk.
+function quotaSeverity(percent) {
+  if (!finite(percent)) return "";
+  if (percent >= 90) return "critical";
+  if (percent >= 80) return "serious";
+  if (percent >= 70) return "warn";
+  return "";
 }
 
-// Compact remaining time for a card this narrow. Not untilReset(): that one is
-// shared with the web panel (ADR-0014), which has the room to say 后重置.
-function quotaReset(minutes) {
-  if (!(minutes > 0)) return "即将重置";
-  const hours = Math.floor(minutes / 60);
-  return hours >= 24 ? `${hours}h` : `${hours}h${minutes % 60}m`;
+function quotaResetLabel(deadline) {
+  if (!finite(deadline) || deadline <= 0) return "重置时间暂无";
+  const minutes = Math.ceil(Math.max(0, deadline - Date.now()) / 60000);
+  return `${Math.floor(minutes / 60)}h${minutes % 60}min 后重置`;
+}
+
+function quotaRemaining(quota, key) {
+  const remaining = quota[`${key}_remaining_tokens`];
+  const known = finite(remaining) && remaining >= 0;
+  if (key !== "five_hour") return known ? remaining : null;
+  const weekly = quota.weekly_remaining_tokens;
+  if (finite(weekly) && weekly >= 0) {
+    if (weekly === 0 && finite(quota.five_hour_percent)) return 0;
+    return known ? Math.min(remaining, weekly) : null;
+  }
+  return known ? remaining : null;
 }
 
 function renderQuotas() {
@@ -204,32 +212,22 @@ function renderQuotas() {
     root.innerHTML = `<div class="empty">官方配额不可用</div>`;
     return;
   }
-  root.innerHTML = quotas.map((quota) => {
-    const basis = QUOTA_BASIS[quota.basis];
-    const percent = basis ? quota[basis.percent] : null;
-    const reset = basis && finite(quota.resets_in_minutes) ? quotaReset(quota.resets_in_minutes) : "";
-    // The percentage answers "how full", the tokens answer it again in the unit
-    // the user actually writes in. Both describe the same window, so they share
-    // the headline line rather than being stacked.
-    const used = finite(quota.used_tokens) ? compact(quota.used_tokens) : "";
-    // The remainder is inferred (ADR-0025) and simply absent until the
-    // calibration has evidence; the line closes up around it.
-    const sub = [
-      basis ? basis.label : "无官方配额",
-      finite(quota.remaining_tokens) ? `还剩 ${compact(quota.remaining_tokens)}` : "",
-      reset,
-    ].filter(Boolean).join(" · ");
-    const detail = quotaDetail(quota);
-    return `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}"
-      data-basis="${esc(quota.basis)}">
-      <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
-      <strong class="fig" data-severity="${finite(percent) ? severity(percent) : ""}">${
-        finite(percent) ? percentLabel(percent) : "暂无"}${
-        used ? `<span class="fig-aside">${esc(used)}</span>` : ""}</strong>
-      <span class="quota-basis">${esc(sub)}</span>
-      ${detail ? `<span class="delta">${esc(detail)}</span>` : ""}
-    </article>`;
-  }).join("");
+  root.innerHTML = quotas.map((quota) => `<article class="usage-card quota-card ${esc(SOURCE_TONE[quota.source] || "other")}">
+    <div class="source-title"><span class="source-dot"></span>${esc(quota.label)} · 官方配额</div>
+    <div class="quota-values">${QUOTA_WINDOWS.map((window) => {
+      const percent = quota[`${window.key}_percent`];
+      return `<div class="quota-window" data-window="${window.key}">
+        <span class="quota-window-label">${window.label} 已用</span>
+        <strong class="fig" data-severity="${quotaSeverity(percent)}">${percentLabel(percent)}</strong>
+        <span class="quota-reset">${quotaResetLabel(quota[`${window.key}_resets_at_ms`])}</span>
+      </div>`;
+    }).join("")}</div>
+    <div class="quota-estimates">${QUOTA_WINDOWS.map((window) => {
+      const remaining = quotaRemaining(quota, window.key);
+      const label = finite(remaining) && remaining >= 0 ? `${compact(remaining)} tokens` : "暂无估算";
+      return `<div class="quota-estimate"><span>${window.estimate}</span><b>${label}</b></div>`;
+    }).join("")}</div>
+  </article>`).join("");
 }
 
 function sourceRows(bucket) {
@@ -303,23 +301,6 @@ function renderStats() {
     ? String((speed.measured_sources || []).length) : "—";
 }
 
-function renderModels() {
-  const today = latestTelemetry && latestTelemetry.today;
-  const models = today && today.models || [];
-  $("today-total").textContent = today ? tokenLabel(today.total_tokens) : "—";
-  $("model-count").textContent = today ? `${models.length} 个模型` : "—";
-  $("model-strip").innerHTML = models.map((model, index) =>
-    `<span class="model-segment tone-${index % 5}" style="flex-grow:${Math.max(0, model.tokens)}"></span>`
-  ).join("");
-  $("model-list").innerHTML = !today ? `<div class="empty">今日用量不可用</div>` : models.length ? models.map((model, index) => `
-    <div class="model-row">
-      <span class="model-dot tone-${index % 5}"></span>
-      <span class="model-name" title="${esc(model.model)}">${esc(model.model)}</span>
-      <span class="model-share">${finite(model.share) ? (model.share * 100).toFixed(1) + "%" : "—"}</span>
-      <span class="fig">${tokenLabel(model.tokens)}</span>
-    </div>`).join("") : `<div class="empty">今日暂无用量</div>`;
-}
-
 function renderContributors() {
   const sessions = (latestLive && latestLive.sessions || [])
     .filter((session) => finite(session.contribution_rate))
@@ -361,13 +342,10 @@ function renderDevices() {
 function renderAll() {
   renderFreshness();
   renderHero();
-  renderUsageCard("claude-code", "claude");
-  renderUsageCard("codex", "codex");
-  renderUsageCard("dsh", "dsh");
+  renderDailyUsage();
   renderQuotas();
   renderSpeedLanes();
   renderStats();
-  renderModels();
   renderContributors();
   renderDevices();
   fitWindow();
@@ -378,13 +356,18 @@ function onLive(update) {
   renderAll();
 }
 
+function onTelemetry(telemetry) {
+  latestTelemetry = telemetry;
+  telemetryError = telemetry && telemetry.error || "";
+  renderAll();
+}
+
 async function pullTelemetry() {
   const generation = ++telemetryGeneration;
   try {
     const telemetry = await invoke("telemetry_get", { range: "1h" });
     if (generation !== telemetryGeneration) return;
-    latestTelemetry = telemetry;
-    telemetryError = latestTelemetry.error || "";
+    onTelemetry(telemetry);
   } catch (error) {
     if (generation !== telemetryGeneration) return;
     telemetryError = String(error);
@@ -408,7 +391,36 @@ const settingsEls = {
   autostart: $("autostart-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
+  checkUpdate: $("check-update"),
+  updateVersion: $("update-version"),
+  updateMessage: $("update-msg"),
 };
+
+function updateMessage(text, kind) {
+  settingsEls.updateMessage.textContent = text || "";
+  settingsEls.updateMessage.className = "msg" + (kind ? ` ${kind}` : "");
+  fitWindow();
+}
+
+// The button answers in place. A menubar popover has no room for a modal, and
+// firing only a notification would send the user hunting for the reply to
+// something they are looking straight at.
+async function checkUpdate() {
+  if (settingsEls.checkUpdate.disabled) return;
+  settingsEls.checkUpdate.disabled = true;
+  updateMessage("检查中…");
+  try {
+    const result = await invoke("check_update");
+    settingsEls.updateVersion.textContent = `当前 ${result.version}`;
+    updateMessage(result.message, result.status === "failed" ? "err" : "ok");
+    // On "installed" the app is about to be replaced by its successor, so the
+    // button stays disabled: a second check would race the restart.
+    if (result.status !== "installed") settingsEls.checkUpdate.disabled = false;
+  } catch (e) {
+    updateMessage(`检查失败:${e}`, "err");
+    settingsEls.checkUpdate.disabled = false;
+  }
+}
 
 function settingsMessage(text, kind) {
   settingsEls.message.textContent = text || "";
@@ -424,6 +436,9 @@ function openSettings() {
     : "服务端只监听本机时留空";
   settingsEls.panel.value = PANEL_URL;
   settingsEls.autostart.checked = AUTOSTART;
+  settingsEls.checkUpdate.disabled = false;
+  settingsEls.updateVersion.textContent = "";
+  updateMessage("");
   settingsMessage("");
   settingsEls.main.hidden = true;
   settingsEls.settings.hidden = false;
@@ -465,6 +480,7 @@ async function saveSettings() {
 $("open-settings").addEventListener("click", openSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 settingsEls.save.addEventListener("click", saveSettings);
+settingsEls.checkUpdate.addEventListener("click", checkUpdate);
 for (const input of [settingsEls.input, settingsEls.token, settingsEls.panel]) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveSettings();
@@ -504,5 +520,5 @@ if (!invoke || !listen) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { coverageLabel, onLive };
+  module.exports = { coverageLabel, onLive, onTelemetry, renderAll };
 }

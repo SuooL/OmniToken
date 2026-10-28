@@ -1,5 +1,9 @@
 # 配置项一览
 
+站点独立登录可显式配置 `site_auth_origin`(如 `https://omni.suool.net`)和
+`site_auth_db`(默认是用量数据库同目录的 `site-auth.db`)。恢复与 Passkey 注册流程
+见 [独立登录 runbook](runbooks/site-passkey-auth.md);未配置时保持原有认证行为。
+
 两个配置文件,均为 JSON,全部字段可省略(有默认值)。优先级:命令行参数 >
 环境变量 > 配置文件 > 默认值。
 

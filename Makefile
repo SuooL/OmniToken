@@ -12,7 +12,7 @@ LDFLAGS := -X main.version=$(VERSION)
 GOSRC   := ./cmd ./internal
 
 .PHONY: build test vet fmt fmt-check cover check clean release desktop desktop-check \
-        desktop-sync desktop-sync-check desktop-install
+        desktop-sync desktop-sync-check desktop-version-check desktop-install
 
 # Files the web panel and the menubar popover share verbatim (ADR-0014).
 # web/ is the source of truth; desktop/ui/ holds copies.
@@ -66,7 +66,7 @@ check: fmt-check vet cover build
 desktop:
 	cd desktop/src-tauri && cargo build
 
-desktop-check: desktop-sync-check
+desktop-check: desktop-sync-check desktop-version-check
 	node --check desktop/ui/app.js
 	node --test desktop/ui/app.test.js
 	cd desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
@@ -92,6 +92,38 @@ desktop-sync-check:
 		exit 1; \
 	fi
 	@echo "shared ui: in sync"
+
+# Fail when the checked-in menubar version is older than the newest release tag.
+#
+# CI stamps the bundle's version from the tag, so the value in the repo is only
+# ever used by local builds — and a local build older than the published release
+# gets replaced by the updater within a minute of starting (ADR-0035). That is
+# how it went the first time: `make desktop-install` produced 0.1.0, and the app
+# swapped itself for the released 0.2.0 before it could be looked at.
+#
+# So the rule is "bump the desktop version after releasing", and the rule is
+# checked rather than remembered — same stance as desktop-sync-check. Only a
+# STRICTLY older version fails: being ahead of the last tag is the normal state
+# while a release is being prepared.
+# The newest tag anywhere in the repo, not git-describe: the release tag sits on
+# main, which is not an ancestor of dev, so describe finds nothing from a feature
+# branch. No tags at all (a shallow CI checkout) skips the comparison rather than
+# failing on information it does not have.
+desktop-version-check:
+	@have=$$(python3 -c "import json;print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])"); \
+	tag=$$(git tag --sort=-v:refname 2>/dev/null | head -1 | sed 's/^v//'); \
+	if [ -z "$$tag" ]; then \
+		echo "desktop version: $${have}(仓库里没有 tag,跳过比对)"; \
+		exit 0; \
+	fi; \
+	newest=$$(printf '%s\n%s\n' "$$have" "$$tag" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1); \
+	if [ "$$have" != "$$tag" ] && [ "$$newest" = "$$tag" ]; then \
+		echo "desktop 版本 $${have} 落后于已发布的 v$${tag}"; \
+		echo "  本地构建会在启动后一分钟内被自更新替换成 v$${tag}(ADR-0035)"; \
+		echo "  修:把 desktop/src-tauri/{Cargo.toml,tauri.conf.json} 的 version 改成 $${tag}"; \
+		exit 1; \
+	fi; \
+	echo "desktop version: $${have}(最新 tag v$${tag})"
 
 # Build the menubar app and put the result where it actually runs from.
 #

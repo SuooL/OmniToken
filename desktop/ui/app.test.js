@@ -45,7 +45,7 @@ require("node:vm").runInThisContext(
   require("node:fs").readFileSync(`${__dirname}/format-core.js`, "utf8"),
 );
 
-const { coverageLabel, onLive } = require("./app.js");
+const { coverageLabel, onLive, onTelemetry, renderAll } = require("./app.js");
 
 const text = (id) => document.getElementById(id).textContent;
 
@@ -114,83 +114,84 @@ const showQuotas = (quotas) => {
   return document.getElementById("quota-grid").innerHTML;
 };
 
-test("a five-hour card leads with it and still shows the projection and the week", () => {
-  const html = showQuotas([{
-    source: "claude-code",
-    label: "Claude",
-    basis: "five_hour",
-    five_hour_percent: 24,
-    projected_percent: 36.5,
-    weekly_percent: 12,
-    resets_in_minutes: 102,
-    used_tokens: 144_000_000,
-    remaining_tokens: 170_000_000,
-  }]);
+const quotaReading = (html, window) => {
+  const match = html.match(new RegExp(`<div class="quota-window" data-window="${window}">([\\s\\S]*?)</div>`));
+  assert.ok(match, `missing ${window} reading`);
+  return match[1];
+};
 
-  // The percentage keeps the headline and the tokens join it there.
-  assert.match(html, /<strong[^>]*>24%<span class="fig-aside">144M<\/span><\/strong>/);
-  assert.ok(html.includes("5h · 还剩 170M · 1h42m"));
-  assert.ok(html.includes("预估 37%"));
-  assert.ok(html.includes("周 12%"));
+test("5h and Week percentages independently step at 70, 80 and 90 percent", () => {
+  for (const window of ["five_hour", "weekly"]) {
+    for (const [percent, expected] of [
+      [0, ""], [50, ""], [69.9, ""], [70, "warn"], [75, "warn"], [79.9, "warn"],
+      [80, "serious"], [89.9, "serious"], [90, "critical"], [100, "critical"], [120, "critical"],
+      [0, ""], [null, ""], [undefined, ""], [NaN, ""], [Infinity, ""],
+    ]) {
+      const html = showQuotas([{
+        source: "claude-code", label: "Claude",
+        five_hour_percent: 100, weekly_percent: 100,
+        [`${window}_percent`]: percent,
+      }]);
+      assert.equal(quotaReading(html, window).match(/data-severity="([^"]*)"/)[1], expected,
+        `${window} at ${percent}%`);
+    }
+  }
 });
 
-// Codex has had no 5-hour window since its `primary` limit became weekly, so
-// this is its permanent state and has to read as a stated fact, not a fault.
-test("a weekly fallback names the window it fell back to", () => {
+test("low five-hour usage cannot hide a near-full weekly quota", () => {
   const html = showQuotas([{
-    source: "codex",
-    label: "Codex",
-    basis: "weekly",
-    five_hour_percent: null,
-    projected_percent: null,
-    weekly_percent: 72,
-    resets_in_minutes: 9575,
-    used_tokens: 15_000_000,
-    remaining_tokens: 114_000_000,
+    source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+    five_hour_remaining_tokens: 132_000_000, weekly_remaining_tokens: 8_000_000,
   }]);
-
-  assert.match(html, /<strong[^>]*>72%<span class="fig-aside">15M<\/span><\/strong>/);
-  assert.ok(html.includes("周 · 还剩 114M · 159h"));
-  // The sentence "无官方 5h 数据" only repeated the 周 beside it, on a card
-  // 170px wide.
-  assert.ok(!html.includes("无官方 5h 数据"));
+  assert.match(quotaReading(html, "five_hour"), /5h 已用/);
+  assert.match(quotaReading(html, "five_hour"), /data-severity="">2%/);
+  assert.match(quotaReading(html, "weekly"), /Week 已用/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="critical">96%/);
+  assert.match(html, /预估 5h 剩余<\/span><b>8.0M tokens<\/b>/);
+  assert.match(html, /预估周剩余<\/span><b>8.0M tokens<\/b>/);
+  assert.ok(html.indexOf("quota-estimates") > html.indexOf('data-window="weekly"'));
 });
 
-// Absent data is not zero usage: rendering "0%" here would tell the user they
-// have a full quota when what we actually have is no reading.
-test("a source with no official quota says so instead of showing zero", () => {
+test("a missing window stays visible as unavailable instead of borrowing another window", () => {
   const html = showQuotas([{
-    source: "codex",
-    label: "Codex",
-    basis: "none",
-    five_hour_percent: null,
-    projected_percent: null,
-    weekly_percent: null,
-    resets_in_minutes: null,
+    source: "codex", label: "Codex", five_hour_percent: null, weekly_percent: 72,
+    five_hour_remaining_tokens: null, weekly_remaining_tokens: 114_000_000,
   }]);
+  assert.match(quotaReading(html, "five_hour"), />暂无<\/strong>/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="warn">72%/);
+  assert.match(html, /预估 5h 剩余<\/span><b>暂无估算<\/b>/);
+  assert.match(html, /预估周剩余<\/span><b>114M tokens<\/b>/);
+});
 
-  assert.ok(html.includes("暂无"));
+test("missing or invalid estimates are not rendered as zero or reused from the old headline", () => {
+  for (const invalid of [null, undefined, NaN, Infinity, -1]) {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_remaining_tokens: invalid, weekly_remaining_tokens: invalid,
+      used_tokens: 2_200_000, remaining_tokens: 132_000_000, projected_percent: 3,
+    }]);
+    assert.equal((html.match(/暂无估算/g) || []).length, 2);
+    assert.ok(!html.includes("2.2M"));
+    assert.ok(!html.includes("132M"));
+    assert.ok(!html.includes("3%"));
+  }
+});
+
+test("zero usage and zero remaining are real readings", () => {
+  const html = showQuotas([{
+    source: "claude-code", label: "Claude", five_hour_percent: 0, weekly_percent: 100,
+    five_hour_remaining_tokens: 132_000_000, weekly_remaining_tokens: 0,
+  }]);
+  assert.match(quotaReading(html, "five_hour"), /data-severity="">0%/);
+  assert.match(quotaReading(html, "weekly"), /data-severity="critical">100%/);
+  assert.match(html, /预估周剩余<\/span><b>0 tokens<\/b>/);
+});
+
+test("an unavailable source never claims either window is untouched", () => {
+  const html = showQuotas([{ source: "codex", label: "Codex" }]);
+  assert.equal((html.match(/>暂无<\/strong>/g) || []).length, 2);
+  assert.equal((html.match(/暂无估算/g) || []).length, 2);
   assert.ok(!html.includes("0%"));
-  assert.ok(!html.includes("后重置"));
-});
-
-// A quota already at 0% is a reading, and the card must not confuse it with the
-// case above.
-test("an untouched authoritative window is a reading, not a blank", () => {
-  const html = showQuotas([{
-    source: "claude-code",
-    label: "Claude",
-    basis: "five_hour",
-    five_hour_percent: 0,
-    projected_percent: null,
-    weekly_percent: null,
-    resets_in_minutes: 300,
-  }]);
-
-  assert.match(html, /<strong[^>]*>0%<\/strong>/);
-  assert.ok(!html.includes("暂无"));
-  // Nothing to project from yet, and the popover says that rather than 0%.
-  assert.ok(html.includes("预估 —"));
 });
 
 test("no quota rows at all leaves the card empty rather than inventing sources", () => {
@@ -198,23 +199,105 @@ test("no quota rows at all leaves the card empty rather than inventing sources",
   assert.ok(showQuotas(undefined).includes("官方配额不可用"));
 });
 
-test("配额卡把已用 token 放在百分比旁,把推断的剩余量放进副行", () => {
-  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
-  // The tokens ride the headline, inside the same <strong> as the percentage,
-  // so the two share a baseline instead of stacking into another row.
-  assert.match(source, /fig-aside/);
-  assert.match(source, /finite\(quota\.used_tokens\)/);
-  // The remainder is inferred and often absent; the sub-line has to close up
-  // around it rather than render an empty separator.
-  assert.match(source, /finite\(quota\.remaining_tokens\)/);
-  assert.match(source, /\.filter\(Boolean\)\.join\(" · "\)/);
+
+test("five-hour usable allowance is capped by weekly allowance, including exhaustion", () => {
+  for (const [fiveHour, weekly, expected] of [[132_000_000, 8_000_000, "8.0M"], [5_000_000, 8_000_000, "5.0M"], [132_000_000, 0, "0"], [null, 0, "0"]]) {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_remaining_tokens: fiveHour, weekly_remaining_tokens: weekly,
+    }]);
+    assert.ok(html.includes(`预估 5h 剩余</span><b>${expected} tokens</b>`));
+  }
 });
 
-// The basis names the window in as many characters as the window needs. It
-// used to read 官方周用量 / 官方 5h 用量, which spent a third of a 170px card
-// on the word 官方 — already implied by the card's own title.
-test("配额卡的窗口标签只写窗口本身", () => {
-  const source = require("node:fs").readFileSync(`${__dirname}/app.js`, "utf8");
-  assert.match(source, /label: "周"/);
-  assert.match(source, /label: "5h"/);
+test("both countdowns use total hours and minutes and advance without a new snapshot", () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const html = showQuotas([{
+      source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
+      five_hour_resets_at_ms: now + 91 * 60_000,
+      weekly_resets_at_ms: now + (72 * 60 + 5) * 60_000,
+    }]);
+    assert.match(quotaReading(html, "five_hour"), /1h31min 后重置/);
+    assert.match(quotaReading(html, "weekly"), /72h5min 后重置/);
+    now += 60_000;
+    renderAll();
+    const updated = document.getElementById("quota-grid").innerHTML;
+    assert.match(quotaReading(updated, "five_hour"), /1h30min 后重置/);
+    assert.match(quotaReading(updated, "weekly"), /72h4min 后重置/);
+  } finally { Date.now = originalNow; }
+});
+
+test("countdowns distinguish unknown reset times from an expired deadline", () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_800_000_000_000;
+  try {
+    for (const [deadline, expected] of [[null, "重置时间暂无"], [0, "重置时间暂无"], [NaN, "重置时间暂无"], [1_800_000_000_000 - 1, "0h0min 后重置"], [1_800_000_000_000 + 31 * 60_000, "0h31min 后重置"]]) {
+      const html = showQuotas([{
+        source: "claude-code", label: "Claude", five_hour_percent: 2,
+        five_hour_resets_at_ms: deadline,
+      }]);
+      assert.ok(quotaReading(html, "five_hour").includes(expected));
+    }
+  } finally { Date.now = originalNow; }
+});
+
+test("today usage uses source-attributed daily models and omits invalid comparisons", () => {
+ onTelemetry({ today: { total_tokens: 450, sources: [
+  { source: "claude-code", tokens: 300, previous_tokens: 150, change_percent: 100, models: [{ model: "claude-opus", tokens: 300 }] },
+  { source: "codex", tokens: 50, previous_tokens: 0, change_percent: null, models: [{ model: "claude-opus", tokens: 50 }] },
+  { source: "dsh", tokens: 100, previous_tokens: 200, change_percent: -50, models: [{ model: "deepseek-v4", tokens: 100 }] },
+ ] }, rolling_5h: { sources: [{ source: "claude-code", tokens: 999999 }] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.match(html, /data-source="claude-code"[\s\S]*?300[\s\S]*?claude-opus[\s\S]*?昨日同时段 \+100.0%/);
+ assert.match(html, /data-source="dsh"[\s\S]*?昨日同时段 -50.0%/);
+ const codex = html.match(/data-source="codex"([\s\S]*?)<\/article>/)[1];
+ assert.ok(!codex.includes("delta"));
+ assert.ok(!html.includes("不可用"));
+ assert.ok(!html.includes("999"));
+});
+
+test("daily cards show all models safely and preserve empty known sources", () => {
+ onTelemetry({ today: { total_tokens: 10, sources: [
+  { source: "dsh", tokens: 10, models: [{ model: "<unsafe>", tokens: 6 }, { model: "second", tokens: 3 }, { model: "third", tokens: 1 }] },
+ ] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.equal((html.match(/<article/g) || []).length, 3);
+ assert.ok(html.includes("&lt;unsafe&gt;"));
+ assert.ok(html.includes("third"));
+ assert.ok(!html.includes("<unsafe>"));
+ assert.match(html, /data-source="claude-code"[\s\S]*?>0<\/strong>/);
+});
+
+test("older server payloads never invent source attribution from model names", () => {
+ onTelemetry({ today: { total_tokens: 100, models: [{ model: "claude-opus", tokens: 100 }] } });
+ const html = document.getElementById("today-sources").innerHTML;
+ assert.ok(!html.includes("claude-opus"));
+ assert.equal((html.match(/>—<\/strong>/g) || []).length, 3);
+ assert.ok(!html.includes("不可用"));
+});
+
+
+test("usage sections keep daily sources together and remove duplicate daily-model panel", () => {
+ const fs = require("node:fs");
+ const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
+ const css = fs.readFileSync(`${__dirname}/style.css`, "utf8");
+ assert.ok(html.includes('id="today-title">今日使用'));
+ assert.ok(html.includes('id="quota-title">用量预估'));
+ assert.ok(html.indexOf('id="today-sources"') < html.indexOf('id="quota-grid"'));
+ assert.ok(!html.includes("最近 5h"));
+ assert.ok(!html.includes('id="model-list"'));
+ assert.match(css, /\.daily-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+});
+
+test("other measured sources remain visible so totals do not silently omit API usage", () => {
+ onTelemetry({ today: { total_tokens: 150, sources: [
+  { source: "codex", tokens: 100, models: [{ model: "gpt-5", tokens: 100 }] },
+  { source: "api", tokens: 50, models: [{ model: "other-model", tokens: 50 }] },
+ ] } });
+ assert.equal(document.getElementById("today-other").hidden, false);
+ assert.ok(document.getElementById("today-other").innerHTML.includes("other-model"));
+ assert.equal(text("today-total"), "150");
 });

@@ -276,6 +276,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 
 	send := func(event string) error {
+		// A browser session can be revoked while the SSE connection is open.
+		// Recheck before every payload, including periodic liveness refreshes.
+		if s.siteAuth != nil && !s.readAuthorized(r, true) {
+			return fmt.Errorf("site session expired or revoked")
+		}
 		payload, err := s.livePayload(s.currentTime())
 		if err != nil {
 			return err

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>登录 · OmniToken</title>
+  <link rel="stylesheet" href="/auth/login.css">
+  <script src="/auth/login.js" defer></script>
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="mark" aria-hidden="true">O</span> OmniToken</div>
+    <p class="eyebrow">你的设备 · 你的数据</p>
+    <h1 id="heading">登录你的面板</h1>
+    <p id="intro" class="muted">使用已添加的 Passkey,或输入一次性登录码。</p>
+    <section id="signed-out" hidden>
+      <button id="passkey-login" class="primary" type="button">使用 Passkey 登录</button>
+      <div class="divider">首次登录或恢复访问</div>
+      <form id="code-form">
+        <label for="code">一次性登录码</label>
+        <input id="code" name="code" autocomplete="one-time-code" spellcheck="false" autocapitalize="characters" required maxlength="64" placeholder="输入服务器生成的登录码">
+        <button id="code-login" type="submit">使用登录码</button>
+      </form>
+    </section>
+    <section id="signed-in" hidden>
+      <div class="account"><span class="dot"></span><strong>SuooL</strong><span id="key-count" class="muted"></span></div>
+      <button id="passkey-register" class="primary" type="button">添加此 Mac 的 Passkey</button>
+      <p class="muted small">按系统提示使用 Touch ID 或设备密码。Apple Passkey 可通过 iCloud 钥匙串同步。</p>
+      <a class="panel-link" href="/">进入面板 <span aria-hidden="true">→</span></a>
+      <button id="logout" class="quiet" type="button">退出登录</button>
+    </section>
+    <p id="message" role="status" aria-live="polite"></p>
+    <p class="footer">由本站验证身份</p>
+  </main>
+</body>
+</html>

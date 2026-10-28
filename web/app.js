@@ -136,6 +136,14 @@ async function refreshAuthState() {
   const health = document.getElementById("hub-health");
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
+    if (h.site_auth_enabled && !document.getElementById("site-account")) {
+      const account = document.createElement("a");
+      account.id = "site-account";
+      account.href = "/login";
+      account.textContent = "账户与 Passkey";
+      account.className = "subtle";
+      document.querySelector(".page-utilities").prepend(account);
+    }
     health.className = "hub-health healthy";
     health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 正常</span>`;
     // Only warn when a read actually fails. A reverse proxy in front of the hub
@@ -152,6 +160,7 @@ async function refreshAuthState() {
         denied = false;
       }
       if (denied) {
+        if (h.site_auth_enabled) { location.assign("/login"); return; }
         document.querySelector(".viz-root").insertAdjacentHTML("afterbegin",
           `<div class="auth-banner">这台服务端可被其它机器访问,读取需要令牌。
              请到 <a href="#settings">设置 → 访问令牌</a> 填写 <code>config.json</code> 里的 <code>token</code>。</div>`);

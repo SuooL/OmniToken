@@ -13,11 +13,20 @@ type TelemetryModelUsage struct {
 	Share  float64 `json:"share"`
 }
 
+type TelemetryDailySourceUsage struct {
+	Source         string                `json:"source"`
+	Tokens         int64                 `json:"tokens"`
+	PreviousTokens int64                 `json:"previous_tokens"`
+	ChangePercent  *float64              `json:"change_percent"`
+	Models         []TelemetryModelUsage `json:"models"`
+}
+
 type TelemetryTodayUsage struct {
-	StartMS     int64                 `json:"start_ms"`
-	EndMS       int64                 `json:"end_ms"`
-	TotalTokens int64                 `json:"total_tokens"`
-	Models      []TelemetryModelUsage `json:"models"`
+	StartMS     int64                       `json:"start_ms"`
+	EndMS       int64                       `json:"end_ms"`
+	TotalTokens int64                       `json:"total_tokens"`
+	Models      []TelemetryModelUsage       `json:"models"`
+	Sources     []TelemetryDailySourceUsage `json:"sources"`
 }
 
 type TelemetrySourceUsage struct {
@@ -130,6 +139,12 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		return out.Today.Models[i].Tokens > out.Today.Models[j].Tokens
 	})
 
+	sources, err := s.telemetryDailySources(todayStart, now)
+	if err != nil {
+		return out, err
+	}
+	out.Today.Sources = sources
+
 	if err := s.rdb.QueryRow(
 		`SELECT COALESCE(SUM(`+telemetryTokenExpression+`),0)
 		 FROM events WHERE ts >= ? AND ts <= ?`,
@@ -194,6 +209,83 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		out.Rolling5H.Sources = append(out.Rolling5H.Sources, row)
 	}
 	return out, nil
+}
+
+// telemetryDailySources preserves the actual tool/model relationship. A model
+// may be used through more than one tool, so names cannot determine its source.
+func (s *Store) telemetryDailySources(todayStart, now time.Time) ([]TelemetryDailySourceUsage, error) {
+	previousStart := todayStart.AddDate(0, 0, -1)
+	previousEnd := now.AddDate(0, 0, -1)
+	rows, err := s.rdb.Query(`SELECT source, model,
+  COALESCE(SUM(CASE WHEN ts >= ? THEN `+telemetryTokenExpression+` ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN ts <= ? AND ts < ? THEN `+telemetryTokenExpression+` ELSE 0 END),0)
+  FROM events WHERE ts >= ? AND ts <= ? GROUP BY source, model`,
+		todayStart.UnixMilli(), previousEnd.UnixMilli(), todayStart.UnixMilli(), previousStart.UnixMilli(), now.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type dailyAcc struct {
+		tokens, previous int64
+		models           map[string]int64
+	}
+	acc := map[string]*dailyAcc{}
+	for rows.Next() {
+		var source, name string
+		var tokens, previous int64
+		if err := rows.Scan(&source, &name, &tokens, &previous); err != nil {
+			return nil, err
+		}
+		source = speedSourceKey(source)
+		if acc[source] == nil {
+			acc[source] = &dailyAcc{models: map[string]int64{}}
+		}
+		row := acc[source]
+		row.tokens += tokens
+		row.previous += previous
+		name = model.CanonicalModel(name)
+		if name == "" {
+			name = "unknown"
+		}
+		row.models[name] += tokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	order := []string{"claude-code", "codex", "dsh"}
+	var extra []string
+	for source, row := range acc {
+		if source != "claude-code" && source != "codex" && source != "dsh" && (row.tokens > 0 || row.previous > 0) {
+			extra = append(extra, source)
+		}
+	}
+	sort.Strings(extra)
+	order = append(order, extra...)
+	result := make([]TelemetryDailySourceUsage, 0, len(order))
+	for _, source := range order {
+		row := TelemetryDailySourceUsage{Source: source, Models: []TelemetryModelUsage{}}
+		if a := acc[source]; a != nil {
+			row.Tokens, row.PreviousTokens = a.tokens, a.previous
+			if a.previous > 0 {
+				change := float64(a.tokens-a.previous) * 100 / float64(a.previous)
+				row.ChangePercent = &change
+			}
+			for name, tokens := range a.models {
+				if tokens <= 0 {
+					continue
+				}
+				row.Models = append(row.Models, TelemetryModelUsage{Model: name, Tokens: tokens, Share: float64(tokens) / float64(a.tokens)})
+			}
+			sort.Slice(row.Models, func(i, j int) bool {
+				if row.Models[i].Tokens == row.Models[j].Tokens {
+					return row.Models[i].Model < row.Models[j].Model
+				}
+				return row.Models[i].Tokens > row.Models[j].Tokens
+			})
+		}
+		result = append(result, row)
+	}
+	return result, nil
 }
 
 // TelemetrySpeedSeries returns a bounded sequence of source contributions.

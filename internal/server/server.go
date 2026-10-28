@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,11 +16,13 @@ import (
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/pricing"
 	"github.com/suool/omnitoken/internal/proxy"
+	"github.com/suool/omnitoken/internal/siteauth"
 	"github.com/suool/omnitoken/internal/store"
 	"github.com/suool/omnitoken/web"
 )
 
 type Server struct {
+	siteAuth              *siteauth.Auth
 	cfg                   *Config
 	store                 *store.Store
 	state                 *collect.State
@@ -53,6 +56,17 @@ func New(cfg *Config) (*Server, error) {
 	// config file entries) before serving anything.
 	if err := srv.ReloadPricing(); err != nil {
 		return nil, err
+	}
+	if cfg.SiteAuthOrigin != "" {
+		if filepath.Clean(cfg.SiteAuthPath()) == filepath.Clean(cfg.DBPath) {
+			st.Close()
+			return nil, fmt.Errorf("site_auth_db must be separate from the usage database")
+		}
+		srv.siteAuth, err = siteauth.Open(cfg.SiteAuthPath(), cfg.SiteAuthOrigin)
+		if err != nil {
+			st.Close()
+			return nil, fmt.Errorf("site authentication: %w", err)
+		}
 	}
 	return srv, nil
 }
@@ -113,7 +127,9 @@ func (s *Server) Run() error {
 	}
 	mux := s.routes()
 
-	if s.loopbackOnly() {
+	if s.siteAuth != nil {
+		log.Printf("omnitoken server listening on %s (db: %s) — site login enabled for %s", s.cfg.Listen, s.cfg.DBPath, s.cfg.SiteAuthOrigin)
+	} else if s.loopbackOnly() {
 		log.Printf("omnitoken server listening on %s (db: %s) — 仅本机可访问,读接口免鉴权", s.cfg.Listen, s.cfg.DBPath)
 	} else {
 		log.Printf("omnitoken server listening on %s (db: %s) — 可被其它机器访问,读写均需 token", s.cfg.Listen, s.cfg.DBPath)
@@ -155,12 +171,16 @@ func (s *Server) routes() http.Handler {
 	// Health stays open on purpose: it carries no usage data, and it is what a
 	// client probes to tell "wrong address" from "wrong token".
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "auth_required": !s.loopbackOnly()})
+		writeJSON(w, map[string]any{"status": "ok", "auth_required": s.siteAuth != nil || !s.loopbackOnly(), "site_auth_enabled": s.siteAuth != nil})
 	})
-	// The panel itself is usage data once it loads, but it cannot send a header
-	// on the initial navigation — so the shell is served open and every XHR it
-	// makes is authenticated. Nothing in the static files is private.
-	mux.Handle("GET /", http.FileServerFS(web.FS))
+	// Legacy installs serve a public shell and authenticate each API request.
+	// Site-login installs also gate the shell and use a host-only browser cookie.
+	var panel http.Handler = http.FileServerFS(web.FS)
+	if s.siteAuth != nil {
+		s.siteAuth.RegisterRoutes(mux)
+		panel = s.siteAuth.Protect(panel)
+	}
+	mux.Handle("GET /", panel)
 	return mux
 }
 
@@ -262,19 +282,29 @@ func (s *Server) readAuthStream(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) readAuthWith(next http.HandlerFunc, allowQuery bool) http.HandlerFunc {
-	if s.loopbackOnly() {
+	if s.siteAuth == nil && s.loopbackOnly() {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !credentialOK(r, s.cfg.ReadToken) && !(allowQuery && s.queryTokenOK(r)) {
+		if !s.readAuthorized(r, allowQuery) {
 			// WWW-Authenticate so a browser hitting the panel directly gets a
 			// prompt rather than a bare 401 with no way forward.
 			w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if s.siteAuth != nil {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		next(w, r)
 	}
+}
+
+func (s *Server) readAuthorized(r *http.Request, allowQuery bool) bool {
+	if s.siteAuth != nil && s.siteAuth.Authenticated(r) {
+		return true
+	}
+	return s.cfg.ReadToken != "" && (credentialOK(r, s.cfg.ReadToken) || (allowQuery && s.queryTokenOK(r)))
 }
 
 // loopbackOnly reports whether cfg.Listen can only be reached from this machine.

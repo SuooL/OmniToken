@@ -91,10 +91,8 @@ footer {
   gap: 10px;
   padding-right: 2px;
 }
-#main::-webkit-scrollbar,
-.model-list::-webkit-scrollbar { width: 4px; }
-#main::-webkit-scrollbar-thumb,
-.model-list::-webkit-scrollbar-thumb {
+#main::-webkit-scrollbar { width: 4px; }
+#main::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: 4px;
 }
@@ -145,6 +143,20 @@ body.degraded #main { opacity: .88; }
 }
 .hero-meta span + span::before { content: "·"; margin-right: 6px; color: var(--text-muted); }
 
+.usage-section { display: flex; flex-direction: column; gap: 8px; }
+.usage-section-head { padding: 2px 2px 0; }
+.section-total { color: var(--text-secondary); font-size: 10px; }
+.daily-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.daily-other { display: grid; grid-template-columns: 1fr; gap: 7px; }
+
+.daily-card .source-title { font-size: 9px; letter-spacing: .025em; gap: 4px; }
+.daily-card .source-dot { width: 5px; height: 5px; }
+.daily-card > strong { font-size: 21px; }
+.daily-models { display: flex; flex-direction: column; gap: 6px; }
+.daily-model { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.daily-model span { color: var(--text-secondary); font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
+.daily-model b { color: var(--text-muted); font-size: 10px; font-weight: 500; }
+.daily-card .delta { margin-top: auto; padding-top: 3px; font-size: 9px; line-height: 1.4; }
 .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .usage-card {
   min-width: 0;
@@ -156,6 +168,7 @@ body.degraded #main { opacity: .88; }
   border-color: #2e3656;
   border-radius: 15px;
 }
+.usage-card.daily-card { padding: 10px 8px; gap: 7px; }
 .source-title {
   display: flex;
   align-items: center;
@@ -181,26 +194,20 @@ body.degraded #main { opacity: .88; }
 .delta[data-direction="up"] { color: var(--status-healthy); }
 .delta[data-direction="down"] { color: var(--amber); }
 
-/* The tokens ride the headline at a size that reads as its companion rather
-   than as a second number competing with it. Baseline-aligned by sitting
-   inside the same <strong>. */
-.quota-card .fig-aside {
-  margin-left: 5px;
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--text-secondary);
-  letter-spacing: 0;
-}
-.quota-card .quota-basis { color: var(--text-secondary); font-size: 10px; }
-.quota-card .delta { color: var(--text-muted); font-size: 10px; }
-/* Fixed steps from severity() in format-core.js, not a gradient: the reader
-   needs "is this fine or not", not a hue to interpolate. */
-.quota-card strong[data-severity="warn"] { color: var(--meter-warn); }
+/* Each official window keeps its own percentage and warning colour. */
+.quota-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+.quota-window { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.quota-window-label { color: var(--text-secondary); font-size: 10px; }
+.quota-reset { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
+.quota-window strong { font-size: 22px; }
+.quota-card strong[data-severity="warn"] { color: #f5d58b; }
 .quota-card strong[data-severity="serious"] { color: var(--meter-serious); }
 .quota-card strong[data-severity="critical"] { color: var(--meter-critical); }
-/* No reading at all reads as muted, so it can never be mistaken for a healthy
-   low number. */
-.quota-card[data-basis="none"] strong { color: var(--text-muted); }
+.quota-estimates { display: flex; flex-direction: column; gap: 4px; }
+.quota-estimate { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 6px; font-size: 10px; }
+.quota-estimate span { color: var(--text-secondary); }
+.quota-estimate b { color: var(--text-secondary); font-weight: 500; }
+
 
 .speed-history {
   padding: 12px 12px 9px;
@@ -335,53 +342,6 @@ body.degraded #main { opacity: .88; }
   border-color: #2d3553;
   border-radius: 15px;
 }
-.today-total { margin-top: 3px; font-size: 11px; color: var(--text-muted); }
-.today-total .fig {
-  color: var(--text-primary);
-  font-size: 22px;
-  line-height: 1.1;
-  font-weight: 700;
-}
-.composition-strip {
-  height: 6px;
-  margin: 8px 0 6px;
-  display: flex;
-  gap: 1px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: #28304c;
-}
-.model-segment { min-width: 1px; }
-.model-list {
-  max-height: 122px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-.model-row {
-  display: grid;
-  grid-template-columns: 7px minmax(0, 1fr) 58px 42px;
-  align-items: center;
-  gap: 7px;
-  min-height: 23px;
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.model-name {
-  overflow: hidden;
-  color: var(--text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.model-share,
-.model-row .fig { text-align: right; }
-.model-row .fig { color: var(--text-primary); }
-.tone-0 { background: var(--source-claude); }
-.tone-1 { background: var(--source-codex); }
-.tone-2 { background: var(--source-api); }
-.tone-3 { background: var(--status-healthy); }
-.tone-4 { background: var(--peak); }
-
 .contributor-list {
   margin-top: 5px;
   display: flex;
@@ -537,4 +497,17 @@ button { font: inherit; cursor: pointer; }
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Settings > 软件更新: the button and the current version share a line, because
+   the version is the answer to "update to what from what" and reads as a label
+   on the button rather than as its own field. */
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-version {
+  color: var(--text-muted);
+  font-size: 11px;
 }

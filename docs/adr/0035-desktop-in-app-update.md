@@ -51,7 +51,41 @@ Releases 分发」,但从来没有实现过分发,更没有实现过升级 —�
 隔离标记**的东西 —— updater 自己解包写文件,不经过浏览器那条会打标记的路径。
 这就是为什么无证书也能用。
 
-**② release 构建强制 HTTPS。** 把端点设成 `http://127.0.0.1` 后,应用在插件初始化
+**② 安装替换的是 bundle,不是进程 —— 要重启,而且这个应用只有一种重启方式。**
+
+拿真实的 v0.2.0 发布验证:磁盘上的 app 从 0.1.0 变成 0.2.0,而**进程 pid 一直没变**。
+`download_and_install` 换的是 bundle,跑着的仍是旧镜像 —— 「装上了」不等于「生效了」,
+菜单栏应用可能连续跑几周。所以必须显式重启,而三种做法只有一种成立:
+
+| 做法 | 结果 |
+|---|---|
+| `AppHandle::restart`(spawn 替身 + 退出) | ❌ 应用直接死掉 |
+| `open -n` + 立刻退出(`spawn()`) | ❌ 同样死掉 |
+| **`open -n` + 等它跑完(`status()`)** | ✅ 实测 0.1.9 → 0.2.0,pid 51771 → 52353,单实例存活 |
+
+前两种死法是同一个原因:菜单栏是个 launchd job,job 的生命周期归 launchd 管 ——
+进程一退,子进程跟着被收。`restart` spawn 出来的替身如此,还在跟 LaunchServices 交涉的
+`open` 也如此。`launchctl list` 会显示 `- 0 OmniToken`,图标消失到人工 bootstrap 为止。
+
+第三种成立,是因为 `status()` **等 `open` 把启动交接给 LaunchServices 之后才退出**;
+交接完成后新实例已经不在这个 job 的进程树里了。`-n` 也是必需的:没有它,`open` 会找到
+还活着的旧实例只做激活,然后我们一退就什么都不剩。
+
+**给 plist 加 `KeepAlive` 这条路走不通** —— `~/Library/LaunchAgents/OmniToken.plist`
+是 tauri-plugin-autostart 在管的,它只写 Label / ProgramArguments / RunAtLoad,
+加进去的键下次会被抹掉。
+
+这一段是踩着 #122 / #123 学的:#122 用 `restart` 合进 dev 后实测让菜单栏死掉;#123 收敛
+成「不重启」时,我把 `open -n` 也记成了失败 —— **那次其实是网络失败导致更新压根没发生,
+我没验证就下了结论**。教训不是「别用 open」,是「没跑通就别写进结论」。
+
+**③ 生产构建必须有日志。** 一个会替换自身二进制的功能,在 release 里把日志编掉,
+出问题就只能猜。实测:第二次自更新没发生,加上日志后一眼看到是
+`failed to check for updates: error sending request` —— 网络抖动,代码没问题,
+而在此之前我为这个现象试错了两轮。现在 release 构建保留 warn 级日志,
+updater 模块单独放到 info。
+
+**④ release 构建强制 HTTPS。** 把端点设成 `http://127.0.0.1` 后,应用在插件初始化
 阶段直接 panic:「The configured updater endpoint must use a secure protocol」。
 **这不是降级,是整个菜单栏应用起不来。** 所以端点写错的代价是应用打不开,而配置是
 静态数据 —— 加了三条 `updater_config_tests` 把它挡在编译期之后、发布之前。
@@ -73,12 +107,21 @@ Releases 分发」,但从来没有实现过分发,更没有实现过升级 —�
   私钥在本机 `~/.omnitoken/tauri-updater.key`(0600,仓库外),`.gitignore` 另加了
   `*.pem` / `*.key` 作为第二道。
 
+## 发版之后
+
+`Cargo.toml` 与 `tauri.conf.json` 里的 version 要同步成刚发的 tag。CI 按 tag 打戳,
+仓库里的值只有本地构建用得到 —— **落后于线上 release 的本地构建,启动一分钟内就会被
+自更新替换掉**(实测:`make desktop-install` 产出 0.1.0,还没来得及看就被换成了 0.2.0)。
+`make desktop-check` 里的 `desktop-version-check` 会在落后时报错,所以这条是被检查的
+约定而不是要记住的约定。
+
 ## 局限
 
 - 不是「热更新」。它下载整个 bundle(约 5.5MB)、替换、重启,没有 JS 级热补丁。
   真要热补丁就得把 `desktop/ui` 改成远程加载,那会让面板变成远程代码且离线即废,
   与 ADR-0008 的瘦客户端取向冲突,明确不做。
-- CI 那一半在第一次真实发布之前没有被执行过。本地验证覆盖的是应用侧与签名产物,
-  workflow 的正确性靠的是 YAML 结构检查和与 OmniStats 已跑通的 job 逐行对照。
+- ~~CI 那一半没被执行过~~ **已于 2026-09-08 随 v0.2.0 首次真实发布验证**:
+  `desktop` job 8m37s 通过,`latest.json` / `OmniToken.app.tar.gz` / `.sig` 三个资产
+  都挂上了 Release,本机装着的 0.1.0 实例从真实端点自更新到 0.2.0(约 20 秒)。
 - 应用仍未公证。用 updater 升级不受影响(上面 ①),但**从浏览器下载 DMG 再拖进
   Applications** 的那条路会带隔离标记,首次打开需要右键→打开。

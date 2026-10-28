@@ -20,7 +20,10 @@ type Config struct {
 	Token      string `json:"token"` // shared bearer token for push-mode agents; empty = no auth
 	ReadToken  string `json:"read_token,omitempty"`
 	AdminToken string `json:"admin_token,omitempty"`
-	DeviceName string `json:"device_name"`
+	// Explicitly enables the single-owner browser login (ADR-0036).
+	SiteAuthOrigin string `json:"site_auth_origin,omitempty"`
+	SiteAuthDB     string `json:"site_auth_db,omitempty"`
+	DeviceName     string `json:"device_name"`
 	// Timezone is the IANA name whose midnight defines a day for every
 	// daily/weekly/monthly aggregation (ADR-0021). Empty follows the host.
 	Timezone string `json:"timezone,omitempty"`
@@ -70,6 +73,14 @@ type Config struct {
 func DataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".omnitoken")
+}
+
+// SiteAuthPath keeps browser credentials separate from usage facts.
+func (c *Config) SiteAuthPath() string {
+	if c.SiteAuthDB != "" {
+		return c.SiteAuthDB
+	}
+	return filepath.Join(filepath.Dir(c.DBPath), "site-auth.db")
 }
 
 func DefaultLocalClaudeDirs() []string {

@@ -217,42 +217,19 @@ struct DeviceView {
     running: i64,
 }
 
-/// Which official window the card's leading percentage comes from.
-///
-/// Three states, not two, because "the provider reports no 5-hour window" and
-/// "the provider reports nothing at all" are different facts and only one of
-/// them means the user is flying blind. Neither may be drawn as 0%.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-enum QuotaBasis {
-    FiveHour,
-    Weekly,
-    None,
-}
-
-/// One subscription source's official quota, in the shape the popover renders.
-///
-/// Every figure here comes from the provider. Our own rolling counts stay out:
-/// side by side on a 420px card an inferred percentage is indistinguishable from
-/// an authoritative one, which is exactly what "authoritative first, inferred
-/// labelled" forbids.
+/// Independent official percentages and estimated token remainders for each
+/// window. Missing readings and estimates stay absent rather than becoming 0.
 #[derive(Serialize, Clone, Debug)]
 struct QuotaView {
     source: String,
     label: String,
-    basis: QuotaBasis,
     five_hour_percent: Option<f64>,
-    projected_percent: Option<f64>,
     weekly_percent: Option<f64>,
-    /// Minutes left on whichever window `basis` names.
-    resets_in_minutes: Option<i64>,
-    /// Tokens spent inside the window `basis` names — the same figure the
-    /// percentage beside it is a percentage of, in the unit the user writes in.
-    used_tokens: Option<i64>,
-    /// What is left of that window, from the cross-window calibration
-    /// (ADR-0025). Absent until the calibration has evidence, and absent is
-    /// how it stays — the card simply says less.
-    remaining_tokens: Option<i64>,
+    five_hour_resets_at_ms: Option<i64>,
+    weekly_resets_at_ms: Option<i64>,
+    /// Estimates from the matching authoritative window card (ADR-0025/0034).
+    five_hour_remaining_tokens: Option<i64>,
+    weekly_remaining_tokens: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -317,39 +294,45 @@ fn five_hour_window<'a>(windows: &'a [Value], source: &str) -> Option<&'a Value>
     })
 }
 
-/// The tightest live weekly window for one source, and the minutes left on it.
-///
-/// Tightest rather than first: Claude reports `seven_day`, `seven_day_opus` and
-/// `seven_day_sonnet` as separate limits and every device reports its own copy,
-/// so the wall that actually stops the user is the highest of them. Same rule as
-/// `gauge::tightest_percent`, which is what keeps this card and the tray glyph
-/// from showing different numbers for the same account.
-///
-/// Windows that have already rolled over are dropped by the server before they
-/// reach us (`internal/server/live.go`), so there is no expiry check here.
-/// The window card behind a quota card, if the server drew one.
-///
-/// The five-hour card is keyed by the bare source and the weekly one by
-/// `source:weekly` — that split exists because the five-hour key predates the
-/// weekly card and both this popover and the panel address it by name.
-fn window_card<'a>(windows: &'a [Value], source: &str, basis: QuotaBasis) -> Option<&'a Value> {
-    let key = match basis {
-        QuotaBasis::FiveHour => source.to_string(),
-        QuotaBasis::Weekly => format!("{source}:weekly"),
-        QuotaBasis::None => return None,
+/// Match each estimate to its own window, never to the other window's basis.
+fn window_card<'a>(windows: &'a [Value], source: &str, weekly: bool) -> Option<&'a Value> {
+    let key = if weekly {
+        format!("{source}:weekly")
+    } else {
+        source.to_string()
     };
-    windows
-        .iter()
-        .find(|window| window.get("key").and_then(Value::as_str) == Some(key.as_str()))
+    windows.iter().find(|window| {
+        window.get("key").and_then(Value::as_str) == Some(key.as_str())
+            && window.get("authoritative").and_then(Value::as_bool) == Some(true)
+            && window.get("placeholder").and_then(Value::as_bool) != Some(true)
+    })
 }
 
-fn window_number(window: Option<&Value>, field: &str) -> Option<i64> {
-    window
-        .and_then(|w| w.get(field))
+fn remaining_tokens(window: Option<&Value>, percent: Option<f64>) -> Option<i64> {
+    let percent = percent.filter(|p| p.is_finite() && *p >= 0.0)?;
+    // The authoritative limit itself establishes exhaustion, even when there
+    // is not yet a calibrated token capacity for this window.
+    if percent >= 100.0 {
+        return Some(0);
+    }
+    let window = window?;
+    if let Some(remaining) = window.get("remaining_tokens").and_then(Value::as_i64) {
+        return (remaining >= 0).then_some(remaining);
+    }
+    // The server omits zero remaining_tokens. A positive capacity distinguishes
+    // that known zero from a window whose capacity has never been estimated.
+    let capacity = window
+        .get("capacity_tokens")
         .and_then(Value::as_i64)
-        .filter(|&n| n > 0)
+        .filter(|n| *n > 0)?;
+    let used = window
+        .get("tokens")
+        .and_then(Value::as_i64)
+        .filter(|n| *n >= 0)?;
+    Some(capacity.saturating_sub(used).max(0))
 }
 
+/// The tightest weekly reading and its reset deadline, matching the server card.
 fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
     quotas
         .iter()
@@ -360,7 +343,10 @@ fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
         .filter_map(|quota| {
             Some((
                 quota.get("used_percent").and_then(Value::as_f64)?,
-                quota.get("remaining_minutes").and_then(Value::as_i64),
+                quota
+                    .get("resets_at")
+                    .and_then(Value::as_i64)
+                    .filter(|n| *n > 0),
             ))
         })
         .fold(
@@ -372,18 +358,10 @@ fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
         )
 }
 
-/// One card per subscription source, leading with the shortest window the
-/// provider actually reports.
-///
-/// The 5-hour window wins when it exists because it is the one that bites within
-/// the working day — but it is opportunistic on Claude (captured only while
-/// Claude Code renders a status line, and dropped the moment it resets) and gone
-/// entirely on Codex since `primary` became a weekly window on 2026-07-09. So
-/// the weekly window is not an error path, it is where Codex lives.
+/// Both windows are peers: a fresh 5-hour window must not hide a near-full
+/// weekly limit. Rolling placeholders are never presented as official quotas.
 fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
     let Some(payload) = payload else {
-        // Nothing was ever received. Two cards reading 暂无 would claim the
-        // provider said nothing, when the truth is that nobody asked yet.
         return Vec::new();
     };
     let array = |key: &str| {
@@ -394,7 +372,6 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
             .unwrap_or(&[])
     };
     let (quotas, windows) = (array("quotas"), array("windows"));
-
     QUOTA_SOURCES
         .iter()
         .map(|&source| {
@@ -406,32 +383,30 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
                     .unwrap_or(0.0)
             });
             let weekly = weekly_quota(quotas, source);
-            let basis = if five_hour_percent.is_some() {
-                QuotaBasis::FiveHour
-            } else if weekly.is_some() {
-                QuotaBasis::Weekly
-            } else {
-                QuotaBasis::None
-            };
+            let weekly_percent = weekly.map(|(percent, _)| percent);
+            let weekly_remaining_tokens =
+                remaining_tokens(window_card(windows, source, true), weekly_percent);
+            let five_hour_remaining_tokens =
+                remaining_tokens(window_card(windows, source, false), five_hour_percent);
+            // Both limits apply. A 5h allowance is not spendable beyond the
+            // remaining weekly allowance, even just after the 5h reset.
+            let five_hour_remaining_tokens =
+                match (five_hour_remaining_tokens, weekly_remaining_tokens) {
+                    (_, Some(0)) if five_hour_percent.is_some() => Some(0),
+                    (Some(five_hour), Some(weekly)) => Some(five_hour.min(weekly)),
+                    (five_hour, _) => five_hour,
+                };
             QuotaView {
                 source: source.to_string(),
                 label: source_label(source),
-                basis,
                 five_hour_percent,
-                projected_percent: five_hour
-                    .and_then(|window| window.get("projected_percent").and_then(Value::as_f64)),
-                weekly_percent: weekly.map(|(percent, _)| percent),
-                resets_in_minutes: match basis {
-                    QuotaBasis::FiveHour => five_hour
-                        .and_then(|window| window.get("remaining_minutes").and_then(Value::as_i64)),
-                    QuotaBasis::Weekly => weekly.and_then(|(_, minutes)| minutes),
-                    QuotaBasis::None => None,
-                },
-                used_tokens: window_number(window_card(windows, source, basis), "tokens"),
-                remaining_tokens: window_number(
-                    window_card(windows, source, basis),
-                    "remaining_tokens",
-                ),
+                weekly_percent,
+                five_hour_resets_at_ms: five_hour
+                    .and_then(|window| window.get("resets_at").and_then(Value::as_i64))
+                    .filter(|n| *n > 0),
+                weekly_resets_at_ms: weekly.and_then(|(_, resets_at)| resets_at),
+                five_hour_remaining_tokens,
+                weekly_remaining_tokens,
             }
         })
         .collect()
@@ -1637,15 +1612,14 @@ mod tests {
         assert_eq!(
             quota_keys,
             [
-                "basis",
                 "five_hour_percent",
+                "five_hour_remaining_tokens",
+                "five_hour_resets_at_ms",
                 "label",
-                "projected_percent",
-                "remaining_tokens",
-                "resets_in_minutes",
                 "source",
-                "used_tokens",
                 "weekly_percent",
+                "weekly_remaining_tokens",
+                "weekly_resets_at_ms",
             ]
         );
 
@@ -1671,11 +1645,9 @@ mod tests {
         view_for(Some(payload), ConnectionKind::Live).quotas
     }
 
-    /// Claude's 5-hour window is opportunistic — it exists only while Claude Code
-    /// happens to be rendering a status line — so when it IS there it is the
-    /// tightest thing the user has and leads the card.
+    /// Both percentages survive independently when a 5-hour reading is present.
     #[test]
-    fn five_hour_window_leads_when_the_provider_reports_one() {
+    fn both_official_percentages_survive_when_five_hour_is_available() {
         let payload = json!({
             "generated_at": 10_000,
             "speed": {"tps":0.0,"sessions":[]},
@@ -1696,21 +1668,13 @@ mod tests {
 
         assert_eq!(claude.source, "claude-code");
         assert_eq!(claude.label, "Claude");
-        assert_eq!(claude.basis, QuotaBasis::FiveHour);
         assert_eq!(claude.five_hour_percent, Some(24.0));
-        assert_eq!(claude.projected_percent, Some(36.5));
-        // The weekly figure rides along: the card shows all three numbers, the
-        // basis only decides which one leads.
         assert_eq!(claude.weekly_percent, Some(12.0));
-        assert_eq!(claude.resets_in_minutes, Some(102));
     }
 
-    /// Codex's `primary` window became 10080 minutes on 2026-07-09 and
-    /// `secondary` stopped being reported the same day, so Codex has no 5-hour
-    /// quota at all any more. That is the steady state, not a fault: the card
-    /// falls back to the weekly window and says which window it is showing.
+    /// A missing 5-hour reading must not replace the official weekly reading.
     #[test]
-    fn weekly_window_carries_the_card_when_there_is_no_five_hour_one() {
+    fn weekly_percentage_survives_without_a_five_hour_window() {
         let payload = json!({
             "generated_at": 10_000,
             "speed": {"tps":0.0,"sessions":[]},
@@ -1729,11 +1693,8 @@ mod tests {
         let codex = &quotas_of(&payload)[1];
 
         assert_eq!(codex.source, "codex");
-        assert_eq!(codex.basis, QuotaBasis::Weekly);
         assert_eq!(codex.five_hour_percent, None);
-        assert_eq!(codex.projected_percent, None);
         assert_eq!(codex.weekly_percent, Some(72.0));
-        assert_eq!(codex.resets_in_minutes, Some(9575));
     }
 
     /// A rolling look-back is our own counting, not the provider's, and this card
@@ -1755,11 +1716,8 @@ mod tests {
         });
 
         for quota in quotas_of(&payload) {
-            assert_eq!(quota.basis, QuotaBasis::None);
             assert_eq!(quota.five_hour_percent, None);
-            assert_eq!(quota.projected_percent, None);
             assert_eq!(quota.weekly_percent, None);
-            assert_eq!(quota.resets_in_minutes, None);
         }
     }
 
@@ -1783,7 +1741,6 @@ mod tests {
 
         let claude = &quotas_of(&payload)[0];
 
-        assert_eq!(claude.basis, QuotaBasis::FiveHour);
         assert_eq!(claude.five_hour_percent, Some(0.0));
     }
 
@@ -1811,7 +1768,6 @@ mod tests {
         let quotas = quotas_of(&payload);
 
         assert_eq!(quotas[0].weekly_percent, Some(31.0));
-        assert_eq!(quotas[0].resets_in_minutes, Some(8402));
         assert_eq!(quotas[1].weekly_percent, Some(99.0));
     }
 
@@ -1834,7 +1790,9 @@ mod tests {
         assert_eq!(quotas.len(), 2);
         assert_eq!(quotas[0].label, "Claude");
         assert_eq!(quotas[1].label, "Codex");
-        assert!(quotas.iter().all(|q| q.basis == QuotaBasis::None));
+        assert!(quotas
+            .iter()
+            .all(|q| q.five_hour_percent.is_none() && q.weekly_percent.is_none()));
     }
 
     /// No payload is not an empty payload: with nothing to read the popover must
@@ -1971,11 +1929,81 @@ mod tests {
         })
     }
 
-    /// The card leads with a percentage; the tokens beside it have to be the
-    /// tokens that percentage is a percentage of. Reading the wrong window's
-    /// card would pair a weekly percentage with five hours of traffic.
     #[test]
-    fn quota_tokens_come_from_the_window_the_basis_names() {
+    fn both_window_estimates_are_published_independently() {
+        let payload = payload_with_windows(
+            json!([
+                {"key":"claude-code","authoritative":true,"used_percent":2.0,
+                 "tokens":2_200_000,"remaining_tokens":132_000_000},
+                {"key":"claude-code:weekly","authoritative":true,"used_percent":96.0,
+                 "tokens":192_000_000,"remaining_tokens":8_000_000},
+                {"key":"codex:weekly","authoritative":true,"used_percent":40.0,
+                 "tokens":100,"remaining_tokens":150}
+            ]),
+            json!([
+                {"source":"claude-code","window_minutes":10080,"used_percent":96.0},
+                {"source":"codex","window_minutes":10080,"used_percent":40.0}
+            ]),
+        );
+        let encoded = serde_json::to_value(quotas_of(&payload)).unwrap();
+        assert_eq!(encoded[0]["five_hour_remaining_tokens"], json!(8_000_000));
+        assert_eq!(encoded[0]["weekly_remaining_tokens"], json!(8_000_000));
+        assert_eq!(encoded[1]["five_hour_remaining_tokens"], Value::Null);
+        assert_eq!(encoded[1]["weekly_remaining_tokens"], json!(150));
+    }
+
+    #[test]
+    fn remaining_estimates_preserve_zero_and_reject_unknown_or_placeholder_capacity() {
+        // A full official window has no allowance left even before calibration.
+        assert_eq!(remaining_tokens(None, Some(100.0)), Some(0));
+        assert_eq!(remaining_tokens(None, Some(120.0)), Some(0));
+        assert_eq!(remaining_tokens(None, Some(2.0)), None);
+        assert_eq!(remaining_tokens(None, None), None);
+        let known_zero = json!({"capacity_tokens":100,"tokens":100});
+        assert_eq!(remaining_tokens(Some(&known_zero), Some(96.0)), Some(0));
+        let unknown = json!({"tokens":100});
+        assert_eq!(remaining_tokens(Some(&unknown), Some(96.0)), None);
+
+        let payload = payload_with_windows(
+            json!([
+                {"key":"claude-code","authoritative":false,"placeholder":true,"remaining_tokens":999},
+                {"key":"claude-code:weekly","authoritative":false,"placeholder":true,"remaining_tokens":999}
+            ]),
+            json!([{"source":"claude-code","window_minutes":10080,"used_percent":96.0}]),
+        );
+        let claude = &quotas_of(&payload)[0];
+        assert_eq!(claude.five_hour_percent, None);
+        assert_eq!(claude.five_hour_remaining_tokens, None);
+        assert_eq!(claude.weekly_remaining_tokens, None);
+    }
+
+    #[test]
+    fn five_hour_available_tokens_are_limited_by_the_weekly_window() {
+        for (five_hour, weekly, expected) in [(132, 8, 8), (5, 8, 5), (132, 0, 0)] {
+            let payload = payload_with_windows(
+                json!([
+                    {"key":"claude-code","authoritative":true,"used_percent":2.0,
+                     "remaining_tokens":five_hour,"resets_at":6_000_000},
+                    {"key":"claude-code:weekly","authoritative":true,"used_percent":96.0,
+                     "remaining_tokens":weekly}
+                ]),
+                json!([
+                    {"source":"claude-code","window_minutes":10080,"used_percent":96.0,"resets_at":900_000_000},
+                    {"source":"claude-code","window_minutes":10080,"used_percent":10.0,"resets_at":100_000_000}
+                ]),
+            );
+            let view = serde_json::to_value(quotas_of(&payload)).unwrap();
+            assert_eq!(view[0]["five_hour_remaining_tokens"], json!(expected));
+            assert_eq!(view[0]["weekly_remaining_tokens"], json!(weekly));
+            assert_eq!(view[0]["five_hour_resets_at_ms"], json!(6_000_000));
+            // The reset must belong to the tightest weekly scope, not the first/last row.
+            assert_eq!(view[0]["weekly_resets_at_ms"], json!(900_000_000));
+        }
+    }
+
+    /// Each estimate must describe its own percentage window.
+    #[test]
+    fn quota_estimates_come_from_their_own_window_cards() {
         let payload = payload_with_windows(
             json!([
                 {"key":"claude-code","authoritative":true,"used_percent":28.0,
@@ -1997,15 +2025,15 @@ mod tests {
             .iter()
             .find(|q| q.source == "claude-code")
             .expect("claude quota card");
-        assert_eq!(claude.basis, QuotaBasis::FiveHour);
-        assert_eq!(claude.used_tokens, Some(144_000_000));
-        assert_eq!(claude.remaining_tokens, Some(170_000_000));
+        assert_eq!(claude.five_hour_percent, Some(28.0));
+        assert_eq!(claude.five_hour_remaining_tokens, Some(170_000_000));
+        assert_eq!(claude.weekly_remaining_tokens, Some(300_000_000));
     }
 
     /// A source whose only window is weekly reads the weekly card, which the
     /// server keys separately.
     #[test]
-    fn a_weekly_basis_reads_the_weekly_window_card() {
+    fn weekly_estimate_reads_the_weekly_window_card() {
         let payload = payload_with_windows(
             json!([
                 {"key":"codex:weekly","authoritative":true,"used_percent":9.0,
@@ -2023,15 +2051,13 @@ mod tests {
             .iter()
             .find(|q| q.source == "codex")
             .expect("codex quota card");
-        assert_eq!(codex.basis, QuotaBasis::Weekly);
-        assert_eq!(codex.used_tokens, Some(15_000_000));
-        assert_eq!(codex.remaining_tokens, Some(114_000_000));
+        assert_eq!(codex.five_hour_remaining_tokens, None);
+        assert_eq!(codex.weekly_remaining_tokens, Some(114_000_000));
     }
 
-    /// Calibration that has not converged yet leaves the remainder out. The
-    /// used figure is measured, so it stays either way.
+    /// An unknown capacity does not suppress the official used percentage.
     #[test]
-    fn an_uncalibrated_window_still_reports_what_was_used() {
+    fn an_uncalibrated_window_keeps_its_official_percentage() {
         let payload = payload_with_windows(
             json!([
                 {"key":"claude-code","authoritative":true,"used_percent":28.0,"tokens":144_000_000i64}
@@ -2048,8 +2074,8 @@ mod tests {
             .iter()
             .find(|q| q.source == "claude-code")
             .unwrap();
-        assert_eq!(claude.used_tokens, Some(144_000_000));
-        assert_eq!(claude.remaining_tokens, None);
+        assert_eq!(claude.five_hour_percent, Some(28.0));
+        assert_eq!(claude.five_hour_remaining_tokens, None);
     }
 
     /// No window card at all — a source the provider reports no quota for —
@@ -2062,8 +2088,7 @@ mod tests {
         );
         let view = view_for(Some(&payload), ConnectionKind::Live);
         let codex = view.quotas.iter().find(|q| q.source == "codex").unwrap();
-        assert_eq!(codex.basis, QuotaBasis::None);
-        assert_eq!(codex.used_tokens, None);
-        assert_eq!(codex.remaining_tokens, None);
+        assert_eq!(codex.five_hour_remaining_tokens, None);
+        assert_eq!(codex.weekly_remaining_tokens, None);
     }
 }
