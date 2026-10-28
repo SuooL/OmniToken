@@ -348,6 +348,18 @@ test('overview renders daily totals and requests calendar-day telemetry', async 
   assert.deepEqual(calls,['today']);
 });
 
+test('daily speed labels support the default Go Local timezone', () => {
+  const elements = new Map();
+  const node=(key)=>{ if (!elements.has(key)) elements.set(key,{innerHTML:'',textContent:''}); return elements.get(key); };
+  const context=load('telemetry.js',{sourceLabel:String});
+  Object.assign(context,{
+    document:{getElementById:node,querySelector:node},cssVar:()=>'',compact:String,esc:String,
+    ChartRegistry:{sourceColor:()=>'',sourceGradient:()=>'',set(){}},
+  });
+  vm.runInContext(readFileSync(join(root,'overview.js'),'utf8'),context);
+  assert.doesNotThrow(()=>run(context,'Overview.renderSpeed({timezone:"Local",speed:{measured_sources:["codex"],series:[{start_ms:0,sources:[{key:"codex",contribution_tps:1}]}]}})'));
+});
+
 test('live lanes reveal the count beyond the eight visible sessions', () => {
   const nodes = {lanes: {innerHTML: ''}, 'lane-note': {textContent: ''}};
   const context = load('live.js', {
