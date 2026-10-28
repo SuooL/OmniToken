@@ -147,9 +147,9 @@ test("low five-hour usage cannot hide a near-full weekly quota", () => {
   assert.match(quotaReading(html, "five_hour"), /data-severity="">2%/);
   assert.match(quotaReading(html, "weekly"), /Week 已用/);
   assert.match(quotaReading(html, "weekly"), /data-severity="critical">96%/);
-  assert.match(html, /预估 5h 剩余<\/span><b>8.0M tokens<\/b>/);
-  assert.match(html, /预估周剩余<\/span><b>8.0M tokens<\/b>/);
-  assert.ok(html.indexOf("quota-estimates") > html.indexOf('data-window="weekly"'));
+  assert.match(quotaReading(html, "five_hour"), /余 8.0M tokens<\/span>/);
+  assert.match(quotaReading(html, "weekly"), /余 8.0M tokens<\/span>/);
+  assert.ok(!html.includes("quota-estimates"));
 });
 
 test("a missing window stays visible as unavailable instead of borrowing another window", () => {
@@ -159,8 +159,8 @@ test("a missing window stays visible as unavailable instead of borrowing another
   }]);
   assert.match(quotaReading(html, "five_hour"), />暂无<\/strong>/);
   assert.match(quotaReading(html, "weekly"), /data-severity="warn">72%/);
-  assert.match(html, /预估 5h 剩余<\/span><b>暂无估算<\/b>/);
-  assert.match(html, /预估周剩余<\/span><b>114M tokens<\/b>/);
+  assert.match(quotaReading(html, "five_hour"), /暂无估算<\/span>/);
+  assert.match(quotaReading(html, "weekly"), /余 114M tokens<\/span>/);
 });
 
 test("missing or invalid estimates are not rendered as zero or reused from the old headline", () => {
@@ -184,7 +184,7 @@ test("zero usage and zero remaining are real readings", () => {
   }]);
   assert.match(quotaReading(html, "five_hour"), /data-severity="">0%/);
   assert.match(quotaReading(html, "weekly"), /data-severity="critical">100%/);
-  assert.match(html, /预估周剩余<\/span><b>0 tokens<\/b>/);
+  assert.match(quotaReading(html, "weekly"), /余 0 tokens<\/span>/);
 });
 
 test("an unavailable source never claims either window is untouched", () => {
@@ -206,7 +206,7 @@ test("five-hour usable allowance is capped by weekly allowance, including exhaus
       source: "claude-code", label: "Claude", five_hour_percent: 2, weekly_percent: 96,
       five_hour_remaining_tokens: fiveHour, weekly_remaining_tokens: weekly,
     }]);
-    assert.ok(html.includes(`预估 5h 剩余</span><b>${expected} tokens</b>`));
+    assert.ok(quotaReading(html, "five_hour").includes(`余 ${expected} tokens</span>`));
   }
 });
 
