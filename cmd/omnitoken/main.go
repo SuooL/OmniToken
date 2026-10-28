@@ -18,6 +18,7 @@ import (
 
 	"github.com/suool/omnitoken/internal/agent"
 	"github.com/suool/omnitoken/internal/server"
+	"github.com/suool/omnitoken/internal/siteauth"
 	"github.com/suool/omnitoken/internal/statusline"
 )
 
@@ -47,6 +48,10 @@ func main() {
 		runStatusline(os.Args[2:])
 	case "version":
 		fmt.Println("omnitoken " + version)
+	case "auth-code":
+		if err := runAuthCodeWith(os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("auth-code: %v", err)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -56,11 +61,39 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-name NAME] [-rescan]
+  omnitoken auth-code [-config ~/.omnitoken/config.json] [-ttl 30m] # one-time browser login
   omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
   omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook`)
+}
+
+func runAuthCodeWith(args []string, output io.Writer) error {
+	fs := flag.NewFlagSet("auth-code", flag.ContinueOnError)
+	configPath := fs.String("config", defaultConfigPath(), "server config file")
+	ttl := fs.Duration("ttl", 30*time.Minute, "single-use login code lifetime (maximum 1h)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := server.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.SiteAuthOrigin == "" {
+		return fmt.Errorf("site_auth_origin is not configured")
+	}
+	a, err := siteauth.Open(cfg.SiteAuthPath(), cfg.SiteAuthOrigin)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	code, err := a.GenerateCode(*ttl)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(output, code)
+	return err
 }
 
 func runServe(args []string) {
