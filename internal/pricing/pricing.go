@@ -1,7 +1,7 @@
 // Package pricing computes USD cost from token counts (ADR-0005).
 //
-// Data source is a build-time trimmed copy of LiteLLM's
-// model_prices_and_context_window.json — the same source ccusage uses, so
+// Data source is LiteLLM's model_prices_and_context_window.json, refreshed
+// by the Hub with an embedded fallback — the same source ccusage uses, so
 // numbers are reconcilable. Costs are always computed at query time, never
 // stored: facts (tokens) and valuation (prices) stay separate.
 package pricing
@@ -49,15 +49,19 @@ func Load(overrides map[string]Override) (*Table, error) {
 	if err := json.Unmarshal(rawPrices, &t.prices); err != nil {
 		return nil, err
 	}
+	applyOverrides(t, overrides)
+	return t, nil
+}
+
+func applyOverrides(t *Table, overrides map[string]Override) {
 	for m, o := range overrides {
-		t.prices[strings.ToLower(m)] = Price{
+		t.prices[strings.ToLower(strings.TrimSpace(m))] = Price{
 			Input:      o.InputPerM / 1e6,
 			Output:     o.OutputPerM / 1e6,
 			CacheRead:  o.CacheReadPerM / 1e6,
 			CacheWrite: o.CacheWritePerM / 1e6,
 		}
 	}
-	return t, nil
 }
 
 // codexFallbacks maps date ranges to the real model behind Codex's synthetic
@@ -167,3 +171,6 @@ func (t *Table) Cost(model string, ts time.Time, in, out, cacheRead, cacheCreati
 	}
 	return cost, true
 }
+
+// ModelCount reports the available IDs including manual overrides.
+func (t *Table) ModelCount() int { return len(t.prices) }

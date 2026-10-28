@@ -73,7 +73,9 @@ func (c *respCache) bytes(key string, ttl time.Duration, compute func() ([]byte,
 	c.mu.Lock()
 	e.body, e.err = body, err
 	if err != nil {
-		delete(c.m, key)
+		if c.m[key] == e {
+			delete(c.m, key)
+		}
 	} else {
 		e.expires = c.now().Add(ttl)
 	}
@@ -83,4 +85,12 @@ func (c *respCache) bytes(key string, ttl time.Duration, compute func() ([]byte,
 	close(ch) // wakes any waiters, which then read body/err
 
 	return body, err
+}
+
+// clear detaches in-flight entries too: a request begun before the update may
+// finish, but later requests must compute from the new price table.
+func (c *respCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = make(map[string]*cacheEntry)
 }

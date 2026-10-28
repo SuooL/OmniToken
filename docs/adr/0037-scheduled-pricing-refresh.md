@@ -13,3 +13,7 @@ Serialize refresh and settings reloads; settings overrides outrank config overri
 ## Validation
 
 Test HTTP failure/oversize/malformed catalogs, validation and atomic cache behavior; restart cache loading, override precedence, concurrent reload/refresh, scheduling from last success and read-cache invalidation. Run full `make check` and targeted race tests, then deploy to the approved Hub with binary/config/database backup and verify live update status without disclosing credentials.
+
+If GitHub Raw is unreachable, the updater retries through the official GitHub Contents API
+for the same LiteLLM repository file (`Accept: application/vnd.github.raw+json`), within a
+30-second overall deadline. Both sources use the same validation and size bounds.

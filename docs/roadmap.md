@@ -311,7 +311,17 @@ OmniToken 安装包与构建副本,保留 `/Applications/OmniToken.app`。
 | Readable event devices | ✅ Complete | Event responses include shared-resolver display names; rows no longer depend on filter-option request timing. Stable IDs remain filter keys. |
 | Missing model explanation | ✅ Complete | Displays “日志未记录模型”; preserves events and token totals without assigning later session models retroactively. |
 
-Pricing maintenance audit: LiteLLM prices are embedded at build time, refreshed manually with
-`go run scripts/refresh-pricing.go`; no scheduled refresh or runtime download is configured.
-Model normalization and date-based Codex pricing fallbacks are maintained in code. Price lookup
-fallbacks are valuation assumptions, not evidence of a missing event's actual model.
+Pricing maintenance: superseded by ADR-0037 below. Display normalization and date-based
+Codex valuation fallbacks remain code-maintained; they do not establish missing event identities.
+
+
+### Scheduled model pricing refresh (2026-10-28)
+
+| Item | Status | Behavior |
+|---|---|---|
+| LiteLLM catalog refresh | ✅ Complete | Hub checks at startup if stale, then every 24 hours. Fixed HTTPS source, bounded fetch, complete validation, atomic cache, live table replacement; failures retain valid prices and retry hourly. |
+| Offline and manual pricing | ✅ Complete | Last valid cache loads on restart; embedded prices remain first-boot fallback. DB overrides outrank config overrides and refreshed prices, and query caches are invalidated on reload. |
+| Operator status | ✅ Complete | Authenticated settings API reports enabled state, source, interval, model count, active snapshot, last attempt/success and errors. `pricing_auto_update` and `pricing_refresh_hours` control the schedule. |
+
+New upstream model IDs and their rates sync automatically. Raw event model names, canonical
+display rules and Codex date-based valuation assumptions are not rewritten by catalog updates.

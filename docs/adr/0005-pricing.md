@@ -26,3 +26,8 @@
 
 - 与 ccusage 同期数字可对账(同源同口径),作为解析正确性的持续校验手段;
 - 无定价模型在面板显式标注"无定价"而非静默计 0(无静默截断原则)。
+
+
+2026-10-28 update: ADR-0037 adds scheduled runtime LiteLLM refresh with an atomic disk cache.
+The embedded build-time table is now the first-boot/offline fallback; configured overrides
+remain authoritative and all valuation still happens at query time.

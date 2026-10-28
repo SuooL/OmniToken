@@ -296,3 +296,24 @@ ADR-0014 之后它改为在 Rust 侧常驻一条 `/api/v1/stream`,这个端点�
 
 两者共用一份构造是有意为之:燃烧速率只定义一次,面板与 Live 页不会对同一个
 十分钟给出不同的数。网页面板走 SSE,不要用这个端点轮询。
+
+
+### Scheduled pricing status (ADR-0037)
+
+`GET /api/v1/settings` additionally returns `pricing_update` (under existing read authentication):
+
+- `enabled`, `source`, `interval_hours`, `active_snapshot` (`embedded`, `cache`, `upstream`), `model_count`;
+- optional `last_attempt_at_ms`, `last_success_at_ms`, `last_error`.
+
+The Hub defaults to a 24-hour LiteLLM model-ID and price refresh. A successful update is
+validated, atomically saved as `pricing-cache.json` beside the usage database and applied
+without restart. Restart loads the valid cache; failure retains it and retries in one hour.
+Configuration: `"pricing_auto_update": false` disables network updates;
+`"pricing_refresh_hours": 6` changes the cadence (1–720, absent/0 means 24).
+Settings overrides remain above config overrides and downloaded prices. Price changes affect
+historical cost valuations; event tokens and model identities stay unchanged. No browser token
+or device credential is sent to LiteLLM. Missing models cannot be recovered from the price catalog.
+
+If GitHub Raw is unreachable, the updater retries through the official GitHub Contents API
+for the same LiteLLM repository file (`Accept: application/vnd.github.raw+json`), within a
+30-second overall deadline. Both sources use the same validation and size bounds.

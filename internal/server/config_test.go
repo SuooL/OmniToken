@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWriteDefaultConfigRoundTrips(t *testing.T) {
@@ -109,5 +110,27 @@ func TestWriteDefaultConfigNeverOverwrites(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Errorf("existing config was modified:\n got %s\nwant %s", got, original)
+	}
+}
+
+func TestPricingRefreshConfig(t *testing.T) {
+	for _, tc := range []struct {
+		raw   string
+		valid bool
+	}{
+		{`{}`, true}, {`{"pricing_auto_update":false,"pricing_refresh_hours":6}`, true},
+		{`{"pricing_refresh_hours":-1}`, false}, {`{"pricing_refresh_hours":721}`, false},
+	} {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(tc.raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(p)
+		if (err == nil) != tc.valid {
+			t.Fatalf("%s error=%v", tc.raw, err)
+		}
+		if err == nil && tc.raw == `{}` && (!cfg.pricingUpdatesEnabled() || cfg.pricingRefreshInterval() != 24*time.Hour) {
+			t.Fatal("default cadence")
+		}
 	}
 }
