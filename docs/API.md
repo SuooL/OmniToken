@@ -156,6 +156,8 @@ Claude 订阅 5 小时计费窗口(F11,算法对齐 ccusage:起点取整到小�
 
 事件明细(F13)。参数化过滤,limit 上限 500;返回 `{"total": N, "events": [...]}`,
 每条事件附 `cost_usd`(无定价时**省略字段**,区分"未定价"与 $0)。
+`device` 保持稳定身份用于筛选；可选 `device_display_name` 直接携带可读名称，
+优先设置页重命名，其次设备注册名，避免首屏依赖另一次筛选项查询。
 
 ### GET /api/v1/cache?days=30
 
@@ -187,7 +189,7 @@ Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-
 **Codex 三块都不在**:其 rollout 文件成批回放历史,70% 的记录时间戳是刷盘时刻,
 没有可用的生成区间(ADR-0009)。
 
-### GET /api/v1/telemetry?range=5h|1h|24h
+### GET /api/v1/telemetry?range=today|5h|1h|24h
 
 menu bar 与 Web 可视化共用的有界遥测快照(ADR-0017)，包含：
 
@@ -199,6 +201,8 @@ menu bar 与 Web 可视化共用的有界遥测快照(ADR-0017)，包含：
 - `rolling_5h`：当前与前一个五小时区间的来源用量；Claude/Codex 行始终
   存在，其他来源归一为 `api` 行并在非零时返回，所有来源行之和等于总量；
 - `speed`：按所选范围分桶的已测生成吞吐、来源贡献与覆盖状态；
+  `today` 从服务端配置时区的当日零点至今，5 分钟分桶，按日历日处理 23/25 小时夏令时日。
+  Web 总览使用此范围与 `today.sources`，不再显示滚动五小时总量；旧范围与字段保持兼容；
 - `generated_at`、`timezone`：服务端生成时间与日界线时区。
 
 速度字段使用三种明确命名：
@@ -217,8 +221,8 @@ native_tps(group) = measured_output_tokens(group)
 只供下钻比较，不能组成总计。
 
 `measured_sources` 和 `unmeasured_sources` 互斥，区分“至少有一个可靠速度区间”与“完全没有可靠速度区间”。部分覆盖由 `coverage[].measured_events < coverage[].total_events` 表示，不得把来源整体标成 unavailable。
-当前 Codex 在后者；它仍出现在 `today` 与 `rolling_5h` 用量中，但不会被伪造成
-0 tok/s，也不会静默进入 `aggregate_tps`。
+缺失生成区间的事件仍计入用量，但不会被伪造成 0 tok/s，也不会静默进入 `aggregate_tps`。
+Codex 的可测性按事件实际携带的生成区间判断。
 
 ### GET /api/v1/quota
 

@@ -67,7 +67,7 @@ func TestTelemetryStudioOverviewAndLiveContracts(t *testing.T) {
 	for _, contract := range []string{
 		"TelemetryCache.load",
 		`this.metricCard("today-total"`,
-		`data-role="rolling-five-hour-total"`,
+		`this.sourceComposition(sources, today.total_tokens || 0)`,
 		`this.sourceCard("claude-code"`,
 		`this.sourceCard("codex"`,
 		`data-role="fleet-coverage"`,
@@ -202,7 +202,7 @@ func TestSemanticBehaviorInNode(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	for _, name := range []string{"app.js", "charts.js", "details.js", "live.js", "heatmap.js", "telemetry.js"} {
+	for _, name := range []string{"app.js", "charts.js", "details.js", "live.js", "heatmap.js", "telemetry.js", "overview.js"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(semanticAsset(t, name)), 0o600); err != nil {
 			t.Fatalf("write %s companion asset: %v", name, err)
 		}
@@ -296,6 +296,56 @@ test('session rows expose a durable hash route and route state restores it', () 
   assert.match(html, /<a class="session-link"/);
   run(context, 'Details.applyRoute(new URLSearchParams("session=restored%2Fid"), false)');
   assert.equal(run(context, 'Details.filters.session'), 'restored/id');
+});
+
+test('event device names render before asynchronous filter options arrive', () => {
+  const context = load('details.js', {
+    esc: String, full: String, compact: String, relTime: () => '刚刚',
+    repoLabel: () => '', usd: String,
+  });
+  const html = run(context, 'Details.rowHTML({ts:0,device:"uuid-device",device_display_name:"书房 Mac"})');
+  assert.match(html, /title="uuid-device">书房 Mac<\/td>/);
+});
+
+test('overview uses today sources and hides comparisons with no baseline', () => {
+  const context = load('telemetry.js', {sourceLabel:String});
+  vm.runInContext(readFileSync(join(root, 'overview.js'), 'utf8'), context);
+  Object.assign(context, {compact:String, esc:String});
+  const rows = run(context, 'telemetrySourceRows({today:{sources:[{source:"codex",tokens:123}]},rolling_5h:{sources:[{source:"codex",tokens:9}]}})');
+  assert.equal(rows[0].tokens,123);
+  assert.equal(run(context, 'overviewIsEmpty({telemetry:{today:{total_tokens:0},rolling_5h:{total_tokens:99}}})'),true);
+  assert.doesNotMatch(run(context, 'Overview.sourceCard("codex","Codex · 今日",{tokens:123,change_percent:null})'), /无可比|基线|前五小时|昨日/);
+  assert.match(run(context, 'Overview.sourceCard("codex","Codex · 今日",{tokens:123,previous_tokens:100,change_percent:23})'), /昨日同时段/);
+});
+
+test('overview renders daily totals and requests calendar-day telemetry', async () => {
+  const nodes = new Map();
+  const document = {
+    getElementById: (id) => { if (!nodes.has(id)) nodes.set(id,{innerHTML:'',textContent:''}); return nodes.get(id); },
+  };
+  const calls=[];
+  const context=load('telemetry.js',{sourceLabel:String});
+  Object.assign(context,{
+    document, compact:String, esc:String, sourceLabel:String, infoTip:()=>'',
+    Api:{get:async () => ({})}, isCurrentGeneration:(a,b)=>a===b,
+    renderState(){}, relTime:String, classifyAPIError:()=>({}),
+    ChartRegistry:{sourceGradientCSS:()=> '#fff'},
+  });
+  vm.runInContext(readFileSync(join(root,'overview.js'),'utf8'),context);
+  const data={timezone:'America/New_York',today:{total_tokens:1234,models:[],sources:[{source:'codex',tokens:1234}]},rolling_5h:{total_tokens:9,sources:[]}};
+  context.data=data;
+  run(context, 'Overview.renderSpeed=()=>{}; Overview.renderModels=()=>{}; Overview.renderContributors=()=>{}; Overview.renderBars=()=>{};');
+  context.Heatmap={load(){}};
+  run(context,'Overview.render({telemetry:data})');
+  const html=document.getElementById('view-overview').innerHTML;
+  assert.match(html,/当日来源速度贡献/);
+  assert.match(html,/Codex · 今日/);
+  assert.match(html,/1234/);
+  assert.doesNotMatch(html,/五小时|滚动|rolling-five-hour/);
+  run(context,'TelemetryCache.load=async (range)=>{ recordRange(range); return {data,stale:false}; };');
+  context.recordRange=(range)=>calls.push(range);
+  await run(context,'Overview.load()');
+  assert.deepEqual(calls,['today']);
 });
 
 test('live lanes reveal the count beyond the eight visible sessions', () => {

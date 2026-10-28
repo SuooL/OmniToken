@@ -71,7 +71,7 @@ function telemetrySpeed(snapshot) {
 }
 
 function telemetrySourceRows(snapshot) {
-  return snapshot && snapshot.rolling_5h && snapshot.rolling_5h.sources || [];
+  return snapshot && snapshot.today && snapshot.today.sources || [];
 }
 
 function speedSourceKey(row) {

@@ -154,7 +154,7 @@ const ModelsView = {
     }
     const max = rows[0].contribution_tps;
     el.innerHTML = rows.map((row) => `<div class="row"><div class="row-head">` +
-      `<span class="key">${esc(row.key || row.model || "(未知模型)")}</span>` +
+      `<span class="key">${esc(row.key || row.model || "日志未记录模型")}</span>` +
       `<span class="val">${Number(row.contribution_tps).toFixed(1)} tok/s</span></div>` +
       `<div class="track"><div class="fill" style="width:${100 * row.contribution_tps / max}%"></div></div></div>`).join("");
   },
@@ -220,7 +220,7 @@ const ModelsView = {
   },
 
   modelLabel(m) {
-    return m || "(未知模型)";
+    return m || "日志未记录模型";
   },
 
   groupByModel(rows, series, unpriced) {

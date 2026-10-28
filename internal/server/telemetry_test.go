@@ -212,3 +212,42 @@ func TestTelemetryHandlerRejectsOversizedSnapshotWithoutTruncatingModels(t *test
 		t.Fatalf("oversized error = %q, want explicit size error", rec.Body.String())
 	}
 }
+
+func TestTelemetryTodayRangeUsesServerCalendarMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, now := range []time.Time{
+		time.Date(2026, 10, 27, 13, 7, 0, 0, loc),
+		time.Date(2026, 3, 8, 23, 30, 0, 0, loc),
+		time.Date(2026, 11, 1, 23, 30, 0, 0, loc),
+		time.Date(2026, 10, 27, 0, 0, 0, 0, loc),
+	} {
+		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
+			s := newLiveTestServer(t)
+			s.cfg.Listen = "127.0.0.1:8787"
+			s.now = func() time.Time { return now }
+			start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+			seedTelemetryEvent(t, s, model.Event{EventID: "before", TS: start.Add(-time.Minute).UnixMilli(), Source: "codex", OutputTokens: 999, GenMS: 1000}, now)
+			if now.After(start) {
+				seedTelemetryEvent(t, s, model.Event{EventID: "after", TS: start.Add(time.Minute).UnixMilli(), Source: "codex", OutputTokens: 10, GenMS: 1000}, now)
+			}
+			rec := telemetryRequest(t, s, "/api/v1/telemetry?range=today", "")
+			var got telemetryResponse
+			decodeJSON(t, rec, &got)
+			if got.Speed.Range != "today" || got.Speed.StartMS != start.UnixMilli() || got.Speed.StartMS != got.Today.StartMS || got.Speed.EndMS != now.UnixMilli() {
+				t.Fatalf("wrong calendar range: %+v today=%+v", got.Speed, got.Today)
+			}
+			want := int((now.Sub(start) + 5*time.Minute - 1) / (5 * time.Minute))
+			if len(got.Speed.Series) != want || got.Speed.BucketMS != (5*time.Minute).Milliseconds() {
+				t.Fatalf("buckets=%d want=%d", len(got.Speed.Series), want)
+			}
+			for _, row := range got.Speed.Coverage {
+				if row.TotalOutputTokens != 10 {
+					t.Fatalf("previous-day usage leaked: %+v", row)
+				}
+			}
+		})
+	}
+}

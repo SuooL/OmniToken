@@ -13,7 +13,8 @@ import (
 // can distinguish "free/unpriced" from "$0".
 type eventWithCost struct {
 	model.Event
-	CostUSD *float64 `json:"cost_usd,omitempty"`
+	DeviceDisplayName string   `json:"device_display_name,omitempty"`
+	CostUSD           *float64 `json:"cost_usd,omitempty"`
 }
 
 // handleEvents serves GET /api/v1/events — the paginated raw-event
@@ -48,9 +49,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	names, err := s.deviceNames()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	out := make([]eventWithCost, 0, len(events))
 	for _, e := range events {
-		row := eventWithCost{Event: e}
+		row := eventWithCost{Event: e, DeviceDisplayName: names.name(e.Device)}
 		if c, ok := s.Prices().Cost(e.Model, time.UnixMilli(e.TS), e.InputTokens, e.OutputTokens,
 			e.CacheReadTokens, e.CacheCreationTokens, e.Cache1hTokens, e.Cache5mTokens); ok {
 			row.CostUSD = &c
