@@ -1,6 +1,6 @@
 # Web tool UI implementation plan
 
-Status: authorized and in progress, 2026-10-29. Baseline origin/dev 4bc1281.
+Status: implementation and local acceptance complete, 2026-10-29; remote delivery pending. Baseline origin/dev 4bc1281.
 The user approved applying the desktop tool UI standard to the Web and requested
 parallel implementation. This plan makes the audit specification executable.
 
@@ -63,3 +63,19 @@ E. Review full diff, focused commits, push feature branch, PR targeting dev;
    verify remote Go + macOS desktop gates (shared assets remain unchanged).
 F. Only after merged CI and review evidence, remove clean merged worktree and
    branch. Report exact shipped scope and remaining runtime validation limits.
+
+## Recorded acceptance
+
+- `make check`: passed, including 47 Node tool-UI regressions and existing Web
+  semantic/DOM tests. Critical parser coverage gates remain unchanged.
+- `NODE_PATH=<playwright modules> node scripts/web-tool-browser.cjs`: 14 groups
+  passed against an isolated actual Hub and 2700 synthetic events; 27 route /
+  viewport screenshots plus three contextual drawer screenshots; no pageerror
+  or global horizontal overflow. 420/768/1440 widths, Escape/focus after refresh,
+  disclosure/chart instance retention, filter/page Back, settings draft, scoped
+  CSV export, quota boundaries, stale data, 401/403 and 25 long model names.
+- Artifact directory for the final pre-PR run:
+  `/var/folders/38/vh8w9pbj46s11269vqvzdyp00000gn/T/omnitoken-web-tool-browser-qENs3x`.
+- Independent shared-layer review found scope/placeholder/auth-generation/focus
+  edge cases; failing tests were added and all cases repaired before delivery.
+- Shared token copies and desktop application behavior remain untouched.
