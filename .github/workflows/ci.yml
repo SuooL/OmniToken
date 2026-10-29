@@ -12,7 +12,7 @@
 # `delete-branch-on-merge` setting nor a `pull_request: closed` workflow ever
 # fired. Merging here, while the token is alive, makes `--delete-branch` work.
 #
-# This is only safe because `verify` is the sole required check on `dev`; it
+# This is only safe because `verify` and `desktop-verify` are the merge gates; it
 # has already passed via `needs`. If you add another required check, this job
 # must wait for it too (or go back to `--auto` and accept manual pruning).
 # See .github/workflows/README.md.
@@ -78,9 +78,28 @@ jobs:
             echo "docs sync: 无需提示"
           fi
 
+  desktop-verify:
+    name: desktop-verify
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Desktop gate
+        run: make desktop-check
+      - name: Install isolated browser test dependency
+        run: npm install --prefix "$RUNNER_TEMP/desktop-browser" playwright@1.56.1
+      - name: Production desktop browser regression
+        run: NODE_PATH="$RUNNER_TEMP/desktop-browser/node_modules" node scripts/desktop-browser.cjs
+
   merge:
     name: squash-merge-and-delete-branch
-    needs: verify
+    needs: [verify, desktop-verify]
     runs-on: ubuntu-latest
     # Don't merge draft PRs.
     if: github.event.pull_request.draft == false

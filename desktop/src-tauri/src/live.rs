@@ -175,7 +175,7 @@ fn normalize_endpoint_identity(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_string()
 }
 
-const MAX_POPOVER_ITEMS: usize = 3;
+const MAX_POPOVER_ITEMS: usize = 50;
 
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -1456,7 +1456,7 @@ mod tests {
     }
 
     #[test]
-    fn active_view_prioritizes_fastest_three_sessions_and_truncates_lists() {
+    fn active_view_prioritizes_fastest_sessions_and_includes_detail_rows() {
         let payload = json!({
             "generated_at": 10_000,
             "speed": {
@@ -1489,13 +1489,13 @@ mod tests {
         assert_eq!(view.activity.rate, Some(68.0));
         assert_eq!(view.activity.session_count, 4);
         assert_eq!(view.activity.contributing_devices, 4);
-        assert_eq!(view.sessions.len(), 3);
+        assert_eq!(view.sessions.len(), 4);
         assert_eq!(view.sessions[0].tool, "Claude");
         assert_eq!(view.sessions[0].repository, "omni-api");
         assert_eq!(view.sessions[0].contribution_rate, Some(32.0));
         assert_eq!(view.sessions[0].native_rate, Some(48.0));
-        assert_eq!(view.sessions_more, 1);
-        assert_eq!(view.devices_more, 1);
+        assert_eq!(view.sessions_more, 0);
+        assert_eq!(view.devices_more, 0);
         assert_eq!(view.device_online, 3);
         assert_eq!(view.device_total, 4);
         assert_eq!(view.devices[0].name, "macmini");
