@@ -39,7 +39,7 @@ const TelemetryCache = {
       .catch((error) => {
         if (entry.generation === generation) {
           entry.error = error;
-          if (error && error.status === 401) {
+          if (error && (error.status === 401 || error.status === 403)) {
             entry.data = null;
             entry.receivedAt = 0;
             throw error;
@@ -53,6 +53,13 @@ const TelemetryCache = {
       });
     entry.promise = request;
     return request;
+  },
+
+  reset() {
+    for (const entry of this._entries.values()) {
+      entry.generation += 1; entry.promise = null; entry.data = null;
+      entry.receivedAt = 0; entry.error = null;
+    }
   },
 
   invalidate(range) {
