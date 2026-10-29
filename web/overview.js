@@ -2,8 +2,7 @@
 
 function overviewIsEmpty(payload) {
   return !payload || !payload.telemetry ||
-    (!(payload.telemetry.today || {}).total_tokens &&
-     !(payload.telemetry.rolling_5h || {}).total_tokens);
+    !(payload.telemetry.today || {}).total_tokens;
 }
 
 const Overview = {
@@ -13,7 +12,7 @@ const Overview = {
 
   invalidate() {
     this._loadGeneration += 1;
-    TelemetryCache.invalidate("5h");
+    TelemetryCache.invalidate("today");
   },
 
   async load() {
@@ -24,7 +23,7 @@ const Overview = {
       const [summary, live, telemetryResult] = await Promise.all([
         Api.get("/api/v1/overview?days=30"),
         Api.get("/api/v1/live").catch(() => null),
-        TelemetryCache.load("5h", { force: true }),
+        TelemetryCache.load("today", { force: true }),
       ]);
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const payload = { summary, live, telemetry: telemetryResult.data, telemetryResult };
@@ -56,7 +55,6 @@ const Overview = {
     const root = document.getElementById("view-overview");
     const telemetry = payload.telemetry || {};
     const today = telemetry.today || {};
-    const rolling = telemetry.rolling_5h || {};
     const sources = telemetrySourceRows(telemetry);
     const sourceMap = Object.fromEntries(sources.map((row) => [speedSourceKey(row), row]));
     const claude = sourceMap["claude-code"] || {};
@@ -71,16 +69,16 @@ const Overview = {
     root.innerHTML = `
       <section class="telemetry-summary" aria-label="关键遥测">
         ${this.metricCard("today-total", "今日累计", today.total_tokens || 0,
-          `${(today.models || []).length} 个模型`)}
-        <article class="metric-card" data-role="rolling-five-hour-total">
-          <div class="metric-label">滚动五小时</div>
-          <div class="metric-value">${compact(rolling.total_tokens || 0)}</div>
-          <div class="subtle">实际 token 用量</div>
-          ${this.sourceComposition(sources, rolling.total_tokens || 0)}
+          `${(today.models || []).length} 个模型 · ${telemetry.timezone || "服务端时区"}`)}
+        <article class="metric-card" data-role="today-source-composition">
+          <div class="metric-label">今日来源构成</div>
+          <div class="subtle">当日零点至今 · 全部来源</div>
+          ${this.sourceComposition(sources, today.total_tokens || 0)}
+          <div class="subtle">${sources.filter((row) => row.tokens > 0).map((row) => `${esc(sourceLabelA2(row.source))} ${compact(row.tokens)}`).join(" · ") || "暂无数据"}</div>
         </article>
-        ${this.sourceCard("claude-code", "Claude · 五小时", claude)}
-        ${this.sourceCard("codex", "Codex · 五小时", codex)}
-        ${this.sourceCard("dsh", "DeepSeek · 五小时", dsh)}
+        ${this.sourceCard("claude-code", "Claude · 今日", claude)}
+        ${this.sourceCard("codex", "Codex · 今日", codex)}
+        ${this.sourceCard("dsh", "DeepSeek · 今日", dsh)}
         <article class="metric-card" data-role="fleet-coverage">
           <div class="metric-label">Fleet coverage</div>
           <div class="metric-value">${live ? devices.length : "—"}</div>
@@ -90,7 +88,7 @@ const Overview = {
 
       <section class="chart-card" aria-labelledby="overview-speed-title">
         <div class="card-head">
-          <h2 id="overview-speed-title">五小时来源速度贡献<span class="eyebrow">共享时间轴 · 独立零基线</span></h2>
+          <h2 id="overview-speed-title">当日来源速度贡献<span class="eyebrow">当日零点至今 · 独立零基线</span></h2>
           <div class="head-tools">
             <strong id="overview-current-speed">近 10m — tok/s</strong>
             <span class="coverage-note" data-role="measured-coverage"></span>
@@ -115,7 +113,7 @@ const Overview = {
 
       <section class="chart-card" aria-labelledby="today-model-title">
         <div class="card-head">
-          <h2 id="today-model-title">今日模型构成<span class="eyebrow">本地午夜至今 · 完整列表</span></h2>
+          <h2 id="today-model-title">今日模型构成<span class="eyebrow">服务端零点至今 · 完整列表</span></h2>
           <span>${compact(today.total_tokens || 0)} tokens</span>
         </div>
         <div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div>
@@ -156,12 +154,12 @@ const Overview = {
   },
 
   sourceCard(source, label, row) {
-    const change = row.change_percent == null ? "无可比基线"
-      : `${row.change_percent >= 0 ? "↑" : "↓"} ${Math.abs(row.change_percent).toFixed(1)}%`;
+    const change = row.change_percent == null ? ""
+      : `<div class="subtle">${row.change_percent >= 0 ? "↑" : "↓"} ${Math.abs(row.change_percent).toFixed(1)}% · 昨日同时段 ${compact(row.previous_tokens || 0)}</div>`;
     return `<article class="metric-card" data-source="${source}">
       <div class="metric-label">${label}</div>
       <div class="metric-value">${compact(row.tokens || 0)}</div>
-      <div class="subtle">${change} · 前五小时 ${compact(row.previous_tokens || 0)}</div>
+      ${change}
     </article>`;
   },
 
@@ -210,7 +208,7 @@ const Overview = {
 
   sourceComposition(rows, total) {
     if (!total) return `<div class="composition-strip" aria-label="暂无来源用量"></div>`;
-    return `<div class="composition-strip" aria-label="五小时来源构成">` + rows.map((row) =>
+    return `<div class="composition-strip" aria-label="当日来源构成">` + rows.map((row) =>
       `<span title="${esc(sourceLabelA2(speedSourceKey(row)))} ${compact(row.tokens || 0)}" ` +
       `style="width:${Math.max(0, 100 * (row.tokens || 0) / total)}%;background:${ChartRegistry.sourceGradientCSS(speedSourceKey(row), "90deg")}"></span>`
     ).join("") + `</div>`;
@@ -227,7 +225,6 @@ const Overview = {
     (speed.measured_sources || []).forEach((key) => {
       if (!sourceKeys.includes(key)) sourceKeys.push(key);
     });
-    const latest = buckets[buckets.length - 1] || {};
     const liveSources = liveSpeed.sources || [];
     const visibleSum = liveSources.reduce((sum, row) => sum + (row.contribution_tps || 0), 0);
     const aggregate = currentAggregateTPS(liveSpeed);
@@ -238,7 +235,7 @@ const Overview = {
       `可见贡献合计 ${visibleSum.toFixed(1)} tok/s`;
     document.getElementById("overview-unmeasured").innerHTML =
       (speed.unmeasured_sources || []).map((source) =>
-        `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable · 用量仍计入五小时和今日总数</div>`
+        `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable · 用量仍计入今日总数</div>`
       ).join("");
 
     const el = document.getElementById("overview-source-lanes");
@@ -246,13 +243,13 @@ const Overview = {
       el.innerHTML = `<p class="empty">成功查询，但此范围暂无可测生成区间。</p>`;
       return;
     }
-    const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
+    const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", timeZone: snapshot.timezone && snapshot.timezone !== "Local" ? snapshot.timezone : undefined}));
     const grids = sourceKeys.map((_, index) => ({
       left: 58, right: 18, top: 16 + index * (220 / sourceKeys.length),
       height: Math.max(38, 170 / sourceKeys.length),
     }));
     ChartRegistry.set(el, {
-      titleText: "五小时来源速度贡献",
+      titleText: "当日来源速度贡献",
       grid: grids,
       xAxis: sourceKeys.map((_, index) => ({
         type: "category", gridIndex: index, data: times,

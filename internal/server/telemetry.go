@@ -40,9 +40,10 @@ type telemetryRange struct {
 }
 
 var telemetryRanges = map[string]telemetryRange{
-	"1h":  {duration: time.Hour, bucket: time.Minute},
-	"5h":  {duration: 5 * time.Hour, bucket: 5 * time.Minute},
-	"24h": {duration: 24 * time.Hour, bucket: 30 * time.Minute},
+	"1h":    {duration: time.Hour, bucket: time.Minute},
+	"5h":    {duration: 5 * time.Hour, bucket: 5 * time.Minute},
+	"today": {bucket: 5 * time.Minute},
+	"24h":   {duration: 24 * time.Hour, bucket: 30 * time.Minute},
 }
 
 func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +53,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	selected, ok := telemetryRanges[rangeName]
 	if !ok {
-		http.Error(w, "range must be one of 1h, 5h, 24h", http.StatusBadRequest)
+		http.Error(w, "range must be one of today, 1h, 5h, 24h", http.StatusBadRequest)
 		return
 	}
 
@@ -63,7 +64,11 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	speed, err := s.store.TelemetrySpeedSeries(now.Add(-selected.duration), now, selected.bucket)
+	speedStart := now.Add(-selected.duration)
+	if rangeName == "today" {
+		speedStart = todayStart
+	}
+	speed, err := s.store.TelemetrySpeedSeries(speedStart, now, selected.bucket)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

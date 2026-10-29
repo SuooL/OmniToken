@@ -301,3 +301,38 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 0.2.2 发布准备:纳入已确认的余量同行两列布局与不换行重置倒计时;保留原 v0.2.1 tag
 及其未完成发布草稿,不改写已有版本。用户自行更新本机正式应用;发布成功后清理本地
 OmniToken 安装包与构建副本,保留 `/Applications/OmniToken.app`。
+
+
+### Web calendar-day overview (2026-10-27)
+
+| Item | Status | Behavior |
+|---|---|---|
+| Daily source usage and speed | ✅ Complete | Overview reads `today.sources`; source speed uses `range=today`, server midnight to now with five-minute buckets. No rolling-five-hour totals or unavailable comparison messages. |
+| Readable event devices | ✅ Complete | Event responses include shared-resolver display names; rows no longer depend on filter-option request timing. Stable IDs remain filter keys. |
+| Missing model explanation | ✅ Complete | Displays “日志未记录模型”; preserves events and token totals without assigning later session models retroactively. |
+
+Pricing maintenance: superseded by ADR-0037 below. Display normalization and date-based
+Codex valuation fallbacks remain code-maintained; they do not establish missing event identities.
+
+
+### Scheduled model pricing refresh (2026-10-28)
+
+| Item | Status | Behavior |
+|---|---|---|
+| LiteLLM catalog refresh | ✅ Complete | Hub checks at startup if stale, then every 24 hours. Fixed HTTPS source, bounded fetch, complete validation, atomic cache, live table replacement; failures retain valid prices and retry hourly. |
+| Offline and manual pricing | ✅ Complete | Last valid cache loads on restart; embedded prices remain first-boot fallback. DB overrides outrank config overrides and refreshed prices, and query caches are invalidated on reload. |
+| Operator status | ✅ Complete | Authenticated settings API reports enabled state, source, interval, model count, active snapshot, last attempt/success and errors. `pricing_auto_update` and `pricing_refresh_hours` control the schedule. |
+
+New upstream model IDs and their rates sync automatically. Raw event model names, canonical
+display rules and Codex date-based valuation assumptions are not rewritten by catalog updates.
+
+## 菜单栏紧凑工具界面与相邻详情（2026-10-29）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 主面板纵向来源列表 | ✅ 完成 | 当前速度与聚合趋势在上方；今日来源总量纵向对齐，模型明细按需展开。 |
+| 独立相邻详情 | ✅ 完成 | 320pt 详情优先向左、向右回退；按内容自然定高，屏幕高度封顶并滚动；窄屏窗口内返回；两个窗口作为一个焦点组关闭。 |
+| 配额风险可视化 | ✅ 完成 | 官方读数与估算余量分开；独立 70/80/90% 风险色、封顶进度条、实际超额百分比，缺失不冒充 0，无配额说明侧栏。 |
+| 品牌与状态层次 | ✅ 完成 | 来源图标、主题色、选中行及模型比例条；设备与连接异常用状态色，增长率保持中性。 |
+| 发布准备 | 进行中 | v0.3.0；用户自行检查更新本机安装；本地门禁、签名 bundle 与远端更新产物核验后发布完成。 |
+| Web 重构审视 | ✅ 设计完成，待实施确认 | 仅本次设计与验收方案，不包含 Web 页面重构或线上部署。 |

@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "Default permissions for the menubar panel window.",
   "windows": [
-    "panel"
+    "panel",
+    "details"
   ],
   "permissions": [
     "core:default",

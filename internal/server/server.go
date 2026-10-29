@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
@@ -27,6 +29,10 @@ type Server struct {
 	store                 *store.Store
 	state                 *collect.State
 	prices                *pricing.Table
+	pricingUpdateMu       sync.Mutex
+	pricingFetchMu        sync.Mutex
+	pricingCatalog        map[string]pricing.Price
+	pricingStatus         pricingRefreshStatus
 	bcast                 *broadcaster
 	readCache             *respCache
 	now                   func() time.Time
@@ -52,6 +58,7 @@ func New(cfg *Config) (*Server, error) {
 	}
 	srv := &Server{cfg: cfg, store: st, state: state, prices: prices, bcast: newBroadcaster()}
 	srv.readCache = newRespCache(srv.currentTime)
+	srv.loadPricingSnapshot()
 	// Apply pricing overrides saved through the settings page (they win over
 	// config file entries) before serving anything.
 	if err := srv.ReloadPricing(); err != nil {
@@ -118,6 +125,7 @@ func (s *Server) Run() error {
 	// the database under two names (ADR-0019 §7.3).
 	s.logDuplicateLocalIdentity()
 
+	go s.runPricingUpdates(context.Background())
 	go s.runCollectors()
 	go s.backfillCapacity()
 	s.startProxy()

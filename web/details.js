@@ -20,9 +20,9 @@ const Details = {
   enter() {
     if (!this.built) {
       this.build();
-      this.loadOptions();
       this.built = true;
     }
+    this.loadOptions();
     this.load();
   },
 
@@ -140,6 +140,9 @@ const Details = {
   },
 
   render(events) {
+    for (const event of events) {
+      if (event.device && event.device_display_name) this.deviceNames[event.device] = event.device_display_name;
+    }
     this.renderChips();
     this.renderDistribution(events);
     const el = document.getElementById("d-table");
@@ -165,7 +168,7 @@ const Details = {
     }
     const byModel = new Map();
     events.forEach((event) => {
-      const key = event.model || "(未知模型)";
+      const key = event.model || "日志未记录模型";
       const row = byModel.get(key) || {model: key, input: 0, output: 0, events: 0};
       row.input += (event.input_tokens || 0) + (event.cache_read_tokens || 0) + (event.cache_creation_tokens || 0);
       row.output += event.output_tokens || 0;
@@ -195,9 +198,9 @@ const Details = {
     const num = (v) => `<td title="${full(v || 0)}">${compact(v || 0)}</td>`;
     return `<tr>
       <td title="${esc(t.toLocaleString("zh-CN", { hour12: false }))} · ${relTime(e.ts)}">${time}</td>
-      <td title="${esc(e.device || "")}">${esc(e.device ? this.deviceLabel(e.device) : "—")}</td>
+      <td title="${esc(e.device || "")}">${esc(e.device ? (e.device_display_name || this.deviceLabel(e.device)) : "—")}</td>
       <td>${esc(e.source || "—")}</td>
-      <td>${esc(e.model || "—")}</td>
+      <td>${esc(e.model || "日志未记录模型")}</td>
       <td title="${esc(e.cwd || "")}">${esc(this.trunc(repoLabel(e.repo, e.cwd), 28))}</td>
       ${num(e.input_tokens)}${num(e.output_tokens)}${num(e.cache_read_tokens)}${num(e.cache_creation_tokens)}
       <td>${e.cost_usd != null ? usd(e.cost_usd) : "—"}</td>

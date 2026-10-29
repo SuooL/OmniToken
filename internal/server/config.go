@@ -42,7 +42,9 @@ type Config struct {
 	deviceIdentity DeviceIdentity `json:"-"`
 
 	// PricingOverrides: per-1M-token USD prices keyed by model id (ADR-0005).
-	PricingOverrides map[string]pricing.Override `json:"pricing_overrides,omitempty"`
+	PricingOverrides    map[string]pricing.Override `json:"pricing_overrides,omitempty"`
+	PricingAutoUpdate   *bool                       `json:"pricing_auto_update,omitempty"`
+	PricingRefreshHours int                         `json:"pricing_refresh_hours,omitempty"`
 	// WorktimeIdleMinutes: idle gap that stops the work clock (F8); default 5.
 	WorktimeIdleMinutes int `json:"worktime_idle_minutes,omitempty"`
 	// ProxyListen runs the local API proxy (F14) inside the server, e.g.
@@ -142,6 +144,9 @@ func LoadConfig(path string) (*Config, error) {
 // back-import the whole history the user asked to leave out (ADR-0015), and
 // there is no way to take that back once it is in the database.
 func (c *Config) validate() error {
+	if c.PricingRefreshHours < 0 || c.PricingRefreshHours > 720 {
+		return fmt.Errorf("pricing_refresh_hours must be between 1 and 720 (0 uses 24)")
+	}
 	for _, h := range c.Collect.SSHHosts {
 		if _, err := h.SinceTime(); err != nil {
 			return err

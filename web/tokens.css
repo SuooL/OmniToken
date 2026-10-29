@@ -128,3 +128,19 @@
 
   --radius: 16px;
 }
+
+/* Compact tool surfaces (ADR-0037). Web may adopt this profile per page. */
+.viz-root {
+  --tool-surface: #171b22;
+  --tool-line: #303742;
+  --tool-ink: #e6eaf0;
+  --tool-secondary: #a4afbe;
+  --tool-hover: #232c37;
+  --tool-healthy: #70d3ad;
+  --tool-warn: #edba66;
+  --tool-serious: #f39b61;
+  --tool-critical: #ff7e85;
+  --tool-claude: #e9ac88;
+  --tool-codex: #e4e9ee;
+  --tool-dsh: #7596ff;
+}
