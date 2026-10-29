@@ -44,13 +44,13 @@ func TestA4NormativeDarkPaletteAcrossSurfaces(t *testing.T) {
 	}
 }
 
-func TestA4AmbientDepthAndOuterSurfaceAcrossSurfaces(t *testing.T) {
+// Desktop chrome is superseded by ADR-0037; Web keeps A4 until its own redesign.
+func TestA4WebAmbientDepthAndOuterSurface(t *testing.T) {
 	cases := []struct {
 		surface      string
 		outerSurface string
 	}{
 		{surface: "web", outerSurface: `\.viz-root`},
-		{surface: "desktop", outerSurface: `\.panel`},
 	}
 
 	for _, tc := range cases {
@@ -71,14 +71,14 @@ func TestA4AmbientDepthAndOuterSurfaceAcrossSurfaces(t *testing.T) {
 	}
 }
 
-func TestA4SourceBarsUseGradientsAcrossSurfaces(t *testing.T) {
+func TestA4WebSourceBarsUseGradients(t *testing.T) {
 	sourceTokens := []string{
 		"--source-claude",
 		"--source-codex",
 		"--source-api",
 	}
 
-	for _, surface := range []string{"web", "desktop"} {
+	for _, surface := range []string{"web"} {
 		t.Run(surface, func(t *testing.T) {
 			css := readA4CSS(t, surface, "style.css")
 			for _, token := range sourceTokens {

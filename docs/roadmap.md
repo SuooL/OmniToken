@@ -325,3 +325,14 @@ Codex valuation fallbacks remain code-maintained; they do not establish missing 
 
 New upstream model IDs and their rates sync automatically. Raw event model names, canonical
 display rules and Codex date-based valuation assumptions are not rewritten by catalog updates.
+
+## 菜单栏紧凑工具界面与相邻详情（2026-10-29）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 主面板纵向来源列表 | ✅ 完成 | 当前速度与聚合趋势在上方；今日来源总量纵向对齐，模型明细按需展开。 |
+| 独立相邻详情 | ✅ 完成 | 320pt 详情优先向左、向右回退；按内容自然定高，屏幕高度封顶并滚动；窄屏窗口内返回；两个窗口作为一个焦点组关闭。 |
+| 配额风险可视化 | ✅ 完成 | 官方读数与估算余量分开；独立 70/80/90% 风险色、封顶进度条、实际超额百分比，缺失不冒充 0，无配额说明侧栏。 |
+| 品牌与状态层次 | ✅ 完成 | 来源图标、主题色、选中行及模型比例条；设备与连接异常用状态色，增长率保持中性。 |
+| 发布准备 | 进行中 | v0.3.0；用户自行检查更新本机安装；本地门禁、签名 bundle 与远端更新产物核验后发布完成。 |
+| Web 重构审视 | ✅ 设计完成，待实施确认 | 仅本次设计与验收方案，不包含 Web 页面重构或线上部署。 |

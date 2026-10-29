@@ -12,6 +12,7 @@ mod live;
 #[cfg(target_os = "macos")]
 mod macos_window;
 mod notify;
+mod panel;
 mod settings;
 mod telemetry;
 mod tray;
@@ -202,8 +203,17 @@ fn show_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
         if let (tauri::Position::Physical(pos), tauri::Size::Physical(icon)) =
             (rect.position, rect.size)
         {
-            let x = pos.x + (icon.width as i32 / 2) - (size.width as i32 / 2);
-            let y = pos.y + icon.height as i32;
+            let mut x = pos.x + (icon.width as i32 / 2) - (size.width as i32 / 2);
+            let mut y = pos.y + icon.height as i32;
+            if let Ok(Some(monitor)) = app.monitor_from_point(f64::from(pos.x), f64::from(pos.y)) {
+                let area = monitor.work_area();
+                let margin = (8.0 * monitor.scale_factor()) as i32;
+                let min_x = area.position.x + margin;
+                let max_x = (area.position.x + area.size.width as i32 - size.width as i32 - margin)
+                    .max(min_x);
+                x = x.clamp(min_x, max_x);
+                y = y.max(area.position.y);
+            }
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
     }
@@ -227,7 +237,7 @@ fn toggle_panel(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
     let just_dismissed =
         now_ms().saturating_sub(LAST_DISMISS_MS.load(Ordering::Relaxed)) < DISMISS_DEBOUNCE_MS;
     if window.is_visible().unwrap_or(false) || just_dismissed {
-        let _ = window.hide();
+        panel::panel_dismiss(app.clone());
     } else {
         show_panel(app, rect.or_else(|| app.state::<tray::State>().rect()));
     }
@@ -346,6 +356,7 @@ pub fn run() {
         .manage(live::State::default())
         .manage(telemetry::State::default())
         .manage(tray::State::default())
+        .manage(panel::State::default())
         .invoke_handler(tauri::generate_handler![
             api_get,
             telemetry_get,
@@ -353,7 +364,12 @@ pub fn run() {
             settings_set,
             refresh_now,
             open_full_panel,
-            check_update
+            check_update,
+            panel::details_get,
+            panel::details_set,
+            panel::details_resize,
+            panel::details_close,
+            panel::panel_dismiss
         ])
         .setup(|app| {
             // Logging in release builds too, at warn, and info for the
@@ -442,10 +458,27 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Clicking away dismisses the panel, as a menubar popover should.
-            if let WindowEvent::Focused(false) = event {
-                LAST_DISMISS_MS.store(now_ms(), Ordering::Relaxed);
-                let _ = window.hide();
+            if matches!(event, WindowEvent::Focused(false))
+                && ["panel", "details"].contains(&window.label())
+            {
+                let app = window.app_handle().clone();
+                // AppKit resigns the old panel before the adjacent panel becomes
+                // key. Inspect the complete group after that transfer commits.
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        let main = handle
+                            .get_webview_window("panel")
+                            .is_some_and(|w| w.is_focused().unwrap_or(false));
+                        let details = handle
+                            .get_webview_window("details")
+                            .is_some_and(|w| w.is_focused().unwrap_or(false));
+                        if panel::should_dismiss(main, details) {
+                            panel::panel_dismiss(handle);
+                        }
+                    });
+                });
             }
         })
         .run(tauri::generate_context!())
@@ -475,7 +508,7 @@ mod ui_contract_tests {
         for hook in [
             r#"id="freshness""#,
             r#"id="current-speed""#,
-            "已测总吞吐",
+            "当前生成总速度",
             r#"id="today-sources""#,
             r#"id="quota-title""#,
             r#"id="quota-grid""#,
