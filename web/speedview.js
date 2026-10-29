@@ -47,11 +47,19 @@ const SpeedView = {
       renderState(root, { kind: "loading", title: "正在加载速度数据" });
     }
     try {
-      const [data, telemetryResult] = await Promise.all([
+      const results = await Promise.allSettled([
         Api.get("/api/v1/speed?days=30"),
-        TelemetryCache.load("1h", { force: true }),
+        TelemetryCache.load("1h"),
+        LiveSnapshotCache.load(),
       ]);
+      const failure = results.find((result) => result.status === "rejected" &&
+        (result.reason?.status === 401 || result.reason?.status === 403)) ||
+        results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+      const [data, telemetryResult, liveSnapshot] = results.map((result) => result.value);
+      data.live = liveSnapshot.speed || {};
       data.telemetry = telemetryResult.data;
+      data.telemetryState = telemetryResult;
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
@@ -61,13 +69,26 @@ const SpeedView = {
           detail: "没有可计算的输出或生成区间;产生带时长的输出后这里会显示速度。",
         });
       } else {
-        renderState(root, { kind: "ready", title: "" });
+        renderState(root, {kind: telemetryResult.stale ? "stale" : "ready",
+          title: telemetryResult.stale ? "来源趋势更新失败，保留上次快照" : ""});
       }
       document.getElementById("refresh-note").textContent =
-        "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+        (telemetryResult.stale ? "来源趋势已过期 · 其他数据更新于 " : "更新于 ") + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
+      if (e && (e.status === 401 || e.status === 403)) {
+        this.lastData = null;
+        this._displayData = null;
+        this._selectedDevice = null;
+        ChartRegistry.disposeWithin(root);
+        DetailDrawer.close({restoreFocus: false});
+        document.querySelector("#tool-detail-drawer .drawer-content")?.replaceChildren();
+        document.querySelector("#tool-detail-title")?.replaceChildren();
+        document.querySelector("#tool-detail-subtitle")?.replaceChildren();
+        root.replaceChildren();
+        delete root.dataset.built;
+      }
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,
         title: this.lastData ? "速度数据可能已过期" : issue.title,
@@ -82,7 +103,8 @@ const SpeedView = {
   // --- formatting (kept as methods: format.js is shared, don't shadow it) ---
 
   tps(v) {
-    if (!isFinite(v) || v <= 0) return "—";
+    if (!Number.isFinite(v) || v < 0) return "—";
+    if (v === 0) return "0";
     if (v >= 100) return v.toFixed(0);
     return v.toFixed(1);
   },
@@ -104,7 +126,8 @@ const SpeedView = {
   },
 
   pct(v) {
-    if (!isFinite(v) || v <= 0) return "0%";
+    if (!Number.isFinite(v)) return "—";
+    if (v <= 0) return "0%";
     return (v * 100).toFixed(v >= 0.1 ? 0 : 1) + "%";
   },
 
@@ -123,9 +146,10 @@ const SpeedView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="speed-tiles"></section>
+        <p class="subtle" id="speed-freshness"></p>
         <section class="chart-card">
           <div class="card-head">
-            <h2>来源速度贡献<span class="eyebrow">共享分母 contribution_tps · 非堆叠</span>${infoTip(
+            <h2>来源速度贡献<span class="eyebrow">近 60 分钟 · 共享分母 · 非堆叠</span>${infoTip(
               "贡献速度使用共享分母,因此各来源可以相加得到 <code>aggregate_tps</code>;" +
               "<code>native_tps</code> 是来源自身活跃时的速度,仅用于下钻,<b>不能相加</b>。")}</h2>
             <span class="coverage-note" data-role="measured-coverage"></span>
@@ -133,22 +157,14 @@ const SpeedView = {
           <div id="speed-source-lanes" class="chart source-lanes" data-chart="speed-source-lanes"></div>
           <div id="speed-unmeasured"></div>
         </section>
-        <section class="card">
-          <div class="card-head">
-            <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟 ${infoTip(
-              "速度 = 该分钟产出的 output tokens ÷ 该分钟内真正在生成的时间。" +
-              "断开处表示<b>没有生成</b>,不是速度为 0。")}</h2>
-            <div class="head-tools"><span class="subtle" id="speed-curve-note"></span></div>
-          </div>
-          <div id="speed-curve" style="height:260px"></div>
-        </section>
+        <section class="instrument-card"><h2>当前模型 · 近 10 分钟</h2><div class="data-table" id="speed-live-models"></div></section>
         <section class="card">
           <div class="card-head">
             <h2>按模型 · 近 <span id="speed-days">30</span> 天 <span id="speed-model-info"></span></h2>
             <span class="chip badge approx">并集口径 · 日志推算 + Codex turn 计时</span>
           </div>
-          <div class="bars" id="speed-bars"></div>
           <div class="data-table" id="speed-model-table"></div>
+          ${ToolUI.analysis("speed-bars-analysis", "模型速度条形比较", `<div class="bars" id="speed-bars"></div>`)}
         </section>
         <section class="card">
           <div class="card-head">
@@ -158,7 +174,18 @@ const SpeedView = {
             <span class="chip badge exact">精确 · 代理实测</span>
           </div>
           <div id="speed-exact"></div>
-        </section>`;
+        </section>
+        ${ToolUI.analysis("speed-curve-analysis", "生成速度曲线 · 近 60 分钟", `        <section class="card">
+          <div class="card-head">
+            <h2>生成速度 · 近 <span id="speed-window">60</span> 分钟 ${infoTip(
+              "速度 = 该分钟产出的 output tokens ÷ 该分钟内真正在生成的时间。" +
+              "断开处表示<b>没有生成</b>,不是速度为 0。")}</h2>
+            <div class="head-tools"><span class="subtle" id="speed-curve-note"></span></div>
+          </div>
+          <div id="speed-curve" style="height:260px"></div>
+        </section>
+`)}
+        `;
       root.dataset.built = "1";
     }
     document.getElementById("speed-days").textContent = days;
@@ -166,10 +193,22 @@ const SpeedView = {
     document.getElementById("speed-window").textContent = series.window_minutes || 60;
 
     this.renderTiles(live, series);
+    const state = d.telemetryState || {};
+    const generatedAt = (d.telemetry || {}).generated_at;
+    document.getElementById("speed-freshness").textContent =
+      (state.stale ? "来源趋势更新失败，显示上次快照" : "来源趋势快照") +
+      (generatedAt ? " · " + new Date(generatedAt).toLocaleTimeString("zh-CN", {hour12: false}) : " · 时间未知");
+    ToolUI.updateHTML(document.getElementById("speed-live-models"), this.liveModelTable(live.models || []));
     this.renderSourceLanes(d.telemetry || {});
     this.renderCurve(series);
     this.renderModels(models);
     document.getElementById("speed-exact").innerHTML = this.exactBody(exact, d.has_exact);
+  },
+
+  liveModelTable(rows) {
+    if (!rows.length) return '<p class="empty">当前没有可测模型贡献。</p>';
+    return `${infoTip("贡献速度使用共享分母，可相加；自身速度只使用模型活跃时间。测量方式、事件覆盖与样本数见下方近 30 天分组表。")}
+      <table><thead><tr><th>模型</th><th>贡献 tok/s</th><th>自身 tok/s</th><th>输出 tokens</th><th>生成时长</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.key)}</td><td>${this.tps(row.contribution_tps)}</td><td>${this.tps(row.native_tps)}</td><td>${compact(row.output_tokens)}</td><td>${this.dur(row.active_ms)}</td></tr>`).join("")}</tbody></table>`;
   },
 
   renderSourceLanes(snapshot) {
@@ -191,14 +230,18 @@ const SpeedView = {
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
-      `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable；用量不受影响</div>`
+      `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度 unavailable；用量不受影响</div>`
     ).join("");
     const el = document.getElementById("speed-source-lanes");
     if (!buckets.length || !keys.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">此范围暂无已测来源速度。</p>`;
       return;
     }
     const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
+    const maximum = Math.max(...buckets.flatMap((bucket) => (bucket.sources || [])
+      .map((row) => Number.isFinite(row.contribution_tps) ? row.contribution_tps : 0)), 1) * 1.1;
+    if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "速度页来源贡献",
       // Lanes divide the container instead of taking a fixed 54px each. With
@@ -216,19 +259,19 @@ const SpeedView = {
         axisLine: {lineStyle: {color: cssVar("--baseline")}},
       })),
       yAxis: keys.map((key, i) => ({
-        type: "value", gridIndex: i, min: 0, name: sourceLabelA2(key),
-        nameTextStyle: {color: ChartRegistry.sourceColor(key)},
+        type: "value", gridIndex: i, min: 0, max: maximum, name: SourceUI.label(key),
+        nameTextStyle: {color: SourceUI.color(key)},
         // Two intervals is what fits a lane without the labels colliding.
         splitNumber: 2,
         splitLine: {lineStyle: {color: cssVar("--grid")}},
         axisLabel: {color: cssVar("--text-muted")},
       })),
       series: keys.map((key, i) => ({
-        name: sourceLabelA2(key), type: "bar", xAxisIndex: i, yAxisIndex: i,
-        itemStyle: {color: ChartRegistry.sourceGradient(key), borderRadius: [3, 3, 0, 0]},
+        name: SourceUI.label(key), type: "bar", xAxisIndex: i, yAxisIndex: i,
+        itemStyle: {color: SourceUI.color(key), borderRadius: [3, 3, 0, 0]},
         data: buckets.map((bucket) => {
           const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
-          return row ? row.contribution_tps || 0 : 0;
+          return row && Number.isFinite(row.contribution_tps) ? row.contribution_tps : null;
         }),
       })),
     });
@@ -266,13 +309,15 @@ const SpeedView = {
     const buckets = series.buckets || [];
     const note = document.getElementById("speed-curve-note");
     if (!buckets.some((b) => b.active_ms > 0)) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="bars"><span class="empty">近 ${series.window_minutes || 60} 分钟没有生成。开始使用 Claude,曲线会实时出现。</span></p>`;
       note.textContent = "";
       return;
     }
     note.textContent = `每 ${Math.round((series.bucket_ms || 60000) / 1000)} 秒一个点`;
 
-    const chart = echartsFor(el);
+    if (el.querySelector?.(".empty")) el.replaceChildren();
+    const chart = ChartRegistry.get(el);
     const hue = cssVar("--series-1");
     chart.setOption({
       aria: { enabled: true },

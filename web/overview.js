@@ -20,20 +20,25 @@ const Overview = {
     const root = document.getElementById("view-overview");
     if (!this.lastData) renderState(root, { kind: "loading", title: "正在加载遥测总览" });
     try {
-      const [summary, live, telemetryResult] = await Promise.all([
+      const [summary, liveResult, telemetryResult] = await Promise.all([
         Api.get("/api/v1/overview?days=30"),
-        Api.get("/api/v1/live").catch(() => null),
+        LiveSnapshotCache.load().then((data) => ({data, error: null})).catch((error) => ({
+          data: error && (error.status === 401 || error.status === 403) ? null : LiveSnapshotCache.data,
+          error,
+        })),
         TelemetryCache.load("today", { force: true }),
       ]);
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
-      const payload = { summary, live, telemetry: telemetryResult.data, telemetryResult };
+      const payload = { summary, live: liveResult.data, liveStale: Boolean(liveResult.error), telemetry: telemetryResult.data, telemetryResult };
       this.render(payload);
       this.lastData = payload;
-      renderState(root, overviewIsEmpty(payload)
+      renderState(root, telemetryResult.stale || payload.liveStale
+        ? { kind: "stale", title: "部分数据可能已过期", detail: "今日用量与实时配额独立更新；缺失或过期的读数已单独标明。" }
+        : overviewIsEmpty(payload)
         ? { kind: "empty", title: "今天还没有遥测数据", detail: "开始一次模型会话后，这里会展示速度与构成。" }
         : { kind: "ready", title: "" });
       document.getElementById("refresh-note").textContent =
-        telemetryResult.stale ? `遥测数据已保留 · ${relTime(telemetryResult.receivedAt)}` : "刚刚更新";
+        telemetryResult.stale ? `遥测数据已保留 · ${relTime(telemetryResult.receivedAt)}` : payload.liveStale ? "今日用量已更新 · 配额更新失败" : "刚刚更新";
     } catch (error) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(error);
@@ -51,98 +56,92 @@ const Overview = {
     }
   },
 
+  buildShell(root) {
+    if (root.querySelector("[data-overview-shell]")) return;
+    root.innerHTML = `<div data-overview-shell>
+      <section class="tool-section" aria-label="今日用量">
+        <div class="card-head"><h2>今日累计</h2><span id="overview-today-period" class="subtle"></span></div>
+        <div id="overview-today-total" class="metric-value" data-role="today-total">—</div>
+        <div id="overview-source-composition" data-role="today-source-composition"></div>
+        <div class="data-table-shell"><table><thead><tr><th>来源</th><th>今日 tokens</th><th>昨日同时段</th><th>变化</th></tr></thead><tbody id="overview-source-rows"></tbody></table></div>
+      </section>
+      <section class="tool-section"><h2>官方配额</h2><div id="overview-quotas"></div></section>
+      <section class="tool-section" aria-labelledby="overview-trend-title"><div class="card-head"><h2 id="overview-trend-title">历史用量趋势</h2><span class="subtle">近 30 天 · 每日 tokens</span></div><div id="overview-token-trend" class="chart"></div></section>
+      <section class="tool-section" data-role="fleet-coverage"><a href="#devices">设备与采集状态</a><span id="overview-fleet" class="subtle"></span></section>
+      ${ToolUI.analysis("overview-usage-analysis", "用量分析 · 通道、模型与历史活动", `
+        <div id="overview-channels"></div>
+        <section class="chart-card"><h2 id="today-model-title">今日模型构成</h2><div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div></section>
+        <section class="chart-card" aria-labelledby="overview-heatmap-title"><h2 id="overview-heatmap-title">每日用量热力图 · 最近 365 天</h2><div id="overview-heatmap" class="chart heatmap-shell"></div></section>
+        <section class="instrument-card" data-role="device-throughput"><h2>设备用量 · 近 30 天</h2><div id="overview-devices" class="bars"></div></section>`)}
+      ${ToolUI.analysis("overview-speed-analysis", "速度诊断 · 当日测量与近 10 分钟贡献", `
+        <section class="chart-card" aria-labelledby="overview-speed-title"><div class="card-head"><h2 id="overview-speed-title">当日来源速度贡献</h2><strong id="overview-current-speed"></strong><span class="coverage-note" data-role="measured-coverage"></span></div><div id="overview-source-lanes" class="chart source-lanes" data-chart="source-lanes"></div><div id="overview-unmeasured"></div></section>
+        <section class="instrument-card" data-role="current-contributors"><h2>近 10m 贡献者</h2><div id="overview-contributors" class="data-table-shell"></div></section>
+        <section class="instrument-card" data-role="model-throughput"><h2>近 10m 模型吞吐</h2><div id="overview-model-throughput" class="bars"></div></section>`)}
+    </div>`;
+    root.querySelector("#overview-source-rows").addEventListener("click", (event) => {
+      const clicked = event.target.closest("[data-source-detail]");
+      if (!clicked) return;
+      const trigger = clicked.matches("button") ? clicked : clicked.querySelector("button[data-source-detail]");
+      if (!trigger) return;
+      const row = (this.sourceRows || []).find((item) => item.source === trigger.dataset.sourceDetail);
+      if (!row) return;
+      DetailDrawer.open({key: `overview-source:${row.source}`, title: SourceUI.label(row.source),
+        subtitle: "今日模型用量 · 按事件来源归属", html: this.sourceDetail(row), trigger});
+    });
+    Heatmap.load(document.getElementById("overview-heatmap"), 365);
+  },
+
   render(payload) {
     const root = document.getElementById("view-overview");
+    this.buildShell(root);
     const telemetry = payload.telemetry || {};
     const today = telemetry.today || {};
-    const sources = telemetrySourceRows(telemetry);
-    const sourceMap = Object.fromEntries(sources.map((row) => [speedSourceKey(row), row]));
-    const claude = sourceMap["claude-code"] || {};
-    const codex = sourceMap.codex || {};
-    const dsh = sourceMap.dsh || {};
     const summary = payload.summary || {};
     const live = payload.live;
     const liveSpeed = live && live.speed || {};
+    this.sourceRows = telemetrySourceRows(telemetry);
+    document.getElementById("overview-today-total").textContent = today.total_tokens == null ? "—" : compact(today.total_tokens);
+    document.getElementById("overview-today-period").textContent = `零点至今 · ${telemetry.timezone || "服务端时区"} · ${(today.models || []).length} 个模型`;
+    ToolUI.updateHTML(document.getElementById("overview-source-composition"), this.sourceComposition(this.sourceRows, today.total_tokens));
+    ToolUI.updateHTML(document.getElementById("overview-source-rows"), this.sourceRows.map((row) => `<tr data-source-detail="${esc(row.source)}" data-source="${esc(row.source)}">
+      <td><button type="button" class="tool-row-action" data-focus-key="overview-source:${esc(row.source)}" data-source-detail="${esc(row.source)}" aria-label="查看 ${esc(SourceUI.label(row.source))} 今日模型">${SourceUI.brand(row.source)}</button></td>
+      <td>${compact(row.tokens ?? 0)}</td><td>${compact(row.previous_tokens ?? 0)}</td><td>${row.change_percent == null ? "—" : `${row.change_percent > 0 ? "+" : ""}${row.change_percent.toFixed(1)}%`}</td></tr>`).join(""));
+    this.sourceRows.forEach((row) => DetailDrawer.update(`overview-source:${row.source}`, this.sourceDetail(row)));
+    ToolUI.updateHTML(document.getElementById("overview-quotas"), live ? `${payload.liveStale ? '<p class="subtle">配额更新失败 · 显示上次成功读数</p>' : ""}${QuotaUI.render(live.windows || [], live.quotas || [])}` : `<p class="subtle">实时配额不可用</p>`);
     const devices = live && live.devices || [];
     const backlog = devices.reduce((sum, row) => sum + (row.queued_batches || 0), 0);
-
-    root.innerHTML = `
-      <section class="telemetry-summary" aria-label="关键遥测">
-        ${this.metricCard("today-total", "今日累计", today.total_tokens || 0,
-          `${(today.models || []).length} 个模型 · ${telemetry.timezone || "服务端时区"}`)}
-        <article class="metric-card" data-role="today-source-composition">
-          <div class="metric-label">今日来源构成</div>
-          <div class="subtle">当日零点至今 · 全部来源</div>
-          ${this.sourceComposition(sources, today.total_tokens || 0)}
-          <div class="subtle">${sources.filter((row) => row.tokens > 0).map((row) => `${esc(sourceLabelA2(row.source))} ${compact(row.tokens)}`).join(" · ") || "暂无数据"}</div>
-        </article>
-        ${this.sourceCard("claude-code", "Claude · 今日", claude)}
-        ${this.sourceCard("codex", "Codex · 今日", codex)}
-        ${this.sourceCard("dsh", "DeepSeek · 今日", dsh)}
-        <article class="metric-card" data-role="fleet-coverage">
-          <div class="metric-label">Fleet coverage</div>
-          <div class="metric-value">${live ? devices.length : "—"}</div>
-          <div class="subtle">${!live ? "实时状态不可用" : backlog ? `${full(backlog)} 个待上报批次` : "无上报积压"}</div>
-        </article>
-      </section>
-
-      <section class="chart-card" aria-labelledby="overview-speed-title">
-        <div class="card-head">
-          <h2 id="overview-speed-title">当日来源速度贡献<span class="eyebrow">当日零点至今 · 独立零基线</span></h2>
-          <div class="head-tools">
-            <strong id="overview-current-speed">近 10m — tok/s</strong>
-            <span class="coverage-note" data-role="measured-coverage"></span>
-          </div>
-        </div>
-        <div id="overview-source-lanes" class="chart source-lanes" data-chart="source-lanes"></div>
-        <div id="overview-unmeasured"></div>
-      </section>
-
-      <section class="grid2">
-        <article class="instrument-card" data-role="current-contributors">
-          <div class="card-head"><h2>近 10m 贡献者</h2><span class="subtle">共享分母 · 可加和</span></div>
-          <div id="overview-contributors" class="data-table-shell"></div>
-        </article>
-        <article class="instrument-card" data-role="device-throughput">
-          <div class="card-head"><h2>设备用量</h2><span class="subtle">近 30 天 tokens</span></div>
-          <div id="overview-devices" class="bars"></div>
-        </article>
-      </section>
-
-      ${this.channelSection(summary.by_channel || [])}
-
-      <section class="chart-card" aria-labelledby="today-model-title">
-        <div class="card-head">
-          <h2 id="today-model-title">今日模型构成<span class="eyebrow">服务端零点至今 · 完整列表</span></h2>
-          <span>${compact(today.total_tokens || 0)} tokens</span>
-        </div>
-        <div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div>
-      </section>
-
-      <section class="chart-card" aria-labelledby="overview-heatmap-title">
-        <div class="card-head">
-          <h2 id="overview-heatmap-title">每日用量热力图<span class="eyebrow">历史活动 · 最近 365 天</span></h2>
-          <span class="subtle">颜色表示当日 token 量</span>
-        </div>
-        <div id="overview-heatmap" class="chart heatmap-shell"></div>
-      </section>
-
-      <section class="instrument-card" data-role="model-throughput">
-        <div class="card-head"><h2>近 10m 模型吞吐</h2><span class="subtle">共享分母贡献</span></div>
-        <div id="overview-model-throughput" class="bars"></div>
-      </section>`;
-
+    document.getElementById("overview-fleet").textContent = !live ? " · 实时状态不可用" : ` · ${payload.liveStale ? "上次成功状态 · " : ""}${devices.length} 台设备 · ${backlog ? `${full(backlog)} 个待上报批次` : "无上报积压"}`;
+    this.renderTrend(summary.daily || []);
+    ToolUI.updateHTML(document.getElementById("overview-channels"), this.channelSection(summary.by_channel || []));
     this.renderSpeed(telemetry, liveSpeed);
     this.renderModels(today.models || []);
-    Heatmap.load(document.getElementById("overview-heatmap"), 365);
     this.renderContributors(liveSpeed.sessions || []);
-    this.renderBars(
-      "overview-devices",
-      summary.by_device || [],
-      (row) => row.display_name || row.key || row.device,
-      "total_tokens",
-    );
+    this.renderBars("overview-devices", summary.by_device || [], (row) => row.display_name || row.key || row.device, "total_tokens");
     this.renderBars("overview-model-throughput", liveSpeed.models || [], speedSourceKey, "contribution_tps");
+  },
+
+  sourceDetail(row) {
+    const models = row.models || [];
+    return `<p>${SourceUI.brand(row.source)} · 今日 ${full(row.tokens ?? 0)} tokens</p>` +
+      (models.length ? `<div class="data-table-shell"><table><thead><tr><th>模型</th><th>tokens</th><th>来源内占比</th></tr></thead><tbody>${models.map((model) => `<tr><td>${esc(model.model)}</td><td>${full(model.tokens)}</td><td>${row.tokens > 0 ? (100 * model.tokens / row.tokens).toFixed(1) + "%" : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">今天暂无模型用量。</p>`);
+  },
+
+  renderTrend(rows) {
+    const el = document.getElementById("overview-token-trend");
+    if (!rows.length) {
+      ChartRegistry.disposeWithin?.(el);
+      el.innerHTML = `<p class="empty">此范围暂无历史用量。</p>`;
+      ChartRegistry.renderFallback?.(el, {caption: "历史每日用量 · 暂无数据", columns: [], rows: []});
+      return;
+    }
+    el.querySelectorAll?.(".empty").forEach((node) => node.remove());
+    ChartRegistry.set(el, {
+      titleText: "近 30 天每日 token 用量",
+      grid: {left: 14, right: 20, top: 20, bottom: 24, containLabel: true},
+      xAxis: {type: "category", data: rows.map((row) => row.bucket)},
+      yAxis: {type: "value", min: 0, axisLabel: {formatter: compact}},
+      series: [{name: "tokens", type: "bar", data: rows.map((row) => row.total_tokens), itemStyle: {color: cssVar("--source-aggregate")}}],
+    }, {caption: "历史每日用量", columns: [{key: "bucket", label: "日期"}, {key: "total_tokens", label: "tokens", format: full}], rows});
   },
 
   metricCard(role, label, value, detail) {
@@ -209,7 +208,7 @@ const Overview = {
   sourceComposition(rows, total) {
     if (!total) return `<div class="composition-strip" aria-label="暂无来源用量"></div>`;
     return `<div class="composition-strip" aria-label="当日来源构成">` + rows.map((row) =>
-      `<span title="${esc(sourceLabelA2(speedSourceKey(row)))} ${compact(row.tokens || 0)}" ` +
+      `<span title="${esc(SourceUI.label(speedSourceKey(row)))} ${compact(row.tokens || 0)}" ` +
       `style="width:${Math.max(0, 100 * (row.tokens || 0) / total)}%;background:${ChartRegistry.sourceGradientCSS(speedSourceKey(row), "90deg")}"></span>`
     ).join("") + `</div>`;
   },
@@ -235,14 +234,17 @@ const Overview = {
       `可见贡献合计 ${visibleSum.toFixed(1)} tok/s`;
     document.getElementById("overview-unmeasured").innerHTML =
       (speed.unmeasured_sources || []).map((source) =>
-        `<div class="unavailable-lane">${esc(sourceLabelA2(source))} 速度 unavailable · 用量仍计入今日总数</div>`
+        `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度 unavailable · 用量仍计入今日总数</div>`
       ).join("");
 
     const el = document.getElementById("overview-source-lanes");
     if (!buckets.length || !sourceKeys.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">成功查询，但此范围暂无可测生成区间。</p>`;
+      ChartRegistry.renderFallback?.(el, {caption: "来源速度逐桶数据 · 暂无可测区间", columns: [], rows: []});
       return;
     }
+    el.querySelectorAll?.(".empty").forEach((node) => node.remove());
     const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", timeZone: snapshot.timezone && snapshot.timezone !== "Local" ? snapshot.timezone : undefined}));
     const grids = sourceKeys.map((_, index) => ({
       left: 58, right: 18, top: 16 + index * (220 / sourceKeys.length),
@@ -257,30 +259,30 @@ const Overview = {
         axisTick: { show: false }, axisLabel: { show: index === sourceKeys.length - 1, color: cssVar("--text-muted") },
       })),
       yAxis: sourceKeys.map((key, index) => ({
-        type: "value", gridIndex: index, name: sourceLabelA2(key),
+        type: "value", gridIndex: index, name: SourceUI.label(key),
         nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "right" },
         min: 0, splitNumber: 2, splitLine: { lineStyle: { color: cssVar("--grid") } },
         axisLabel: { color: cssVar("--text-muted"), formatter: (v) => compact(v) },
       })),
       series: sourceKeys.map((key, index) => ({
-        name: sourceLabelA2(key), type: "bar", xAxisIndex: index, yAxisIndex: index,
+        name: SourceUI.label(key), type: "bar", xAxisIndex: index, yAxisIndex: index,
         itemStyle: { color: ChartRegistry.sourceGradient(key), borderRadius: [3, 3, 0, 0] },
         data: buckets.map((bucket) => {
           const row = (bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key);
-          return row ? row.contribution_tps || 0 : 0;
+          return row ? row.contribution_tps ?? null : null;
         }),
       })),
     }, {
       caption: "来源速度逐桶数据",
       columns: [
         { key: "time", label: "时间" },
-        ...sourceKeys.map((key) => ({ key, label: sourceLabelA2(key), format: (v) => Number(v || 0).toFixed(2) })),
-        { key: "aggregate", label: "合计", format: (v) => Number(v || 0).toFixed(2) },
+        ...sourceKeys.map((key) => ({ key, label: SourceUI.label(key), format: (v) => v == null ? "—" : Number(v).toFixed(2) })),
+        { key: "aggregate", label: "合计", format: (v) => v == null ? "—" : Number(v).toFixed(2) },
       ],
       rows: buckets.map((bucket, index) => {
         const row = { time: times[index], aggregate: bucket.aggregate_tps || 0 };
         sourceKeys.forEach((key) => {
-          row[key] = ((bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key) || {}).contribution_tps || 0;
+          row[key] = ((bucket.sources || []).find((candidate) => speedSourceKey(candidate) === key) || {}).contribution_tps ?? null;
         });
         return row;
       }),
@@ -290,9 +292,12 @@ const Overview = {
   renderModels(models) {
     const el = document.getElementById("overview-model-composition");
     if (!models.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">今天暂无模型用量。</p>`;
+      ChartRegistry.renderFallback?.(el, {caption: "今日完整模型列表 · 暂无数据", columns: [], rows: []});
       return;
     }
+    el.querySelectorAll?.(".empty").forEach((node) => node.remove());
     el.style.height = `${Math.min(560, Math.max(300, models.length * 30 + 54))}px`;
     const dataZoom = models.length > 14 ? [
       { type: "inside", yAxisIndex: 0, startValue: 0, endValue: 13 },
@@ -344,9 +349,6 @@ const Overview = {
     });
   },
 
-  // The source column is gone: a model name already says which tool produced
-  // it — `claude-opus-5` cannot have come from Codex — so the column repeated
-  // its neighbour and cost width the numbers needed.
   renderContributors(rows) {
     const el = document.getElementById("overview-contributors");
     if (!rows.length) {

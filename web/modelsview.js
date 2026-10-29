@@ -2,8 +2,7 @@
 // 模型页(F22 / GAP-4):模型 × 工具来源堆叠柱状图 + 每日模型构成 + 明细表。
 // 渲染进 #view-models。
 //
-// 配色纪律:只用既有的 --series-1..4,按固定顺序分配(来源图按 ORDER,
-// 每日图按用量排名);第 5 个及以后一律并入「其他」走 --text-muted。
+// 来源图使用 SourceUI 的稳定语义色;每日模型序列独立使用 --series-1..4。
 // 文字不着色,颜色只由图例和色块承担。
 //
 // 图表走 ECharts(ADR-0010),与总览/实时/速度页同一套:共享 tooltip、hover
@@ -42,16 +41,33 @@ const ModelsView = {
       renderState(root, { kind: "loading", title: "正在加载模型数据" });
     }
     try {
-      // top=4:每日图最多 4 个模型 + 「其他」,正好用满调色板,不新造色相。
-      const [data, live] = await Promise.all([
+      // top limits the daily composition only; by_source rows remain the full API range.
+      const results = await Promise.allSettled([
         Api.get(`/api/v1/models?days=${this.DAYS}&top=100`),
-        Api.get("/api/v1/live").catch(() => ({ speed: {} })),
+        LiveSnapshotCache.load().catch((error) => {
+          if (error && (error.status === 401 || error.status === 403)) throw error;
+          return { speed: {}, unavailable: true };
+        }),
       ]);
-      data.live = live;
+      const failure = results.find((result) => result.status === "rejected" &&
+        (result.reason?.status === 401 || result.reason?.status === 403)) ||
+        results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+      const [data, live] = results.map((result) => result.value);
+      const previousLive = this.lastData && this.lastData.live && !this.lastData.live.unavailable
+        ? this.lastData.live : null;
+      data.live = live.unavailable ? previousLive || live : live;
+      data.liveState = {
+        stale: Boolean(live.unavailable), unavailable: Boolean(live.unavailable && !previousLive),
+        updatedAt: live.unavailable ? (this.lastData && this.lastData.liveState || {}).updatedAt || null : Date.now(),
+      };
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
-      if (modelsIsEmpty(data)) {
+      if (data.liveState.stale) {
+        renderState(root, {kind: "stale", title: "模型用量已更新；实时数据更新失败",
+          detail: data.liveState.unavailable ? "实时吞吐与会话观测不可用。" : "实时吞吐与会话观测保留上次快照。"});
+      } else if (modelsIsEmpty(data)) {
         renderState(root, {
           kind: "empty", title: "暂无模型用量",
           detail: "近 30 天尚无可展示的模型与来源数据。",
@@ -60,10 +76,23 @@ const ModelsView = {
         renderState(root, { kind: "ready", title: "" });
       }
       document.getElementById("refresh-note").textContent =
-        "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+        "模型用量更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }) +
+        (data.liveState.stale ? " · 实时数据更新失败" : "");
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
+      if (e && (e.status === 401 || e.status === 403)) {
+        this.lastData = null;
+        this._displayData = null;
+        this._selectedDevice = null;
+        ChartRegistry.disposeWithin(root);
+        DetailDrawer.close({restoreFocus: false});
+        document.querySelector("#tool-detail-drawer .drawer-content")?.replaceChildren();
+        document.querySelector("#tool-detail-title")?.replaceChildren();
+        document.querySelector("#tool-detail-subtitle")?.replaceChildren();
+        root.replaceChildren();
+        delete root.dataset.built;
+      }
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,
         title: this.lastData ? "模型数据可能已过期" : issue.title,
@@ -73,6 +102,13 @@ const ModelsView = {
       document.getElementById("refresh-note").textContent = this.lastData
         ? "刷新失败,正在显示上次数据" : issue.title;
     }
+  },
+
+  liveStatus(d) {
+    const state = d.liveState || {};
+    if (state.unavailable) return "实时数据更新失败 · 当前不可用";
+    const timestamp = state.updatedAt ? new Date(state.updatedAt).toLocaleTimeString("zh-CN", {hour12: false}) : "时间未知";
+    return (state.stale ? "实时数据已过期 · 上次成功于 " : "实时快照更新于 ") + timestamp;
   },
 
   render(d) {
@@ -89,52 +125,61 @@ const ModelsView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="models-tiles"></section>
+        <section class="instrument-card">
+          <div class="card-head"><h2>模型排名 · 按来源拆分</h2>
+            <label>排序 <select id="models-sort"><option value="tokens">tokens</option><option value="cost">成本</option></select></label>
+          </div>
+          <p class="subtle">近 30 天 · 排名覆盖本次接口返回模型；每日构成请求 Top 100，再折叠为前 4 + 其他。无定价不参与成本排名。</p>
+          <div class="data-table data-table-shell" id="models-table"></div>
+        </section>
         <section class="chart-card">
           <div class="card-head"><h2 id="models-source-title">模型 × 来源</h2></div>
           <div id="models-source-chart" data-chart="model-distribution"></div>
           <p class="subtle" id="models-source-note"></p>
         </section>
-        <section class="chart-card">
-          <div class="card-head"><h2>成本 / token 关系</h2></div>
-          <div id="models-cost-token-chart" style="height:280px" data-chart="model-cost-token"></div>
-        </section>
-        <section class="instrument-card" data-role="active-model-contribution">
-          <div class="card-head"><h2>当前模型贡献</h2><span class="subtle">contribution_tps</span></div>
-          <div id="models-active-contribution" class="bars"></div>
-        </section>
-        <section class="chart-card">
-          <div class="card-head"><h2 id="models-daily-title">每日模型构成</h2></div>
-          <div id="models-daily-chart" style="height:300px"></div>
-        </section>
-        <section class="instrument-card">
-          <h2>模型明细 · 按来源拆分</h2>
-          <div class="data-table data-table-shell" id="models-table"></div>
-        </section>`;
+        ${ToolUI.analysis("models-cost-analysis", "成本 / token 关系", `<div id="models-cost-token-chart" style="height:280px" data-chart="model-cost-token"></div>`)}
+        ${ToolUI.analysis("models-secondary-analysis", "当前模型贡献与每日构成", `
+          <section data-role="active-model-contribution"><h2>当前模型贡献 · 近 10 分钟</h2><p class="subtle" id="models-live-status"></p><div id="models-active-contribution" class="bars"></div></section>
+          <h2 id="models-daily-title">每日模型构成</h2><div id="models-daily-chart" style="height:300px"></div>`)}
+      `;
+      document.getElementById("models-sort").addEventListener("change", () => {
+        if (this.lastData) this.render(this.lastData);
+      });
       root.dataset.built = "1";
     }
     document.getElementById("models-source-title").textContent =
       `模型 × 来源 · 近 ${d.days || this.DAYS} 天`;
     document.getElementById("models-daily-title").textContent =
-      `每日模型构成 · 前 ${d.top_n || 4} 个模型`;
+      `每日模型构成 · 接口 Top ${d.top_n || 100} · 图示前 4 + 其他`;
     document.getElementById("models-tiles").innerHTML = this.tiles(models, srcSeries, unpriced);
-    document.getElementById("models-table").innerHTML = this.table(rows, unpriced);
+    const sort = document.getElementById("models-sort").value || "tokens";
+    const sorted = [...rows].sort((a, b) => sort === "cost"
+      ? (unpriced.has(a.model) - unpriced.has(b.model)) || (b.cost_usd || 0) - (a.cost_usd || 0)
+      : b.total_tokens - a.total_tokens);
+    ToolUI.updateHTML(document.getElementById("models-table"), this.table(sorted, unpriced));
     this.sourceChart(models, srcSeries);
     this.costTokenChart(models);
+    document.getElementById("models-live-status").textContent = this.liveStatus(d);
     this.activeContributions((((d.live || {}).speed || {}).models) || []);
     this.dailyChart(daily, dailySeries, d.days || this.DAYS);
   },
 
   costTokenChart(models) {
     const el = document.getElementById("models-cost-token-chart");
-    const rows = models.filter((model) => model.total > 0 && !model.unpriced);
+    const rows = models.filter((model) => Number.isFinite(model.total) && model.total > 0 && Number.isFinite(model.cost) && !model.unpriced);
     if (!rows.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">暂无同时具备用量与定价的模型。</p>`;
       return;
     }
+    const values = rows.map((model) => model.total);
+    const low = Math.min(...values), high = Math.max(...values);
+    const padding = Math.max(0.12, Math.log10(high / low) * 0.08);
+    if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "模型 token 与成本关系",
       grid: {left: 48, right: 24, top: 16, bottom: 40, containLabel: true},
-      xAxis: {type: "log", name: "tokens", axisLabel: {color: cssVar("--text-muted"), formatter: compact}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
+      xAxis: {type: "log", min: low / Math.pow(10, padding), max: high * Math.pow(10, padding), name: "tokens", axisLabel: {color: cssVar("--text-muted"), formatter: compact}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
       yAxis: {type: "value", name: "USD", axisLabel: {color: cssVar("--text-muted"), formatter: usd}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
       series: [{
         type: "scatter", symbolSize: 12, itemStyle: {color: cssVar("--source-aggregate")},
@@ -161,34 +206,18 @@ const ModelsView = {
 
   // ---- 序列与配色 ---------------------------------------------------
 
-  // sourceSeries:已知来源按固定顺序占 series-1..3,第一个未知来源补 series-4,
-  // 再多的并入「其他」。返回按堆叠顺序排列的序列描述。
+  // Source identity stays stable across pages, refreshes and unknown sources.
   sourceSeries(rows) {
     const present = [];
     rows.forEach((r) => {
       const k = r.source || "";
       if (!present.includes(k)) present.push(k);
     });
-    const slot = new Map();
-    this.ORDER.forEach((s, i) => slot.set(s, this.PALETTE[i]));
-    let next = this.ORDER.length;
-    present.forEach((s) => {
-      if (slot.has(s)) return;
-      slot.set(s, next < this.PALETTE.length ? this.PALETTE[next++] : null);
-    });
-
-    const series = [];
-    this.ORDER.forEach((s) => {
-      if (present.includes(s)) series.push({ key: s, label: this.sourceLabel(s), color: cssVar(slot.get(s)) });
-    });
-    present.forEach((s) => {
-      if (this.ORDER.includes(s) || !slot.get(s)) return;
-      series.push({ key: s, label: this.sourceLabel(s), color: cssVar(slot.get(s)) });
-    });
-    const folded = present.filter((s) => !this.ORDER.includes(s) && !slot.get(s));
-    if (folded.length) {
-      series.push({ key: this.OTHER, label: `${this.OTHER} (${folded.length})`, color: cssVar("--text-muted"), fold: folded });
-    }
+    const ordered = [...this.ORDER.filter((source) => present.includes(source)),
+      ...present.filter((source) => !this.ORDER.includes(source)).sort()];
+    const series = ordered.map((source) => ({
+      key: source, label: SourceUI.label(source), color: SourceUI.color(source),
+    }));
     return series;
   },
 
@@ -216,7 +245,7 @@ const ModelsView = {
   },
 
   sourceLabel(s) {
-    return this.LABEL[s] || s || "(未知来源)";
+    return SourceUI.label(s);
   },
 
   modelLabel(m) {
@@ -228,17 +257,17 @@ const ModelsView = {
     rows.forEach((r) => {
       let m = byModel.get(r.model);
       if (!m) {
-        m = { model: r.model, total: 0, events: 0, cost: 0, unpriced: unpriced.has(r.model), by: {} };
+        m = { model: r.model, total: 0, events: 0, cost: 0, unpriced: unpriced.has(r.model), hasPrice: false, by: {} };
         byModel.set(r.model, m);
       }
       m.total += r.total_tokens;
       m.events += r.events;
-      if (r.cost_usd != null) m.cost += r.cost_usd;
+      if (Number.isFinite(r.cost_usd)) { m.cost += r.cost_usd; m.hasPrice = true; }
       const s = this.seriesOf(series, r.source || "");
       const key = s ? s.key : this.OTHER;
       m.by[key] = (m.by[key] || 0) + r.total_tokens;
     });
-    return [...byModel.values()].sort((a, b) => b.total - a.total);
+    return [...byModel.values()].map((model) => ({...model, unpriced: model.unpriced || !model.hasPrice})).sort((a, b) => b.total - a.total);
   },
 
   // ---- 概览数字 -----------------------------------------------------
@@ -261,7 +290,7 @@ const ModelsView = {
       </div>
       <div class="stat-tile">
         <div class="label">合计成本</div>
-        <div class="value">${usd(cost)}</div>
+        <div class="value">${models.some((model) => !model.unpriced) ? usd(cost) : "无定价"}</div>
         <div class="sub">${missing ? `${missing} 个模型无定价,未计入` : "全部模型已定价"}</div>
       </div>`;
   },
@@ -273,13 +302,20 @@ const ModelsView = {
     const note = document.getElementById("models-source-note");
     if (!models.length) {
       el.style.height = "auto";
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
       note.textContent = "";
       return;
     }
     const shown = models.slice(0, 12);
-    note.textContent = models.length > shown.length
-      ? `另有 ${models.length - shown.length} 个模型,见下方明细表` : "";
+    const rest = models.slice(12);
+    if (rest.length) shown.push({
+      model: `其他 (${rest.length})`, total: rest.reduce((sum, model) => sum + model.total, 0),
+      cost: rest.reduce((sum, model) => sum + model.cost, 0), unpriced: rest.some((model) => model.unpriced),
+      by: Object.fromEntries(series.map((source) => [source.key, rest.reduce((sum, model) => sum + (model.by[source.key] || 0), 0)])),
+    });
+    note.textContent = rest.length
+      ? `图形显示前 12 个模型 + 其他；其余 ${rest.length} 个模型见上方排名表` : "";
     // 行高固定,画布高度跟着行数走:12 个模型和 3 个模型不该占同样的空间。
     el.style.height = shown.length * 30 + 46 + "px";
 
@@ -287,7 +323,8 @@ const ModelsView = {
     const totals = shown.map((m) => m.total);
     const costs = shown.map((m) => (m.unpriced ? "无定价" : usd(m.cost)));
 
-    echartsFor(el).setOption({
+    if (el.querySelector?.(".empty")) el.replaceChildren();
+    ChartRegistry.get(el).setOption({
       aria: { enabled: true },
       animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 90, top: 28, bottom: 0, containLabel: true },
@@ -354,11 +391,13 @@ const ModelsView = {
   dailyChart(daily, series, days) {
     const el = document.getElementById("models-daily-chart");
     if (!daily.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="bars"><span class="empty">暂无数据,等待采集…</span></p>`;
       return;
     }
     const buckets = this.fillDays(daily, series, days);
-    echartsFor(el).setOption({
+    if (el.querySelector?.(".empty")) el.replaceChildren();
+    ChartRegistry.get(el).setOption({
       aria: { enabled: true },
       animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
@@ -434,11 +473,11 @@ const ModelsView = {
       </tr></thead><tbody>` +
       rows.map((r) => {
         const label = this.sourceLabel(r.source);
-        const cost = unpriced.has(r.model) ? "无定价" : usd(r.cost_usd || 0);
+        const cost = unpriced.has(r.model) || !Number.isFinite(r.cost_usd) ? "无定价" : usd(r.cost_usd);
         const share = (100 * r.total_tokens / grand).toFixed(1) + "%";
         return `<tr>
           <td title="${esc(this.modelLabel(r.model))}">${esc(this.trunc(this.modelLabel(r.model), 34))}</td>
-          <td>${esc(label)}</td>
+          <td>${SourceUI.brand(r.source)}</td>
           <td>${full(r.input_tokens)}</td>
           <td>${full(r.output_tokens)}</td>
           <td>${full(r.cache_read_tokens)}</td>

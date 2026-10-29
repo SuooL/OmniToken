@@ -130,3 +130,8 @@ test("invalidated in-flight cache cannot deliver data across credentials", async
   await assert.rejects(vm.runInContext("pending", c));
   assert.equal(vm.runInContext("LiveSnapshotCache.data", c), null);
 });
+test("custom source names that match prototype properties keep their literal identity", () => {
+  const c = load();
+  assert.match(vm.runInContext('SourceUI.brand("__proto__")',c), /__proto__/);
+  assert.equal(vm.runInContext('SourceUI.label("constructor")',c), 'constructor');
+});

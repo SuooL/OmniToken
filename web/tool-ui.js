@@ -11,8 +11,8 @@ const SourceUI = {
   },
   identity(source) {
     return (
-      this.identities[source] || {
-        label: sourceLabel(source) || "未知来源",
+      (Object.hasOwn(this.identities, source) ? this.identities[source] : null) || {
+        label: source == null || source === "" ? "未知来源" : String(source),
         color: "--source-api",
       }
     );

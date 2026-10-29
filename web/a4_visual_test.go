@@ -44,49 +44,28 @@ func TestA4NormativeDarkPaletteAcrossSurfaces(t *testing.T) {
 	}
 }
 
-// Desktop chrome is superseded by ADR-0037; Web keeps A4 until its own redesign.
-func TestA4WebAmbientDepthAndOuterSurface(t *testing.T) {
-	cases := []struct {
-		surface      string
-		outerSurface string
-	}{
-		{surface: "web", outerSurface: `\.viz-root`},
+// A4 tokens remain available for compatibility; active Web chrome now uses
+// the tool profile and keeps the desktop layout independent.
+func TestWebToolProfileOwnsTheActiveChrome(t *testing.T) {
+	html, err := FS.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.surface, func(t *testing.T) {
-			css := readA4CSS(t, tc.surface, "style.css")
-
-			if count := strings.Count(css, "radial-gradient("); count < 2 {
-				t.Errorf("style.css has %d ambient radial gradients, want at least 2", count)
-			}
-
-			outerRadius := regexp.MustCompile(
-				fmt.Sprintf(`(?s)%s\s*\{[^}]*border-radius\s*:\s*24px\s*;`, tc.outerSurface),
-			)
-			if !outerRadius.MatchString(css) {
-				t.Error("outer surface must use a 24px border radius")
-			}
-		})
+	markup := string(html)
+	if strings.Index(markup, `href="tool.css"`) <= strings.Index(markup, `href="style.css"`) {
+		t.Fatal("tool profile must load after base style")
 	}
-}
-
-func TestA4WebSourceBarsUseGradients(t *testing.T) {
-	sourceTokens := []string{
-		"--source-claude",
-		"--source-codex",
-		"--source-api",
+	css, err := FS.ReadFile("tool.css")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	for _, surface := range []string{"web"} {
-		t.Run(surface, func(t *testing.T) {
-			css := readA4CSS(t, surface, "style.css")
-			for _, token := range sourceTokens {
-				if !a4GradientUsesToken(css, token) {
-					t.Errorf("source bars must use a gradient derived from var(%s)", token)
-				}
-			}
-		})
+	for _, hook := range []string{".tool-ui", "--source-claude: var(--tool-claude)", ".tool-quota-table", ".detail-drawer", ".settings-nav", ":focus-visible", "prefers-reduced-motion"} {
+		if !strings.Contains(string(css), hook) {
+			t.Errorf("tool profile missing %s", hook)
+		}
+	}
+	if strings.Contains(string(css), "radial-gradient(") {
+		t.Error("tool surface must not restore decorative ambient glows")
 	}
 }
 

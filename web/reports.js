@@ -40,8 +40,8 @@ const Reports = {
     <section class="instrument-card">
       <div class="card-head">
         <h2>用量报表 · <span id="reports-note"></span></h2>
-        <div class="head-tools">
-          <div class="btn-group" id="reports-gran">${REPORT_GRANULARITIES.map(([k, l]) =>
+        <div class="head-tools tool-toolbar" role="group" aria-label="报表范围与导出">
+          <div class="btn-group" id="reports-gran" aria-label="报表粒度">${REPORT_GRANULARITIES.map(([k, l]) =>
             `<button class="ghost-btn" data-gran="${k}">${l}</button>`).join("")}</div>
           <div class="btn-group" id="reports-range">${REPORT_RANGES.map((d) =>
             `<button class="ghost-btn" data-days="${d}">近 ${d} 天</button>`).join("")}</div>
@@ -53,14 +53,11 @@ const Reports = {
       </div>
       <p class="subtle" id="reports-export-status" aria-live="polite" hidden></p>
     </section>
-    <section class="chart-card">
-      <div class="card-head"><h2>区间趋势</h2><span class="subtle">随当前粒度与范围更新</span></div>
-      <div id="reports-trend" style="height:300px" data-chart="report-trend"></div>
-    </section>
     <section class="instrument-card">
       <div id="reports-table" class="data-table data-table-shell"></div>
       <p class="subtle" id="reports-unpriced" hidden></p>
-    </section>`;
+    </section>
+    ${ToolUI.analysis("reports-analysis", "区间趋势与分布", `<p class="subtle">随当前粒度与范围更新；会话分布最多显示前 30 项。</p><div id="reports-trend" style="height:260px" data-chart="report-trend"></div>` )}`;
     root.querySelector("#reports-gran").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-gran]");
       if (!btn) return;
@@ -126,6 +123,7 @@ const Reports = {
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
+      if (e.status === 401 || e.status === 403) this.clearProtectedData();
       renderState(document.getElementById("view-reports"), {
         kind: this.lastData ? "stale" : issue.kind,
         title: this.lastData ? "报表数据可能已过期" : issue.title,
@@ -133,6 +131,18 @@ const Reports = {
         action: {label: "重试", run: () => this.load()},
       });
     }
+  },
+
+  clearProtectedData() {
+    this.lastData = null;
+    ToolUI.updateHTML(document.getElementById("reports-table"), '<p class="subtle">需要读取权限；请检查凭据后重试。</p>');
+    const chart = document.getElementById("reports-trend");
+    ChartRegistry.disposeWithin(chart);
+    chart.innerHTML = "";
+    const note = document.getElementById("reports-unpriced");
+    note.textContent = "";
+    note.hidden = true;
+    DetailDrawer.close();
   },
 
   renderPeriods(rows) {
@@ -143,10 +153,10 @@ const Reports = {
       return;
     }
     const label = { daily: "日期", weekly: "周", monthly: "月份" }[this.granularity] || "时间段";
-    el.innerHTML = `<table><thead><tr><th>${label}</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
+    ToolUI.updateHTML(el, `<table><thead><tr><th>${label}</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
       [...rows].reverse().map((r) =>
         `<tr><td>${esc(r.bucket)}</td><td>${full(r.input_tokens)}</td><td>${full(r.output_tokens)}</td><td>${full(r.cache_read_tokens)}</td><td>${full(r.cache_creation_tokens)}</td><td>${full(r.total_tokens)}</td><td>${full(r.events)}</td><td>${costCell(r.cost_usd)}</td></tr>`
-      ).join("") + `</tbody></table>`;
+      ).join("") + `</tbody></table>`);
     this.renderTrend([...rows].reverse(), label);
   },
 
@@ -157,14 +167,14 @@ const Reports = {
       this.renderTrend([], "会话");
       return;
     }
-    el.innerHTML = `<table><thead><tr><th>会话</th><th>设备</th><th>来源</th><th>项目</th><th>模型</th><th>最后活跃</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
+    ToolUI.updateHTML(el, `<table><thead><tr><th>会话</th><th>设备</th><th>来源</th><th>项目</th><th>模型</th><th>最后活跃</th><th>合计</th><th>请求</th><th>成本</th></tr></thead><tbody>` +
       rows.map((r) => {
         const sid = r.session_id || "(无会话)";
         const started = new Date(r.first_ts).toLocaleString("zh-CN", { hour12: false });
         return `<tr>
-          <td title="${esc(sid)}">${esc(sid.slice(0, 8))}</td>
+          <td title="${esc(sid)}">${r.session_id ? `<a class="session-link" href="#details?session=${encodeURIComponent(r.session_id)}&amp;days=${this.days}">${esc(sid.slice(0, 8))}</a>` : esc(sid)}</td>
           <td>${esc(r.device)}</td>
-          <td>${esc(r.source)}</td>
+          <td>${SourceUI.brand(r.source)}</td>
           <td title="${esc(repoLabel(r.repo))}">${esc(repoLabel(r.repo))}</td>
           <td>${esc(r.model)}</td>
           <td title="${esc(started)} 开始">${relTime(r.last_ts)}</td>
@@ -172,7 +182,7 @@ const Reports = {
           <td>${full(r.events)}</td>
           <td>${costCell(r.cost_usd)}</td>
         </tr>`;
-      }).join("") + `</tbody></table>`;
+      }).join("") + `</tbody></table>`);
     this.renderTrend(rows.slice(0, 30), "会话", (row) => (row.session_id || "(无会话)").slice(0, 8), "bar");
   },
 
