@@ -39,7 +39,7 @@ func TestSemanticAssetContracts(t *testing.T) {
 			t.Errorf("Details filter is missing %s", label)
 		}
 	}
-	if !strings.Contains(details, `href="${detailsSessionHref(sid)}"`) {
+	if !strings.Contains(details, `href="${esc(this.routeHref({session: sid, offset: 0}))}"`) {
 		t.Error("session drill-down must render a real hash href")
 	}
 
@@ -66,10 +66,10 @@ func TestTelemetryStudioOverviewAndLiveContracts(t *testing.T) {
 	overview := semanticAsset(t, "overview.js")
 	for _, contract := range []string{
 		"TelemetryCache.load",
-		`this.metricCard("today-total"`,
-		`this.sourceComposition(sources, today.total_tokens || 0)`,
-		`this.sourceCard("claude-code"`,
-		`this.sourceCard("codex"`,
+		`data-role="today-total"`,
+		`this.sourceComposition(this.sourceRows, today.total_tokens)`,
+		`SourceUI.brand(row.source)`,
+		`QuotaUI.render(`,
 		`data-role="fleet-coverage"`,
 		`data-chart="source-lanes"`,
 		`data-role="current-contributors"`,
@@ -217,7 +217,7 @@ import {dirname, join} from 'node:path';
 
 const root = dirname(fileURLToPath(import.meta.url));
 function load(name, extra = {}) {
-  const context = vm.createContext({console, URLSearchParams, ...extra});
+  const context = vm.createContext({console, URLSearchParams, chartFont:()=>'', SourceUI:{brand:String,label:String,color:()=>""}, DetailDrawer:{close(){},update(){}}, ToolUI:{updateHTML(el,html){el.innerHTML=html;}}, ...extra});
   vm.runInContext(readFileSync(join(root, name), 'utf8'), context, {filename: name});
   return context;
 }
@@ -247,6 +247,7 @@ function bootApp(hash) {
     applyRoute() {}, lastData: null,
   };
   const document = {
+    addEventListener() {},
     getElementById(id) { return nodes[id] || null; },
     querySelectorAll(selector) {
       return selector.startsWith('#nav a') ? anchors : [];
@@ -292,7 +293,7 @@ test('session rows expose a durable hash route and route state restores it', () 
     repoLabel: (repo) => repo || '', usd: String,
   });
   const html = run(context, 'Details.rowHTML({ts:0,session_id:"session/a b",repo:"r"})');
-  assert.match(html, /href="#details\?session=session%2Fa%20b"/);
+  assert.match(html, /href="#details\?[^"\s]*session=session%2Fa(?:%20|\+)b/);
   assert.match(html, /<a class="session-link"/);
   run(context, 'Details.applyRoute(new URLSearchParams("session=restored%2Fid"), false)');
   assert.equal(run(context, 'Details.filters.session'), 'restored/id');
@@ -326,20 +327,20 @@ test('overview renders daily totals and requests calendar-day telemetry', async 
   const calls=[];
   const context=load('telemetry.js',{sourceLabel:String});
   Object.assign(context,{
-    document, compact:String, esc:String, sourceLabel:String, infoTip:()=>'',
-    Api:{get:async () => ({})}, isCurrentGeneration:(a,b)=>a===b,
+    document, compact:String, full:String, esc:String, sourceLabel:String, infoTip:()=>'',
+    Api:{get:async () => ({})}, LiveSnapshotCache:{load:async()=>null,data:null}, isCurrentGeneration:(a,b)=>a===b,
     renderState(){}, relTime:String, classifyAPIError:()=>({}),
     ChartRegistry:{sourceGradientCSS:()=> '#fff'},
   });
   vm.runInContext(readFileSync(join(root,'overview.js'),'utf8'),context);
   const data={timezone:'America/New_York',today:{total_tokens:1234,models:[],sources:[{source:'codex',tokens:1234}]},rolling_5h:{total_tokens:9,sources:[]}};
   context.data=data;
-  run(context, 'Overview.renderSpeed=()=>{}; Overview.renderModels=()=>{}; Overview.renderContributors=()=>{}; Overview.renderBars=()=>{};');
+  run(context, 'Overview.buildShell=()=>{}; Overview.renderTrend=()=>{}; Overview.renderSpeed=()=>{}; Overview.renderModels=()=>{}; Overview.renderContributors=()=>{}; Overview.renderBars=()=>{};');
   context.Heatmap={load(){}};
   run(context,'Overview.render({telemetry:data})');
-  const html=document.getElementById('view-overview').innerHTML;
-  assert.match(html,/当日来源速度贡献/);
-  assert.match(html,/Codex · 今日/);
+  const html=document.getElementById('overview-source-rows').innerHTML;
+  assert.match(html,/codex/);
+  assert.equal(document.getElementById('overview-today-total').textContent,'1234');
   assert.match(html,/1234/);
   assert.doesNotMatch(html,/五小时|滚动|rolling-five-hour/);
   run(context,'TelemetryCache.load=async (range)=>{ recordRange(range); return {data,stale:false}; };');
@@ -360,7 +361,7 @@ test('daily speed labels support the default Go Local timezone', () => {
   assert.doesNotThrow(()=>run(context,'Overview.renderSpeed({timezone:"Local",speed:{measured_sources:["codex"],series:[{start_ms:0,sources:[{key:"codex",contribution_tps:1}]}]}})'));
 });
 
-test('live lanes reveal the count beyond the eight visible sessions', () => {
+test('live lanes retain all concurrent sessions', () => {
   const nodes = {lanes: {innerHTML: ''}, 'lane-note': {textContent: ''}};
   const context = load('live.js', {
     document: {getElementById: (id) => nodes[id]},
@@ -368,8 +369,9 @@ test('live lanes reveal the count beyond the eight visible sessions', () => {
   });
   context.nodes = nodes;
   run(context, 'Live.renderLanes({window_start_ms:0,window_end_ms:1000,active_ms:100,sessions:Array.from({length:10},(_,i)=>({session_id:"s"+i,device:"d",spans:[],tps:1})),spans:[],tps:1})');
-  assert.match(nodes.lanes.innerHTML, /另有 2 个会话/);
-  assert.equal((nodes.lanes.innerHTML.match(/class="lane lane-/g) || []).length, 8);
+  assert.match(nodes.lanes.innerHTML, /s9/);
+  assert.doesNotMatch(nodes.lanes.innerHTML, /另有/);
+  assert.equal((nodes.lanes.innerHTML.match(/class="lane lane-/g) || []).length, 10);
 });
 
 test('heatmap renders a keyboard-readable per-day table alongside the svg', () => {

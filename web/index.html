@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Telemetry Studio</title>
+<title>OmniToken</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="tool.css">
 </head>
-<body>
+<body class="tool-app">
 <a class="skip-link" href="#main-content">跳到主要内容</a>
-<div class="viz-root">
+<div class="viz-root tool-ui">
   <nav class="rail" aria-label="主导航">
     <div class="brand">
       <span class="dot-live" aria-hidden="true"></span>
@@ -55,45 +56,20 @@
       <div class="caption" id="speed-sub">正在等待数据</div>
     </section>
 
-    <section id="live-telemetry-card"></section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>并发生成</h2>
-        <div class="head-tools"><span class="subtle" id="lane-note"></span></div>
-      </div>
-      <div class="lanes" id="lanes"></div>
-      <div class="axis"><span id="axis-start">10 分钟前</span><span>现在</span></div>
+    <section class="tool-section live-quota-section" aria-labelledby="live-quota-title">
+      <div class="card-head"><h2 id="live-quota-title">配额与预估</h2><span class="subtle">官方读数 · 预估余量</span></div>
+      <div id="quota-row"></div><div id="window-row"></div>
     </section>
-
-    <section class="grid-auto">
-      <div class="card">
-        <h2>新增 token 速率 · 近 10 分钟</h2>
-        <div class="stat-tile plain">
-          <div class="value" id="burn-rate">—</div>
-          <div class="sub" id="burn-sub">&nbsp;</div>
-        </div>
-      </div>
-      <div class="card"><h2>设备</h2><div id="live-devices" class="bars"></div></div>
+    <section class="tool-section">
+      <div class="card-head"><h2>并发生成</h2><span class="subtle" id="lane-note"></span></div>
+      <div class="lanes" id="lanes"></div><div class="axis"><span id="axis-start">10 分钟前</span><span>现在</span></div>
     </section>
-
-    <!-- Two different questions, deliberately side by side: what is open right
-         now (process table, ADR-0012) vs what spent tokens lately. -->
-    <section class="grid2">
-      <div class="card">
-        <div class="card-head"><h2>打开中的会话</h2>
-          <div class="head-tools"><span class="subtle" id="procs-note"></span></div>
-        </div>
-        <div id="live-procs" class="data-table"></div>
-      </div>
-      <div class="card"><h2>近 10 分钟有用量</h2><div id="live-sessions" class="data-table"></div></div>
+    <section class="grid2 tool-live-sessions">
+      <div class="tool-section"><div class="card-head"><h2>打开中的会话</h2><span class="subtle" id="procs-note"></span></div><div id="live-procs" class="data-table"></div></div>
+      <div class="tool-section"><h2>近 10 分钟有用量</h2><div id="live-sessions" class="data-table"></div></div>
     </section>
-
-    <section class="card">
-      <div class="card-head"><h2>额度</h2></div>
-      <div class="stat-row" id="quota-row"></div>
-      <div class="stat-row" id="window-row"></div>
-    </section>
+    <details class="tool-analysis" id="live-speed-analysis"><summary>来源趋势与测量覆盖 · 最近 60 分钟</summary><div class="tool-analysis-body" id="live-telemetry-card"></div></details>
+    <details class="tool-analysis" id="live-device-analysis"><summary>设备状态与新增 token 速率</summary><div class="tool-analysis-body grid2"><section><h2>设备</h2><div id="live-devices" class="bars"></div></section><section><h2>新增 token 速率 · 近 10 分钟</h2><div class="stat-tile plain"><div class="value" id="burn-rate">—</div><div class="sub" id="burn-sub"></div></div></section></div></details>
 
     <p class="subtle" id="live-status">连接中…</p>
   </main>
@@ -117,6 +93,8 @@
 <script src="infotip.js"></script>
 <script src="charts.js"></script>
 <script src="telemetry.js"></script>
+<script src="tool-ui.js"></script>
+<script src="detail-drawer.js"></script>
 <script src="overview.js"></script>
 <script src="live.js"></script>
 <script src="reports.js"></script>

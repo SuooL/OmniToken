@@ -1,0 +1,881 @@
+/* Tool UI profile: source identity, risk and selection remain distinct.
+   Scoped to Web; desktop consumes its own layout with the same tool tokens. */
+body.tool-app {
+  background: #101318;
+  padding: 12px;
+}
+.tool-ui {
+  grid-template-rows: auto minmax(0, 1fr);
+  --page: #101318;
+  --surface-1: var(--tool-surface);
+  --surface-2: #13171e;
+  --surface-card: #1c222b;
+  --text-primary: var(--tool-ink);
+  --text-secondary: var(--tool-secondary);
+  --text-muted: #a0aab9;
+  --border: var(--tool-line);
+  --border-strong: #465264;
+  --source-claude: var(--tool-claude);
+  --source-codex: var(--tool-codex);
+  --source-dsh: var(--tool-dsh);
+  --source-aggregate: #78bafa;
+  --status-healthy: var(--tool-healthy);
+  --meter-warn: var(--tool-warn);
+  --meter-serious: var(--tool-serious);
+  --meter-critical: var(--tool-critical);
+  --critical: var(--tool-critical);
+  --amber: var(--tool-warn);
+  --grid: #a4afbe1c;
+  --radius: 10px;
+  background: var(--surface-1);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px #00000024;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.tool-ui .rail {
+  background: var(--surface-2);
+  backdrop-filter: none;
+  padding: 10px 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.tool-ui .brand {
+  color: var(--text-primary);
+}
+.tool-ui .dot-live {
+  animation: none;
+  box-shadow: none;
+  background: var(--tool-healthy);
+}
+.tool-ui .tabs {
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tool-ui .tabs a {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 7px 10px;
+  white-space: nowrap;
+  border-radius: 6px;
+}
+.tool-ui .tabs a:hover {
+  background: var(--tool-hover);
+  color: var(--text-primary);
+}
+.tool-ui .tabs a[aria-current="page"] {
+  background: #78bafa17;
+  color: var(--accent);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.tool-ui .content {
+  padding: 22px 24px 32px;
+  min-width: 0;
+}
+.tool-ui .page-head {
+  margin-bottom: 18px;
+}
+.tool-ui .page-head h2 {
+  font: 600 22px/1.3 var(--font-body);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.tool-ui .subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tool-ui h2 {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+.tool-ui h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.tool-ui .eyebrow {
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tool-ui .subtle,
+.tool-ui .sub2,
+.tool-ui .coverage-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tool-ui .tool-section,
+.tool-ui .instrument-card,
+.tool-ui .chart-card,
+.tool-ui .card,
+.tool-ui .state-panel {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px 0;
+  margin-bottom: 4px;
+  box-shadow: none;
+  min-width: 0;
+}
+.tool-ui .tool-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.tool-ui .metric-card,
+.tool-ui .stat-tile {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 10px 12px 10px 0;
+  min-width: 0;
+}
+.tool-ui .metric-card + .metric-card,
+.tool-ui .stat-tile + .stat-tile {
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
+}
+.tool-ui .stat-row {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.tool-ui .metric-value,
+.tool-ui .stat-tile .value {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+.tool-ui .metric-label,
+.tool-ui .stat-tile .label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.tool-ui .grid2,
+.tool-ui .grid-auto {
+  gap: 22px;
+}
+.tool-ui .tool-analysis {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  min-width: 0;
+}
+.tool-ui .tool-analysis > summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 12px 0;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.tool-ui .tool-analysis > summary:hover {
+  color: var(--text-primary);
+}
+.tool-ui .tool-analysis[open] > summary {
+  color: var(--text-primary);
+}
+.tool-ui .tool-analysis-body {
+  padding: 0 0 12px;
+  min-width: 0;
+}
+.tool-ui .tool-analysis-body > .chart-card:first-child {
+  border-top: 0;
+}
+.tool-ui .tool-analysis .chart-card,
+.tool-ui .tool-analysis .instrument-card {
+  padding-top: 14px;
+}
+.tool-ui button,
+.detail-drawer button {
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+}
+.tool-ui .ghost-btn {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  min-height: 30px;
+}
+.tool-ui .ghost-btn:hover {
+  background: var(--tool-hover);
+  color: var(--text-primary);
+}
+.tool-ui button[aria-pressed="true"],
+.tool-ui button[aria-selected="true"] {
+  color: var(--accent);
+  background: #78bafa17;
+  border-color: #78bafa50;
+}
+.tool-ui :focus-visible,
+.detail-drawer :focus-visible {
+  outline: 2px solid #78bafa;
+  outline-offset: 2px;
+}
+.tool-ui button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.tool-ui input,
+.tool-ui select {
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-height: 32px;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-ui .filter-row {
+  gap: 8px 12px;
+}
+.tool-ui .filter-row label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.tool-ui .reports-toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.tool-ui .btn-group {
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.tool-ui .data-table-shell,
+.tool-ui .data-table {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+.tool-ui table,
+.detail-drawer table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.tool-ui th,
+.detail-drawer th {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.tool-ui td,
+.tool-ui th,
+.detail-drawer td,
+.detail-drawer th {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--grid);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+}
+.tool-ui td:first-child,
+.tool-ui th:first-child {
+  padding-left: 0;
+}
+.tool-ui td:last-child,
+.tool-ui th:last-child {
+  padding-right: 0;
+}
+.tool-ui .numeric,
+.detail-drawer .numeric {
+  text-align: right;
+  white-space: nowrap;
+}
+.tool-ui tbody tr:hover {
+  background: #a4afbe06;
+}
+.tool-ui .tool-row-action {
+  font: inherit;
+  color: var(--text-primary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  min-height: 30px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 6px;
+}
+.tool-ui .tool-row-action:hover {
+  background: var(--tool-hover);
+}
+.tool-ui tr:has(.tool-row-action:focus-visible) {
+  background: #78bafa0d;
+}
+.tool-ui [data-source-detail] td:not(:first-child) {
+  text-align: right;
+}
+.tool-ui .source-brand,
+.detail-drawer .source-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  vertical-align: middle;
+  min-width: 0;
+}
+.tool-ui .source-brand img,
+.detail-drawer .source-brand img {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.source-brand[data-source="claude-code"],
+.source-brand[data-source="claude"] {
+  color: #e9ac88;
+}
+.source-brand[data-source="codex"] {
+  color: #e4e9ee;
+}
+.source-brand[data-source="dsh"] {
+  color: #7596ff;
+}
+.tool-ui .view-state {
+  background: #a4afbe07;
+  border: 0;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 12px 14px;
+  animation: none;
+}
+.tool-ui .view-state-error,
+.tool-ui .view-state-unauthorized {
+  border-color: var(--tool-critical);
+}
+.tool-ui .view-state-stale {
+  border-color: var(--tool-warn);
+}
+.tool-ui .view-state-loading strong {
+  animation: none;
+}
+.tool-ui .unavailable-lane {
+  border: 0;
+  border-left: 2px solid var(--border-strong);
+  background: transparent;
+  border-radius: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.tool-ui .now {
+  padding: 0 0 16px;
+  gap: 14px;
+}
+.tool-ui .now .figure {
+  font-size: 42px;
+}
+.tool-ui .now .caption {
+  font-size: 12px;
+}
+.tool-ui .lane .who .sub,
+.tool-ui .lane .rate .u,
+.tool-ui .axis {
+  font-size: 12px;
+}
+.tool-ui .lane .track {
+  background: #a4afbe08;
+  border-radius: 3px;
+}
+.tool-ui .composition-strip {
+  height: 6px;
+  margin: 10px 0;
+  border-radius: 3px;
+}
+.tool-ui .chart {
+  height: 240px;
+}
+.tool-ui .source-lanes {
+  min-height: 240px;
+}
+.tool-ui .chart-fallback {
+  font-size: 12px;
+  margin-top: 8px;
+}
+.tool-ui .chart-fallback summary {
+  padding: 6px 0;
+}
+.tool-ui .bars .track,
+.tool-ui .bars .fill {
+  border-radius: 3px;
+}
+.tool-ui .quota-table-shell {
+  overflow-x: auto;
+}
+.tool-ui .tool-quota-table {
+  font-size: 12px;
+  table-layout: fixed;
+}
+.tool-ui .tool-quota-table th,
+.tool-ui .tool-quota-table td {
+  padding: 7px 10px;
+  text-align: right;
+  white-space: normal;
+}
+.tool-ui .tool-quota-table th:first-child {
+  width: 22%;
+  text-align: left;
+  padding-left: 0;
+}
+.tool-ui .tool-quota-table th:nth-child(2) {
+  width: 29%;
+}
+.tool-ui .quota-source th {
+  border-bottom: 0;
+  padding-top: 13px;
+  padding-bottom: 5px;
+}
+.tool-ui .quota-data {
+  --risk: var(--tool-healthy);
+}
+.tool-ui .quota-data[data-risk="warn"] {
+  --risk: var(--tool-warn);
+}
+.tool-ui .quota-data[data-risk="serious"] {
+  --risk: var(--tool-serious);
+}
+.tool-ui .quota-data[data-risk="critical"] {
+  --risk: var(--tool-critical);
+  background: #ff7e8509;
+}
+.tool-ui .quota-data[data-risk="missing"] {
+  --risk: var(--text-secondary);
+}
+.tool-ui .quota-used {
+  color: var(--risk);
+}
+.tool-ui .quota-used small {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tool-ui .quota-percent {
+  font-weight: 600;
+}
+.tool-ui .quota-track {
+  height: 5px;
+  background: #a4afbe20;
+  border-radius: 3px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.tool-ui .quota-track > div {
+  height: 100%;
+  background: var(--risk);
+  border-radius: inherit;
+}
+.tool-ui .quota-unknown {
+  background: repeating-linear-gradient(
+    100deg,
+    #a4afbe20,
+    #a4afbe20 4px,
+    #a4afbe0b 4px,
+    #a4afbe0b 6px
+  );
+}
+.tool-ui .quota-observed {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.tool-ui .quota-note {
+  font-size: 11px;
+}
+.tool-ui .tool-kv,
+.detail-drawer .tool-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--grid);
+  min-width: 0;
+}
+.tool-ui .tool-kv > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tool-ui .quota-projections,
+.tool-ui .quota-spend {
+  font-size: 12px;
+}
+.tool-ui .settings-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 24px;
+}
+.tool-ui .settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-self: start;
+  position: sticky;
+  top: 84px;
+}
+.tool-ui .settings-nav button {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.tool-ui .settings-nav button[aria-pressed="true"],
+.tool-ui .settings-nav button[aria-current],
+.tool-ui .settings-nav button[aria-selected="true"] {
+  background: #78bafa17;
+  color: var(--accent);
+}
+.tool-ui .settings-nav button:hover {
+  background: var(--tool-hover);
+}
+.tool-ui .settings-content {
+  min-width: 0;
+}
+.tool-ui .settings-danger {
+  border-color: var(--border);
+}
+.tool-ui .settings-danger h2 {
+  color: var(--tool-critical);
+}
+.tool-ui .settings-advanced {
+  border-left: 2px solid var(--tool-warn);
+  padding-left: 12px;
+}
+.tool-ui .credential-scope-map {
+  border: 0;
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 12px;
+}
+.tool-ui .settings-content .form-input {
+  width: min(100%, 360px);
+}
+body.drawer-open {
+  overflow: hidden;
+}
+.detail-drawer {
+  --grid: #a4afbe24;
+  --text-primary: #e6eaf0;
+  --text-secondary: #a4afbe;
+  --border: #303742;
+  --font-body:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+  color: var(--text-primary);
+  font: 14px/1.5 var(--font-body);
+  background: #171b22;
+  border: 1px solid var(--border);
+  border-radius: 12px 0 0 12px;
+  box-shadow: -12px 0 40px #00000035;
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  width: min(400px, 100%);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+.detail-drawer[open] {
+  display: flex;
+  flex-direction: column;
+}
+.detail-drawer::backdrop {
+  background: #00000038;
+}
+.drawer-header {
+  padding: 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.drawer-header h2 {
+  font-size: 16px;
+  line-height: 1.4;
+  margin: 0;
+  font-weight: 600;
+}
+.drawer-header .subtle {
+  font-size: 12px;
+  margin-top: 5px;
+  color: var(--text-secondary);
+}
+.drawer-close {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  font-size: 20px !important;
+}
+.drawer-close:hover {
+  background: #232c37;
+}
+.drawer-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 18px 20px;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.drawer-content > * + * {
+  margin-top: 14px;
+}
+.drawer-content .data-table-shell {
+  overflow: auto;
+}
+.drawer-content table {
+  font-size: 12px;
+}
+.drawer-content td,
+.drawer-content th {
+  text-align: right;
+  padding: 8px 4px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.drawer-content td:first-child,
+.drawer-content th:first-child {
+  text-align: left;
+}
+.drawer-content .subtle,
+.drawer-content .empty {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.drawer-content pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.drawer-content dl {
+  margin: 0;
+}
+.drawer-content dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 12px;
+}
+.drawer-content dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.tool-ui .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (min-width: 1100px) {
+  .tool-ui [data-overview-shell] {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 0 28px;
+  }
+  .tool-ui [data-overview-shell] > .tool-section:first-child {
+    grid-column: 1;
+  }
+  .tool-ui [data-overview-shell] > .tool-section:nth-child(2) {
+    grid-column: 2;
+    border-top: 0;
+    padding-top: 0;
+  }
+  .tool-ui [data-overview-shell] > .tool-section:nth-child(n + 3),
+  .tool-ui [data-overview-shell] > .tool-analysis {
+    grid-column: 1/-1;
+  }
+  .tool-ui .live-quota-section .tool-quota-table {
+    max-width: 900px;
+  }
+  .tool-ui .live-quota-section .quota-note {
+    max-width: 900px;
+  }
+}
+@media (max-width: 860px) {
+  body.tool-app {
+    padding: 8px;
+  }
+  .tool-ui .content {
+    padding: 18px 16px 28px;
+  }
+  .tool-ui .rail {
+    gap: 8px;
+    padding: 9px 12px;
+  }
+  .tool-ui .tabs {
+    margin-left: 0;
+    flex: 1 1 100%;
+  }
+  .tool-ui .tabs a {
+    padding: 7px 10px;
+  }
+  .tool-ui .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .tool-ui .settings-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .tool-ui .settings-nav button {
+    width: auto;
+    flex: 1;
+    white-space: nowrap;
+    padding: 8px 10px;
+  }
+  .tool-ui .tool-quota-table th,
+  .tool-ui .tool-quota-table td {
+    padding: 7px 6px;
+  }
+  .tool-ui .grid2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 420px) {
+  body.tool-app {
+    padding: 0;
+  }
+  .tool-ui {
+    border-inline: 0;
+    border-radius: 0;
+  }
+  .tool-ui .content {
+    padding: 16px 12px 28px;
+  }
+  .tool-ui .page-head {
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .tool-ui .page-utilities {
+    max-width: 48%;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .tool-ui .now .figure {
+    font-size: 34px;
+  }
+  .tool-ui .stat-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tool-ui .stat-tile + .stat-tile {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+  }
+  .tool-ui .tool-quota-table {
+    font-size: 11px;
+  }
+  .tool-ui .quota-used small,
+  .tool-ui .quota-observed {
+    font-size: 11px;
+  }
+  .tool-ui .tool-quota-table th,
+  .tool-ui .tool-quota-table td {
+    padding: 7px 4px;
+  }
+  .tool-ui .tool-quota-table th:first-child {
+    width: 20%;
+  }
+  .detail-drawer {
+    border-radius: 0;
+  }
+  .drawer-header {
+    padding: 16px;
+  }
+  .drawer-content {
+    padding: 14px 16px;
+  }
+  .tool-ui .filter-row label {
+    flex: 1 1 120px;
+  }
+  .tool-ui .filter-row select {
+    width: 100%;
+  }
+  .tool-ui .head-tools {
+    gap: 8px;
+  }
+  .tool-ui .settings-nav button {
+    flex: 1 1 40%;
+  }
+  .tool-ui .source-brand {
+    gap: 5px;
+  }
+  .tool-ui .now {
+    flex-wrap: wrap;
+  }
+}
+@media (pointer: coarse) {
+  .tool-ui button,
+  .tool-ui select,
+  .tool-ui input,
+  .tool-ui .tabs a,
+  .tool-ui .tool-analysis > summary,
+  .drawer-close {
+    min-height: 44px;
+  }
+  .drawer-close {
+    min-width: 44px;
+  }
+  .tool-ui .quota-source th {
+    min-height: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-ui *,
+  .detail-drawer * {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.tool-ui .tool-detail-row {
+  cursor: pointer;
+}
+.tool-ui .tool-detail-row:focus-visible {
+  outline-offset: -2px;
+  background: #78bafa0d;
+}
+.tool-ui .tool-kv dd {
+  margin: 0;
+}

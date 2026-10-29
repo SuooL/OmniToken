@@ -52,6 +52,18 @@ const CacheView = {
     } catch (e) {
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       const issue = classifyAPIError(e);
+      if (e && (e.status === 401 || e.status === 403)) {
+        this.lastData = null;
+        this._displayData = null;
+        this._selectedDevice = null;
+        ChartRegistry.disposeWithin(root);
+        DetailDrawer.close({restoreFocus: false});
+        document.querySelector("#tool-detail-drawer .drawer-content")?.replaceChildren();
+        document.querySelector("#tool-detail-title")?.replaceChildren();
+        document.querySelector("#tool-detail-subtitle")?.replaceChildren();
+        root.replaceChildren();
+        delete root.dataset.built;
+      }
       renderState(root, {
         kind: this.lastData ? "stale" : issue.kind,
         title: this.lastData ? "缓存数据可能已过期" : issue.title,
@@ -72,39 +84,41 @@ const CacheView = {
       cache_creation_tokens: sum.cache_creation_tokens + (model.cache_creation_tokens || 0),
     }), { input_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 });
     const unpriced = new Set(d.unpriced || []);
-    root.innerHTML = `
-      <section class="stat-row">${this.tiles(t)}</section>
-      <section class="chart-card">
-        <div class="card-head"><h2>输入与缓存构成</h2><span class="subtle">读取 / 写入 / 非缓存输入</span></div>
-        <div id="cache-composition-chart" style="height:260px" data-chart="cache-composition"></div>
-      </section>
-      <section class="chart-card">
-        <div class="card-head"><h2>模型缓存比较</h2><span class="subtle">命中率与等效节省</span></div>
-        <div id="cache-model-chart" style="height:300px" data-chart="cache-model-comparison"></div>
-      </section>
-      <section class="instrument-card">
-        <h2>按模型 · 近 ${d.days || 30} 天</h2>
-        <div class="data-table data-table-shell">${this.modelTable(d.models || [], unpriced)}</div>
-      </section>
-      <section class="instrument-card">
-        <h2>每日命中率 · cache_read / (cache_read + input)</h2>
-        <div class="bars">${this.dailyBars(d.daily || [])}</div>
-      </section>`;
+    if (!root.dataset.built) {
+      root.innerHTML = `
+        <section class="stat-row" id="cache-tiles"></section>
+        <section class="instrument-card"><h2 id="cache-table-title">按模型</h2>
+          <div class="data-table data-table-shell" id="cache-model-table"></div></section>
+        <section class="chart-card"><div class="card-head"><h2>输入与缓存构成</h2><span class="subtle">读取 / 写入 / 非缓存输入</span></div>
+          <div id="cache-composition-chart" style="height:260px" data-chart="cache-composition"></div></section>
+        ${ToolUI.analysis("cache-model-analysis", "模型缓存比较", `<div id="cache-model-chart" style="height:300px" data-chart="cache-model-comparison"></div>`)}
+        ${ToolUI.analysis("cache-daily-analysis", "每日命中率 · 缓存读取 / (缓存读取 + 输入)", `<div class="bars" id="cache-daily-bars"></div>`)}
+      `;
+      root.dataset.built = "1";
+    }
+    const models = d.models || [];
+    const hasPriced = models.some((model) => !unpriced.has(model.model));
+    ToolUI.updateHTML(document.getElementById("cache-tiles"), this.tiles(t, cacheComposition, hasPriced, unpriced.size > 0));
+    document.getElementById("cache-table-title").textContent = `按模型 · 近 ${d.days || 30} 天`;
+    ToolUI.updateHTML(document.getElementById("cache-model-table"), this.modelTable(models, unpriced));
+    ToolUI.updateHTML(document.getElementById("cache-daily-bars"), this.dailyBars(d.daily || []));
     this.compositionChart(cacheComposition);
-    this.modelChart(d.models || []);
+    this.modelChart(d.models || [], unpriced);
   },
 
   compositionChart(t) {
     const el = document.getElementById("cache-composition-chart");
     const rows = [
       {name: "缓存读取", value: t.cache_read_tokens || 0, color: cssVar("--status-healthy")},
-      {name: "缓存写入", value: t.cache_creation_tokens || 0, color: cssVar("--source-api")},
-      {name: "非缓存输入", value: t.input_tokens || 0, color: cssVar("--source-codex")},
+      {name: "缓存写入", value: t.cache_creation_tokens || 0, color: cssVar("--series-2")},
+      {name: "非缓存输入", value: t.input_tokens || 0, color: cssVar("--series-3")},
     ];
     if (!rows.some((row) => row.value > 0)) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">暂无缓存构成数据。</p>`;
       return;
     }
+    if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "缓存 token 构成",
       tooltip: {trigger: "item", ...tooltipStyle()},
@@ -117,14 +131,16 @@ const CacheView = {
     });
   },
 
-  modelChart(models) {
+  modelChart(models, unpriced = new Set()) {
     const el = document.getElementById("cache-model-chart");
     const rows = models.filter((model) =>
       model.input_tokens + model.cache_read_tokens + model.cache_creation_tokens > 0);
     if (!rows.length) {
+      ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">暂无模型缓存数据。</p>`;
       return;
     }
+    if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "模型缓存命中率与节省",
       grid: {left: 12, right: 44, top: 16, bottom: 48, containLabel: true},
@@ -134,13 +150,14 @@ const CacheView = {
         {type: "value", name: "节省 USD", axisLabel: {color: cssVar("--text-muted"), formatter: usd}, splitLine: {show: false}},
       ],
       series: [
-        {name: "命中率", type: "bar", barMaxWidth: 22, data: rows.map((row) => row.hit_rate || 0), itemStyle: {color: cssVar("--status-healthy")}},
-        {name: "节省", type: "line", yAxisIndex: 1, data: rows.map((row) => row.saved_usd || 0), itemStyle: {color: cssVar("--source-aggregate")}},
+        {name: "命中率", type: "bar", barMaxWidth: 22, data: rows.map((row) => row.input_tokens + row.cache_read_tokens > 0 ? row.hit_rate : null), itemStyle: {color: cssVar("--status-healthy")}},
+        {name: "节省", type: "line", yAxisIndex: 1, data: rows.map((row) => unpriced.has(row.model) ? null : row.saved_usd), itemStyle: {color: cssVar("--source-aggregate")}},
       ],
     });
   },
 
-  tiles(t) {
+  tiles(t, composition = {}, hasPriced = true, partial = false) {
+    const denominator = (composition.input_tokens || 0) + (composition.cache_read_tokens || 0);
     const writes = (t.cache_1h_tokens || 0) + (t.cache_5m_tokens || 0);
     const split = writes > 0
       ? `${pct(t.cache_1h_tokens / writes)} / ${pct(t.cache_5m_tokens / writes)}`
@@ -151,12 +168,12 @@ const CacheView = {
     return `
       <div class="stat-tile">
         <div class="label">总命中率(近 30 天)</div>
-        <div class="value">${pct(t.hit_rate || 0)}</div>
+        <div class="value">${denominator > 0 ? pct(t.hit_rate) : "暂无可计算输入"}</div>
         <div class="sub">缓存读取 / (缓存读取 + 输入)</div>
       </div>
       <div class="stat-tile">
         <div class="label">缓存节省(等效)</div>
-        <div class="value">${usd(t.saved_usd || 0)}</div>
+        <div class="value">${hasPriced ? (partial ? "≥ " : "") + usd(t.saved_usd || 0) : "无定价"}</div>
         <div class="sub">按 输入价 − 缓存读取价 折算</div>
       </div>
       <div class="stat-tile">
@@ -179,7 +196,7 @@ const CacheView = {
         const saved = unpriced.has(m.model) ? "无定价" : usd(m.saved_usd || 0);
         return `<tr>
           <td>${esc(m.model || "(未知)")}</td>
-          <td>${pct(m.hit_rate)}</td>
+          <td>${m.input_tokens + m.cache_read_tokens > 0 ? pct(m.hit_rate) : "暂无可计算输入"}</td>
           <td>${full(m.cache_read_tokens)}</td>
           <td>${full(m.cache_creation_tokens)}</td>
           <td>${ttl}</td>

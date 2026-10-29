@@ -62,6 +62,8 @@ const SettingsView = {
   _merges: [],     // audit log of past identity merges (read-only, ADR-0019)
   _local: {},      // {device, hostname, duplicate_identity} for this machine
   _loaded: false,
+  _activeGroup: "connection",
+  _advancedOpen: false,
   _draft: { pricing: null, devices: null, readToken: null, adminToken: null },
   _revision: { pricing: 0, devices: 0, tokens: 0 },
   _saving: { pricing: false, devices: false },
@@ -138,10 +140,32 @@ const SettingsView = {
 
   render() {
     const root = document.getElementById("view-settings");
-    root.innerHTML =
-      this.tokenCard() + this.pricingCard() + this.deviceCard() + this.mergeCard() +
-      this.preferencesCard() + this.dangerCard();
+    const groups = [["connection", "连接与凭据"], ["pricing", "定价"], ["devices", "设备管理"], ["appearance", "外观"]];
+    const panel = (key, html) => `<div id="settings-panel-${key}" data-settings-panel="${key}"${key === this._activeGroup ? "" : " hidden"}>${html}</div>`;
+    root.innerHTML = `<div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分组">${groups.map(([key, title]) =>
+        `<button type="button" class="settings-nav-row" data-settings-nav="${key}" aria-controls="settings-panel-${key}" aria-pressed="${key === this._activeGroup}">${title}</button>`).join("")}</nav>
+      <div class="settings-content">
+        ${panel("connection", this.tokenCard())}
+        ${panel("pricing", this.pricingCard())}
+        ${panel("devices", this.deviceCard() + `<details id="settings-device-advanced" class="settings-advanced"${this._advancedOpen ? " open" : ""}><summary>高级操作 · 设备身份</summary>${this.mergeCard()}${this.dangerCard()}</details>`)}
+        ${panel("appearance", this.preferencesCard())}
+      </div></div>`;
     this.bind(root);
+  },
+
+  selectGroup(group) {
+    if (!["connection", "pricing", "devices", "appearance"].includes(group)) return;
+    this._activeGroup = group;
+    const root = document.getElementById("view-settings");
+    // Hide existing fields instead of rendering again: drafts, focus and merge
+    // previews keep their original scope when users switch tasks.
+    root.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.settingsPanel !== group;
+    });
+    root.querySelectorAll("[data-settings-nav]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.settingsNav === group));
+    });
   },
 
   // ---- pricing overrides -------------------------------------------------
@@ -396,7 +420,7 @@ const SettingsView = {
     return `
       <section class="instrument-card" data-settings-group="preferences" data-settings-scope="section">
         <div class="card-head"><h2>显示偏好</h2><span class="subtle">跟随当前浏览器</span></div>
-        <p class="subtle">主题跟随系统；减少动态效果由 <code>prefers-reduced-motion</code> 控制。
+        <p class="subtle">当前使用深色主题；减少动态效果由 <code>prefers-reduced-motion</code> 控制。
           这些偏好只影响当前浏览器，不会写入 Hub，也不会改变遥测计算。</p>
       </section>`;
   },
@@ -415,6 +439,8 @@ const SettingsView = {
   bind(root) {
     root.oninput = (ev) => this.updateDraft(ev.target);
     root.onclick = (ev) => {
+      const group = ev.target.closest("[data-settings-nav]");
+      if (group) { this.selectGroup(group.dataset.settingsNav); return; }
       const btn = ev.target.closest("button[data-act]");
       if (!btn) return;
       const act = btn.dataset.act;
@@ -438,6 +464,7 @@ const SettingsView = {
         this._merge.to = this._local.device || "";
         this.invalidateMergePlan();
         this._merge.open = true;
+        this._advancedOpen = true;
         this.render();
       } else if (act === "merge-preview") {
         this.previewMerge();
@@ -445,6 +472,8 @@ const SettingsView = {
         this.runMerge();
       }
     };
+    const advanced = root.querySelector("#settings-device-advanced");
+    if (advanced) advanced.addEventListener("toggle", () => { this._advancedOpen = advanced.open; });
     const panel = root.querySelector("#card-device-merge details");
     if (panel) panel.addEventListener("toggle", () => { this._merge.open = panel.open; });
   },

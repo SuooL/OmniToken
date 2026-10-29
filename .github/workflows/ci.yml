@@ -94,6 +94,25 @@ jobs:
         run: make desktop-check
       - name: Install isolated browser test dependency
         run: npm install --prefix "$RUNNER_TEMP/desktop-browser" playwright@1.56.1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build isolated Web acceptance binary
+        run: make build
+      - name: Production Web browser acceptance
+        run: NODE_PATH="$RUNNER_TEMP/desktop-browser/node_modules" OMNITOKEN_QA_ARTIFACT_ROOT="$RUNNER_TEMP" node scripts/web-tool-browser.cjs
+      - name: Preserve Web browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-tool-ui-browser
+          path: |
+            ${{ runner.temp }}/omnitoken-web-tool-browser-*/*.png
+            ${{ runner.temp }}/omnitoken-web-tool-browser-*/*.json
+            ${{ runner.temp }}/omnitoken-web-tool-browser-*/*.csv
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Production desktop browser regression
         run: NODE_PATH="$RUNNER_TEMP/desktop-browser/node_modules" node scripts/desktop-browser.cjs
 

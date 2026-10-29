@@ -28,7 +28,7 @@ func TestTelemetryStudioSharedAssetsAreEmbedded(t *testing.T) {
 
 func TestTelemetryStudioShellIsSingularAccessibleAndRoutable(t *testing.T) {
 	html := embeddedAsset(t, "index.html")
-	if got := strings.Count(html, "OmniToken"); got != 1 {
+	if got := strings.Count(html, "<h1>OmniToken</h1>"); got != 1 {
 		t.Fatalf("global shell has %d OmniToken wordmarks, want exactly one", got)
 	}
 	for _, contract := range []string{
@@ -424,8 +424,8 @@ func TestDeviceMergeCardCannotBeUsedByAccident(t *testing.T) {
 	// The card renders after the rename card and before the preferences one, so
 	// the two device operations are never adjacent controls in one group.
 	render := source[strings.Index(source, "  render() {"):]
-	if !strings.Contains(render[:strings.Index(render, "},")], "this.deviceCard() + this.mergeCard()") {
-		t.Error("merge must be its own card rendered beside, not inside, device renaming")
+	if !strings.Contains(render[:strings.Index(render, "},")], "this.deviceCard()") || !strings.Contains(render[:strings.Index(render, "},")], "this.mergeCard()") || !strings.Contains(source, "settings-advanced") {
+		t.Error("merge must remain a separate guarded card in the advanced device group")
 	}
 	style := embeddedAsset(t, "style.css")
 	for _, contract := range []string{".merge-panel", ".merge-run:disabled", ".merge-warnings"} {
