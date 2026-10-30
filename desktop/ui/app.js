@@ -351,14 +351,24 @@ function renderSpeedLanes() {
   const series = speed.series || [];
   const measured = new Set(speed.measured_sources || []);
   const unmeasured = new Set(speed.unmeasured_sources || []);
-  const discovered = new Set(
-    series.flatMap((bucket) => sourceRows(bucket).map((row) => row.source)),
-  );
-  const ordered = ["claude-code", "codex"];
-  [...discovered]
-    .filter((source) => !ordered.includes(source))
-    .sort()
-    .forEach((source) => ordered.push(source));
+  // Lanes follow the source cards: Claude and Codex always, then DeepSeek, then
+  // the rest alphabetically. An unmeasured source has no series rows, so the
+  // source sets are read too — otherwise its "速度不可用" lane would vanish.
+  const rank = (source) =>
+    DAILY_SOURCES.includes(source)
+      ? DAILY_SOURCES.indexOf(source)
+      : DAILY_SOURCES.length;
+  const ordered = [
+    ...new Set([
+      "claude-code",
+      "codex",
+      ...series.flatMap((bucket) =>
+        sourceRows(bucket).map((row) => row.source),
+      ),
+      ...measured,
+      ...unmeasured,
+    ]),
+  ].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
   const peak = finite(speed.peak_tps)
     ? speed.peak_tps
     : series.reduce(
