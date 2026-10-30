@@ -41,4 +41,8 @@ ADR 标注 supersedes,不改写历史。
 | [0034](0034-capacity-anchored-on-live-window.md) | 窗口余量锚在当前窗口的官方百分比上,历史估计降为先验(修订 0025) | 已采纳 |
 | [0035](0035-desktop-in-app-update.md) | 菜单栏应用自更新:GitHub Releases 上的签名清单,应用自己下载替换 | 已采纳 |
 | [0036](0036-site-passkey-auth.md) | 站点独立登录:一次性登录码、安全会话与平台 Passkey | 已采纳 |
+| [0037](0037-scheduled-pricing-refresh.md) | 模型定价定时刷新,离线时回退到内置价表 | 已采纳 |
+| [0038](0038-web-tool-ui.md) | Web 工具化界面与上下文详情 | 已采纳 |
+| [0039](0039-machine-device-identity.md) | 设备身份跨 agent 重装保持稳定:由平台机器标识派生 | 已采纳 |
 | [0040](0040-dsh-generation-speed.md) | dsh 生成速度:按流式 chunk 时间戳产出 gen_ms / ttft_ms,不含重试与首 token 等待 | 已采纳 |
+| [0041](0041-dsh-migration-duplicates.md) | dsh 格式迁移重复计数:产出 dedup_key;冲突并列时删 event_id 大的那条(补全 0020) | 已采纳 |
