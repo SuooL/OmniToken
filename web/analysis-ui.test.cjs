@@ -140,6 +140,35 @@ test("speed lanes share scale, retain missing measurements, and use canonical so
   assert.equal(option.series[0].data[1], null);
   assert.equal(option.series[0].itemStyle.color, "color:codex");
 });
+test("speed model rows name each timing basis, including DeepSeek pure generation", () => {
+  const file = fs.readFileSync(path.join(__dirname, "speedview.js"), "utf8");
+  const nodes = new Map();
+  const node = (id) => {
+    if (!nodes.has(id)) nodes.set(id, { innerHTML: "", textContent: "" });
+    return nodes.get(id);
+  };
+  const ctx = vm.createContext({
+    document: { getElementById: node, querySelector: node },
+    esc: String,
+    infoTip: String,
+    compact: String,
+    full: String,
+  });
+  vm.runInContext(file, ctx);
+  const chip = (sources) => vm.runInContext(`SpeedView.channelChip({sources:${JSON.stringify(sources)}})`, ctx);
+  assert.match(chip(["dsh"]), /DeepSeek · 纯生成/);
+  assert.match(chip(["dsh"]), /title="[^"]*不含[^"]*重试/);
+  // A model fed by dsh and another log source blends two interval bases.
+  assert.match(chip(["claude-code", "dsh"]), /混合口径/);
+  assert.match(chip(["claude-code"]), /日志推算/);
+  assert.match(chip(["codex", "dsh"]), /Codex · 保守下界/);
+  const row = (model, sources) =>
+    `{model:"${model}",sources:${JSON.stringify(sources)},tps:100,active_ms:1000,samples:3,streams:1,coverage:1,output_tokens:100}`;
+  vm.runInContext(`SpeedView.renderModels([${row("deepseek-flash", ["dsh"])}])`, ctx);
+  assert.match(node("speed-model-info").innerHTML, /首个流式 chunk/);
+  vm.runInContext(`SpeedView.renderModels([${row("claude-opus-4-8", ["claude-code"])}])`, ctx);
+  assert.doesNotMatch(node("speed-model-info").innerHTML, /首个流式 chunk/);
+});
 for (const [file, view, route] of [
   ["devicesview.js", "DevicesView", "devices"],
   ["modelsview.js", "ModelsView", "models"],
