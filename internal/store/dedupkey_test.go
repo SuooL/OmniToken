@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,6 +238,32 @@ func TestRescanRemovesTiedHistoricalCopy(t *testing.T) {
 				t.Errorf("survivor = %s, want %s", id, low.EventID)
 			}
 		})
+	}
+}
+
+// The owner lookup runs for every keyed event whose stored row has no key yet —
+// i.e. for every event of a rescan right after a parser starts emitting keys.
+// dedup_key's only index is partial (WHERE dedup_key != ”), which SQLite uses
+// only when the query repeats that predicate; without it each lookup scanned the
+// whole table, ~50 ms per event on the 238k-row Hub, and ingest batches timed out.
+func TestDedupOwnerLookupUsesPartialIndex(t *testing.T) {
+	s := open(t)
+	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+keyOwnerSQL, dshKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if len(plan) != 1 || !strings.Contains(plan[0], "USING INDEX idx_events_dedup_key") {
+		t.Fatalf("owner lookup plan = %q, want a search on idx_events_dedup_key", plan)
 	}
 }
 
