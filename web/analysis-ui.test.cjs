@@ -139,6 +139,19 @@ test("speed lanes share scale, retain missing measurements, and use canonical so
   assert.ok(option.yAxis[0].max >= 100);
   assert.equal(option.series[0].data[1], null);
   assert.equal(option.series[0].itemStyle.color, "color:codex");
+  // ECharts prints max as the top tick, so the padded peak (100 × 1.1) has to
+  // land on a clean number, with the midpoint tick pinned to half of it.
+  assert.equal(option.yAxis[0].max, 120);
+  assert.equal(option.yAxis[0].interval, 60);
+  assert.equal(option.yAxis[1].interval, 60);
+  vm.runInContext(
+    'SpeedView.renderSourceLanes({speed:{measured_sources:["codex","claude-code"],series:[{start_ms:0,sources:[{key:"codex",contribution_tps:161.98},{key:"claude-code",contribution_tps:3}]}]}})',
+    ctx,
+  );
+  for (const axis of option.yAxis) {
+    assert.equal(axis.max, 200);
+    assert.equal(axis.interval, 100);
+  }
 });
 test("speed model rows name each timing basis, including DeepSeek pure generation", () => {
   const file = fs.readFileSync(path.join(__dirname, "speedview.js"), "utf8");

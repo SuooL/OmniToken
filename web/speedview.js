@@ -213,6 +213,16 @@ const SpeedView = {
       <table><thead><tr><th>模型</th><th>贡献 tok/s</th><th>自身 tok/s</th><th>输出 tokens</th><th>生成时长</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.key)}</td><td>${this.tps(row.contribution_tps)}</td><td>${this.tps(row.native_tps)}</td><td>${compact(row.output_tokens)}</td><td>${this.dur(row.active_ms)}</td></tr>`).join("")}</tbody></table>`;
   },
 
+  // Smallest m × 10^n at or above v. ECharts prints an explicit max as the top
+  // tick, so the raw padded peak used to show up as "178.1841933376878".
+  laneCeiling(v) {
+    if (!(v > 0)) return 1;
+    const scale = 10 ** Math.floor(Math.log10(v));
+    const step = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((m) => m * scale >= v) || 10;
+    // toPrecision drops float noise below 1 (0.1 × 3 is 0.30000000000000004).
+    return Number((step * scale).toPrecision(2));
+  },
+
   renderSourceLanes(snapshot) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
@@ -241,8 +251,8 @@ const SpeedView = {
       return;
     }
     const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
-    const maximum = Math.max(...buckets.flatMap((bucket) => (bucket.sources || [])
-      .map((row) => Number.isFinite(row.contribution_tps) ? row.contribution_tps : 0)), 1) * 1.1;
+    const maximum = this.laneCeiling(Math.max(...buckets.flatMap((bucket) => (bucket.sources || [])
+      .map((row) => Number.isFinite(row.contribution_tps) ? row.contribution_tps : 0)), 1) * 1.1);
     if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "速度页来源贡献",
@@ -263,8 +273,9 @@ const SpeedView = {
       yAxis: keys.map((key, i) => ({
         type: "value", gridIndex: i, min: 0, max: maximum, name: SourceUI.label(key),
         nameTextStyle: {color: SourceUI.color(key)},
-        // Two intervals is what fits a lane without the labels colliding.
-        splitNumber: 2,
+        // Two intervals is what fits a lane without the labels colliding; the
+        // explicit interval pins the ticks to 0, max/2 and max.
+        splitNumber: 2, interval: maximum / 2,
         splitLine: {lineStyle: {color: cssVar("--grid")}},
         axisLabel: {color: cssVar("--text-muted")},
       })),
