@@ -16,6 +16,7 @@ const (
 )
 
 type enrollmentV2Request struct {
+	MachineID    string   `json:"machine_id,omitempty"`
 	DeviceID     string   `json:"device_id"`
 	DeviceToken  string   `json:"device_token"`
 	DisplayName  string   `json:"display_name"`
@@ -35,6 +36,16 @@ func (s *Server) handleEnrollV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validCanonicalUUID(request.DeviceID) || request.DeviceToken == "" || request.DisplayName == "" {
 		writeIngestV2Error(w, http.StatusBadRequest, "invalid_enrollment")
+		return
+	}
+
+	if request.MachineID != "" {
+		record, err := s.store.EnrollMachineDevice(request.MachineID, request.DeviceID, request.DisplayName, request.DeviceToken, request.Capabilities, s.currentTime().UnixMilli())
+		if err != nil {
+			writeIngestV2Error(w, http.StatusConflict, "machine_enrollment_conflict")
+			return
+		}
+		writeJSON(w, record)
 		return
 	}
 

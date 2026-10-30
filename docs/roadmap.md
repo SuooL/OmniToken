@@ -348,3 +348,7 @@ display rules and Codex date-based valuation assumptions are not rewritten by ca
 | 设备、模型、缓存与速度 | ✅ 完成 | 来源配色统一、缺测/零分母/未知价格如实表达；模型有效轴域，设备真实数据下钻，图表复用。 |
 | 验收 | ✅ 本地完成 | 47 项新增 Node 回归纳入 make check；实际隔离 Hub 2700 合成事件，9 路由 × 3 视口、14 组浏览器验收。远端 CI 交付时核验。 |
 | 生产部署 | 未执行 | 本次仅代码实现与 PR 交付，沿用现网版本直到独立部署。 |
+
+### Stable machine enrollment (ADR-0039)
+
+Implemented: machine-derived enrollment keys preserve canonical device IDs across agent reinstallations; admin enrollment rotates credentials independently. Confirmed merges no longer recreate revoked registry-only fleet rows.

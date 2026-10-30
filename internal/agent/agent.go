@@ -75,15 +75,16 @@ type Config struct {
 }
 
 type enrollmentRequest struct {
+	MachineID    string   `json:"machine_id,omitempty"`
 	DeviceID     string   `json:"device_id"`
 	DeviceToken  string   `json:"device_token"`
 	DisplayName  string   `json:"display_name"`
 	Capabilities []string `json:"capabilities"`
 }
 
-// Enroll registers a prepared stable identity using the independently scoped
-// admin credential. Credentials are never included in returned errors.
-func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) error {
+// Enroll registers a machine using admin authorization and adopts the Hub's
+// canonical principal. Persist the updated config only after success.
+func Enroll(serverURL, adminToken string, fc *FileConfig, client *http.Client) error {
 	if adminToken == "" {
 		return errors.New("admin credential is required")
 	}
@@ -98,6 +99,7 @@ func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) er
 		}
 	}
 	body, err := json.Marshal(enrollmentRequest{
+		MachineID:    fc.MachineID,
 		DeviceID:     fc.DeviceID,
 		DeviceToken:  fc.DeviceToken,
 		DisplayName:  fc.Name,
@@ -120,7 +122,35 @@ func Enroll(serverURL, adminToken string, fc FileConfig, client *http.Client) er
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("enrollment rejected: %s", resp.Status)
 	}
+	if fc.MachineID != "" {
+		var response struct {
+			DeviceID string `json:"device_id"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&response); err != nil {
+			return errors.New("invalid machine enrollment response")
+		}
+		if !validEnrollmentDeviceID(response.DeviceID) {
+			return errors.New("invalid machine enrollment device ID")
+		}
+		fc.DeviceID = response.DeviceID
+	}
 	return nil
+}
+
+func validEnrollmentDeviceID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i, c := range id {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return id != "00000000-0000-0000-0000-000000000000"
 }
 
 type Agent struct {
