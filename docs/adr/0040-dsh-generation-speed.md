@@ -102,3 +102,5 @@ Claude Code/Codex 同行、混入不同的分母。实测 dsh 98.6% 的 output t
 - 把思考与正文分开测速等进一步细化。
 
 背景:ADR-0009(生成速度语义)、ADR-0029(dsh 解析器)、ADR-0032(跨扫描交付去重)。
+
+已由 [ADR-0041](0041-dsh-migration-duplicates.md) 处理上面「未做」的第一条(v1→v3 迁移重复计数)。

@@ -64,8 +64,59 @@ func TestParseBasic(t *testing.T) {
 	if e.InputTokens != 2 || e.OutputTokens != 273 || e.CacheReadTokens != 100 || e.CacheCreationTokens != 18745 {
 		t.Errorf("token split wrong: in=%d out=%d cr=%d cc=%d", e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens)
 	}
-	if e.DedupKey != "" {
-		t.Errorf("dsh must not set a dedup key, got %q", e.DedupKey)
+	if e.DedupKey == "" {
+		t.Errorf("dsh must set a dedup key (ADR-0041)")
+	}
+}
+
+// The dedup key is frozen once rows land, exactly like the event id (ADR-0041):
+// "dsg:" + sha1(session_id|time|input|output|cache_read|cache_write)[:12 bytes].
+// The expected value was computed outside Go with shasum.
+func TestDedupKeyStable(t *testing.T) {
+	const want = "dsg:d1e2d7aa02d1a622aec5f426"
+	res := parse(t, sessionLine, reqCtxAnth, msgAnth)
+	if got := res.Events[0].DedupKey; got != want {
+		t.Fatalf("dedup key = %q, want %q (changing it splits history from new rows)", got, want)
+	}
+}
+
+func TestDedupKeySharedByMigratedCopies(t *testing.T) {
+	// dsh rewrote v1 sessions into session.v3 with new seq numbers but the same
+	// session, timestamp and usage: two event ids, one generation.
+	v1 := `{"type":"assistant/message","seq":35,"time":1787403618284,"data":{"turn":1,"step":1,"usage":{"inputTokens":2,"outputTokens":273,"cacheReadTokens":100,"cacheWriteTokens":18745}}}`
+	v3 := `{"type":"assistant/message","seq":27,"time":1787403618284,"data":{"turn":1,"step":1,"stream":[{"type":"chunk","time":1787403612000}],"usage":{"inputTokens":2,"outputTokens":273,"cacheReadTokens":100,"cacheWriteTokens":18745}}}`
+	a := parse(t, sessionLine, reqCtxAnth, v1).Events[0]
+	b := parse(t, sessionLine, reqCtxAnth, v3).Events[0]
+	if a.EventID == b.EventID {
+		t.Fatalf("fixture should model renumbered copies with distinct event ids")
+	}
+	if a.DedupKey == "" || a.DedupKey != b.DedupKey {
+		t.Fatalf("migrated copies must share a dedup key: %q vs %q", a.DedupKey, b.DedupKey)
+	}
+}
+
+func TestDedupKeySeparatesGenerations(t *testing.T) {
+	later := `{"type":"assistant/message","seq":43,"time":1787403618285,"data":{"usage":{"inputTokens":2,"outputTokens":273,"cacheReadTokens":100,"cacheWriteTokens":18745}}}`
+	other := `{"type":"assistant/message","seq":44,"time":1787403618284,"data":{"usage":{"inputTokens":2,"outputTokens":274,"cacheReadTokens":100,"cacheWriteTokens":18745}}}`
+	res := parse(t, sessionLine, reqCtxAnth, msgAnth, later, other)
+	seen := map[string]bool{}
+	for _, e := range res.Events {
+		if seen[e.DedupKey] {
+			t.Fatalf("two generations share dedup key %q", e.DedupKey)
+		}
+		seen[e.DedupKey] = true
+	}
+}
+
+func TestNoDedupKeyWithoutIdentity(t *testing.T) {
+	// Without a session id or a timestamp the key would be weak enough to merge
+	// unrelated generations; emitting none falls back to event_id alone.
+	noTime := `{"type":"assistant/message","seq":42,"data":{"usage":{"inputTokens":2,"outputTokens":273}}}`
+	if k := parse(t, reqCtxAnth, msgAnth).Events[0].DedupKey; k != "" {
+		t.Errorf("no session line: dedup key = %q, want empty", k)
+	}
+	if k := parse(t, sessionLine, noTime).Events[0].DedupKey; k != "" {
+		t.Errorf("no timestamp: dedup key = %q, want empty", k)
 	}
 }
 

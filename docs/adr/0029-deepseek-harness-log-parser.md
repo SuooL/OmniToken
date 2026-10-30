@@ -67,3 +67,8 @@ cacheWriteTokens, reasoningTokens}`;`request/context`(或 `request/header.data.h
 `gen_ms`,速度视图只认 `gen_ms > 0` 的行,dsh 一直是未测来源 —— 分桶有了,桶是空的。
 由 [ADR-0040](0040-dsh-generation-speed.md) 补上。另外 dsh 后来改写 `session.v3.jsonl.zstd` /
 `session.v4.jsonl.zstd`,`*.jsonl.zstd` 的放行规则照样覆盖,用量字段不变。
+
+## 后续修订(2026-10-30):dedup_key
+
+「无 dedup_key」一条不再成立:dsh 迁移日志格式时复制旧会话并保留旧文件,v1→v3 重编了 `seq`,
+221 行被计两次。现在 dsh 也产出 `dedup_key`,见 [ADR-0041](0041-dsh-migration-duplicates.md)。

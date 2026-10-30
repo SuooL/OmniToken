@@ -83,9 +83,11 @@ internal/agent        推送 + 中继
 `event_id` 回答「这条**日志行**见过没有」,拦不住同一次生成被复制成另一条日志行。
 Codex 分叉线程(人工 fork 与 subagent)会把父线程整段复制进新 rollout,只改行时间戳,
 所以副本的 `event_id` 必然不同。第二把键 `dedup_key` 回答「这次**生成**记过没有」:
-`cxg:sha1(turn_id | total_token_usage)`,仅 codex 解析器产出、仅在 `turn_id` 是 UUID 时产出。
-**它是 `event_id` 之上的追加约束,不是替代** —— 改 codex 解析器时两把键都要保持稳定。
-背景见 `docs/adr/0020-codex-resume-duplicate-events.md`。
+`cxg:sha1(turn_id | total_token_usage)`,仅在 `turn_id` 是 UUID 时产出。
+dsh 迁移日志格式时会复制旧会话、保留旧文件(v1→v3 还重编了 `seq`),所以 dsh 也产出:
+`dsg:sha1(session_id | time | 四个 token 分量)`,仅在 session id 与 `time` 都在时产出。
+**它是 `event_id` 之上的追加约束,不是替代** —— 改 codex / dsh 解析器时两把键都要保持稳定。
+背景见 `docs/adr/0020-codex-resume-duplicate-events.md`、`docs/adr/0041-dsh-migration-duplicates.md`。
 
 ### 其余四条
 
@@ -108,8 +110,9 @@ Codex 分叉线程(人工 fork 与 subagent)会把父线程整段复制进新 ro
 
   **唯一一处会删行、会让计数下降的操作是 ADR-0020 的重复生成清理**,它不在上表里,
   因为它回答的正是「被计了几次」而不是「算给谁」。安全边界:只在两行共享同一个
-  `dedup_key` 时触发,只删其中一行,且删的是 `ts` 大的那条(副本的时间戳是分叉时的
-  刷盘时刻,必然晚于原件)。判据全在库内,与到达顺序无关。
+  `dedup_key` 时触发,只删其中一行,且删的是 `ts` 大的那条(Codex 副本的时间戳是分叉时的
+  刷盘时刻,必然晚于原件);`ts` 相同时删 `event_id` 大的那条(dsh 迁移副本保留原时间戳,
+  ADR-0041)。判据全在库内,与到达顺序无关。
 
   **新增任何一处覆盖前先写 ADR。**
 
