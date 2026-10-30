@@ -192,6 +192,7 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 						if u != nil && (u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheReadTokens != 0 || u.CacheWriteTokens != 0) {
 							res.Events = append(res.Events, model.Event{
 								EventID:             eventID(sessionID, rec.Seq, u),
+								DedupKey:            dedupKey(sessionID, rec.Time, u),
 								TS:                  rec.Time,
 								Device:              device,
 								Source:              Source,
@@ -258,6 +259,21 @@ func eventID(sessionID string, seq int64, u *usage) string {
 	h := sha1.Sum([]byte(fmt.Sprintf("%s|%d|%d|%d|%d|%d",
 		sessionID, seq, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)))
 	return "dsh:" + hex.EncodeToString(h[:12])
+}
+
+// dedupKey identifies the generation itself rather than the log line (ADR-0041).
+// When dsh migrates a session to a newer log format it keeps the old file and
+// writes a copy; the v1→v3 migration renumbered seq, so the copy gets a new
+// event_id. Session, timestamp and usage survive the copy verbatim, and no two
+// generations of one session share all of them. Frozen once rows land, like
+// the event id. Empty without a session id or timestamp: too weak to merge on.
+func dedupKey(sessionID string, ts int64, u *usage) string {
+	if sessionID == "" || ts <= 0 {
+		return ""
+	}
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%d|%d|%d|%d|%d",
+		sessionID, ts, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)))
+	return "dsg:" + hex.EncodeToString(h[:12])
 }
 
 // providerLabel keeps the provider id dsh recorded verbatim (e.g. "anthropic",
