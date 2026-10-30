@@ -527,3 +527,102 @@ test("daily source rows disclose models instead of embedding them in main", () =
   assert.match(html, /data-detail="source:dsh"/);
   assert.ok(!html.includes("long-model-only-in-details"));
 });
+
+// Speed lanes follow the same source order as the daily cards above them, and
+// a source the server names as unmeasured keeps a visible lane instead of
+// vanishing just because it has no history rows yet.
+const showSpeed = (speed) => {
+  onTelemetry({ speed });
+  const html = document.getElementById("speed-lanes").innerHTML;
+  return {
+    html,
+    lanes: [...html.matchAll(/class="lane lane-([^\s"]+)/g)].map(
+      (match) => match[1],
+    ),
+  };
+};
+
+const speedBucket = (start_ms, sources) => ({
+  start_ms,
+  aggregate_tps: sources.reduce((sum, row) => sum + row.contribution_tps, 0),
+  sources,
+});
+
+test("speed lanes put DeepSeek after the core sources and before the rest", () => {
+  const { lanes } = showSpeed({
+    peak_tps: 70,
+    measured_sources: ["claude-code", "dsh", "api"],
+    unmeasured_sources: [],
+    series: [
+      speedBucket(1_000, [
+        { source: "claude-code", contribution_tps: 30 },
+        { source: "api", contribution_tps: 10 },
+        { source: "dsh", contribution_tps: 30 },
+      ]),
+    ],
+  });
+
+  assert.deepEqual(lanes, ["claude-code", "codex", "dsh", "api"]);
+});
+
+test("an unmeasured source without history still gets an unavailable lane", () => {
+  const { html, lanes } = showSpeed({
+    peak_tps: 30,
+    measured_sources: ["claude-code"],
+    unmeasured_sources: ["dsh"],
+    series: [
+      speedBucket(1_000, [{ source: "claude-code", contribution_tps: 30 }]),
+    ],
+  });
+
+  assert.deepEqual(lanes, ["claude-code", "codex", "dsh"]);
+  const lane = html.match(
+    /<div class="lane lane-dsh([^"]*)">([\s\S]*?)<\/div>/,
+  );
+  assert.ok(lane, "missing DeepSeek lane");
+  assert.equal(lane[1], " unavailable");
+  assert.ok(lane[2].includes("DeepSeek"));
+  assert.ok(lane[2].includes("速度不可用"));
+});
+
+test("the speed summary names sources in lane order, not the server's sort", () => {
+  showSpeed({
+    peak_tps: 70,
+    measured_sources: ["api", "claude-code", "dsh"],
+    unmeasured_sources: ["codex"],
+    series: [
+      speedBucket(1_000, [
+        { source: "claude-code", contribution_tps: 30 },
+        { source: "api", contribution_tps: 10 },
+        { source: "dsh", contribution_tps: 30 },
+      ]),
+    ],
+  });
+
+  assert.equal(
+    document.getElementById("speed-coverage").textContent,
+    "已测 Claude、DeepSeek、Other/API · Codex 不可用",
+  );
+  // The main view's one-line summary follows the same order.
+  assert.equal(
+    document.getElementById("summary-coverage").textContent,
+    "已测：Claude、DeepSeek、Other/API · Codex 速度不可用",
+  );
+});
+
+test("no DeepSeek lane appears for a user without any DeepSeek data", () => {
+  const { html, lanes } = showSpeed({
+    peak_tps: 40,
+    measured_sources: ["claude-code", "api"],
+    unmeasured_sources: [],
+    series: [
+      speedBucket(1_000, [
+        { source: "claude-code", contribution_tps: 30 },
+        { source: "api", contribution_tps: 10 },
+      ]),
+    ],
+  });
+
+  assert.deepEqual(lanes, ["claude-code", "codex", "api"]);
+  assert.ok(!html.includes("DeepSeek"));
+});
