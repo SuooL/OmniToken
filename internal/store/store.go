@@ -446,6 +446,12 @@ func loadPriorEventState(tx *sql.Tx, events []model.Event) (map[string]priorEven
 	return out, nil
 }
 
+// keyOwnerSQL finds the row already holding a dedup_key (ADR-0020). The
+// repeated `dedup_key != ”` is what lets SQLite use the partial unique index:
+// it cannot infer that from a bound parameter, and without it every lookup is a
+// full table scan — run once per event when a rescan backfills keys.
+const keyOwnerSQL = `SELECT event_id, ts FROM events WHERE dedup_key = ? AND dedup_key != ''`
+
 // insertEventsFromTx preserves InsertEventsFrom's merge and attribution rules
 // while allowing v2 payload application and its receipt to share one commit.
 func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, origin DeviceOrigin) (eventApplyResult, error) {
@@ -490,7 +496,7 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 	//     They are found by backfilling the key onto rows that have none, which
 	//     is the same "fill a derived column, never a count" move ADR-0009 made
 	//     for gen_ms; the collision that follows is what identifies them.
-	keyOwner, err := tx.Prepare(`SELECT event_id, ts FROM events WHERE dedup_key = ?`)
+	keyOwner, err := tx.Prepare(keyOwnerSQL)
 	if err != nil {
 		return result, err
 	}
