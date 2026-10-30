@@ -585,6 +585,31 @@ test("an unmeasured source without history still gets an unavailable lane", () =
   assert.ok(lane[2].includes("速度不可用"));
 });
 
+test("the speed summary names sources in lane order, not the server's sort", () => {
+  showSpeed({
+    peak_tps: 70,
+    measured_sources: ["api", "claude-code", "dsh"],
+    unmeasured_sources: ["codex"],
+    series: [
+      speedBucket(1_000, [
+        { source: "claude-code", contribution_tps: 30 },
+        { source: "api", contribution_tps: 10 },
+        { source: "dsh", contribution_tps: 30 },
+      ]),
+    ],
+  });
+
+  assert.equal(
+    document.getElementById("speed-coverage").textContent,
+    "已测 Claude、DeepSeek、Other/API · Codex 不可用",
+  );
+  // The main view's one-line summary follows the same order.
+  assert.equal(
+    document.getElementById("summary-coverage").textContent,
+    "已测：Claude、DeepSeek、Other/API · Codex 速度不可用",
+  );
+});
+
 test("no DeepSeek lane appears for a user without any DeepSeek data", () => {
   const { html, lanes } = showSpeed({
     peak_tps: 40,
