@@ -25,11 +25,12 @@ const ChartRegistry = {
   },
 
   sourceColor(source) {
-    return this.sourceStops(source)[0];
+    return typeof SourceUI !== "undefined" ? SourceUI.color(source) : this.sourceStops(source)[0];
   },
 
   sourceStops(source) {
     const palette = this.palette();
+    if (typeof SourceUI !== "undefined") { const color = SourceUI.color(source); return [color,color]; }
     if (source === "claude-code" || source === "claude") {
       return [palette.claude, palette.claudeDeep];
     }
@@ -70,7 +71,8 @@ const ChartRegistry = {
     this.prune();
     let chart = this._instances.get(el);
     if (!chart || chart.isDisposed()) {
-      chart = echarts.init(el, null, { renderer: "canvas" });
+      const axisTheme = {axisLine:{lineStyle:{color:cssVar("--border-strong")}},axisTick:{show:false},axisLabel:{color:cssVar("--text-secondary"),fontSize:12},splitLine:{lineStyle:{color:cssVar("--grid")}},nameTextStyle:{color:cssVar("--text-secondary")}};
+      chart = echarts.init(el, {textStyle:{fontFamily:chartFont(),color:cssVar("--text-secondary")},categoryAxis:axisTheme,valueAxis:axisTheme,logAxis:axisTheme,timeAxis:axisTheme}, { renderer: "canvas" });
       this._instances.set(el, chart);
       if (typeof ResizeObserver !== "undefined") {
         const observer = new ResizeObserver(() => chart.resize());

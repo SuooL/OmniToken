@@ -49,7 +49,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F12 | 报表:日/周/月/会话聚合,任意区间,导出 JSON/CSV | P1 | M2 ✅ |
 | F13 | 明细下钻:事件级筛选查询 | P1 | M2 ✅ |
 | F14 | 本地代理:采集 API 直调,精确 tokens/sec 与 TTFT;服务端与 agent 均可托管;计费通道按凭据形态判定(订阅 OAuth 不记为真实美元) | P1 | M3 ✅ |
-| F15 | 速度页:近 60 分钟实时速度曲线 + 各模型并集口径 tokens/sec + TTFT(代理=精确,日志=区间推算,须标注覆盖率);**Codex 纳入**,取其自记的 `task_complete` 权威计时、按文件位置括 turn,须标注覆盖率与「含工具时间的保守下界」(ADR-0009 修订) | **P0** | M3 ✅ / M5 重做 ✅ / **M9 补 Codex** |
+| F15 | 速度页:近 60 分钟实时速度曲线 + 各模型并集口径 tokens/sec + TTFT(代理=精确,日志=区间推算,须标注覆盖率);**Codex 纳入**,取其自记的 `task_complete` 权威计时、按文件位置括 turn,须标注覆盖率与「含工具时间的保守下界」(ADR-0009 修订);**dsh 纳入**,取 dsh 逐 chunk 时间戳的纯生成区间(最终尝试首个 chunk → message,不含首 token 等待、重试与工具),TTFT 取请求起点 → 首个 chunk,须标注口径(ADR-0040) | **P0** | M3 ✅ / M5 重做 ✅ / **M9 补 Codex** / **M11 补 dsh** |
 | F16 | Cache 分析:命中率、1h/5m TTL 明细、节省金额 | P2 | M3 ✅ |
 | F18 | Claude Code statusline 接入(本会话 + 跨设备今日 + 权威配额) | P3 | ✅ |
 | F19 | 权威配额观测:Claude OAuth 用量端点(5h/周/分模型)、Codex rate_limits;仅订阅计费轮询(ADR-0007) | P2 | ✅ |
@@ -60,7 +60,7 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F24 | 桌面端:Mac 菜单栏常驻。左键展开实时视图(当前生成总速度为主位、Claude/Codex/DeepSeek 三列今日使用及各自模型用量、60 分钟速度热图与覆盖率、可加和的速度贡献者、设备状态),右键出菜单(打开完整面板 / 菜单栏数字 / 配额预警 / 开机自启 / 全局快捷键 / 设置 / **检查更新** / 退出);**官方配额卡**(Claude / Codex 各自并列显示 5h / Week 官方已用百分比,按 70% / 80% / 90% 分别着色;下方分别显示预估 5h 剩余额度和预估周剩余额度;缺失读数显示「暂无」、缺失估算显示「暂无估算」);数据走一条 SSE 长连接,断流降级为轮询并在界面标注;瘦客户端,连已有服务端;**自更新**:定时与手动(托盘菜单、设置面板各一处入口)检查 GitHub Releases 上的签名清单,自行下载、验签、替换并重启 | P2 | v1 完成(ADR-0008);现代化重构见 ADR-0014;弹窗内容由 ADR-0017 重定;配额卡见 **M9**;自更新见 **ADR-0035**;Windows 端后续 |
 | F25 | 实时会话地面真值:agent 读本机进程表上报正在运行的 agent CLI(pid/工具/启动时间),面板区分「开着但空闲」「已关闭」「无进程数据」(ADR-0012) | **P0** | M5 ✅ Linux 读 /proc,macOS/BSD 走 `ps`,Windows 走 Toolhelp32 + PEB(ADR-0023) |
 | F26 | 访问控制:默认 `listen` 为 `127.0.0.1:8787`;监听非 loopback 地址时读接口与写接口共用同一个 bearer token,未配 token 则启动即拒绝;判定由监听地址推导而非开关。`/api/v1/health` 与面板外壳保持免鉴权,`?access_token=` 仅 `/api/v1/stream` 接受(ADR-0016) | **P0** | ✅ 多设备汇集(F3)的前置条件 |
-| F27 | DeepSeek Harness(dsh)日志解析:被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件,token 四分量取 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`(`reasoningTokens` 是 output 子集,不另计);模型与 provider 取同 turn/step 的 `request/context`;`event_id = f(session_id, seq)` 保证重扫幂等;source=`dsh`。dsh 里 provider 是用户自取的 ID(如 `deepseek-official`/`openai-codex`),均经用户配置的 API key 调用,故计费通道一律记为非订阅(官方 API / 第三方中转),绝不记订阅(ADR-0029) | P2 | ✅ |
+| F27 | DeepSeek Harness(dsh)日志解析:被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件,token 四分量取 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`(`reasoningTokens` 是 output 子集,不另计);模型与 provider 取同 turn/step 的 `request/context`;`event_id = f(session_id, seq)` 保证重扫幂等;dsh 迁移日志格式时会复制旧会话且可能重编 `seq`,故另产出 `dedup_key = f(session_id, time, 四分量)`,同一次生成只计一次(ADR-0041);source=`dsh`。dsh 里 provider 是用户自取的 ID(如 `deepseek-official`/`openai-codex`),均经用户配置的 API key 调用,故计费通道一律记为非订阅(官方 API / 第三方中转),绝不记订阅(ADR-0029)。生成速度与 TTFT 见 F15(ADR-0040) | P2 | ✅ |
 | F28 | 站点独立认证:单用户、短时一次性登录码、Mac 平台 Passkey 注册及登录、独立安全会话、退出撤销;CLI 生成恢复码,不依赖 auth.suool.net,不提供公开注册;设备和桌面端 bearer 凭据保持独立(ADR-0036) | P1 | M13 |
 
 F24 菜单栏主面板使用纵向来源行，不再使用来源卡片网格。今日使用按服务端配置时区
@@ -124,3 +124,22 @@ F7 定期更新补充(2026-10-28):Hub 默认每日从 LiteLLM 更新模型 ID �
 启动时仅在快照过期时检查；通过配置可关闭或调整周期。验证后原子持久化并热更新，
 失败保留上一份有效数据，首次启动可回退内置定价，手动覆盖优先。设置接口返回更新时间与错误，
 不将价格目录或 Codex 定价兜底当作缺失历史模型身份的证据。详见 ADR-0037。
+
+## Web 工具界面重构（2026-10-29，已授权实施）
+
+现有九条路由保持直接可达。统一来源品牌与风险颜色、紧凑表格与列表、单一详情
+抽屉和分组设置。总览优先今日用量/来源/配额；实时优先当前生成/会话，配额风险
+无需滚到底部；事件、设备、模型以表格及按需详情为中心，次要分析图默认收起。
+详情自然高度、长内容滚动、关闭还原焦点，窄屏覆盖式返回。刷新保留展开、焦点、
+滚动及草稿；未知、零、过期不可混淆。配额不使用虚构参考分母，官方百分比与
+预估余量分开标注。筛选 URL 支持返回、分页、会话下钻；导出遵循所选范围。
+沿用现有后端接口、计算定义、认证范围和人工管理确认，不改变事件计数或历史。
+
+### Stable agent machine identity
+
+Agent reinstallation or loss of agent.json must not create a second machine.
+Machine identity is derived from a namespaced platform identifier, independent of
+hostname and credentials. Existing IDs are bound during admin enrollment and
+reused after reinstallation; credentials may rotate without changing history.
+Revoked identities cannot be reactivated implicitly. Raw machine identifiers are
+never uploaded. See ADR-0039 for OS reinstall and cloned-system limitations.

@@ -59,7 +59,7 @@ func TestAgentEnrollPersistsStableIdentityAndDoesNotPrintCredentials(t *testing.
 		}
 		requests = append(requests, request)
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"device_id":"ok"}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"device_id": request["device_id"]})
 	}))
 	defer server.Close()
 	t.Setenv("OMNITOKEN_ADMIN_TOKEN", "admin-secret")

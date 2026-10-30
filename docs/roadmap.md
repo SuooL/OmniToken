@@ -258,7 +258,9 @@ M5 之前的浅色一份。决策见 [ADR-0014](adr/0014-menubar-realtime-and-in
 | 项 | 状态 | 备注 |
 |---|---|---|
 | dsh 日志解析(F27 / ADR-0029) | ✅ 完成 | 被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件;token 直取 `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`(`inputTokens` 已是非缓存输入,不减;`reasoningTokens` 是 output 子集不另计);模型/provider 取同 step 的 `request/context`;`event_id = "dsh:"+sha1(session_id\|seq\|四分量)` 幂等,golden 测试钉死;source=`dsh`,provider 原样保留、一律非订阅(dsh 均经用户配置 key)。新增纯 Go `klauspost/compress` zstd 依赖,`FullReparse` + `listJSONL` 放行 `*.jsonl.zstd`,SSH 镜像同步加 dsh。实测本机 7 会话 / 208 用量记录 |
-| dsh 前端专属卡片/配色 | 未实施 | dsh 已计入所有聚合(总量/按模型/设备/项目、报表、明细、速度页独立分桶),但总览页「近 5h 来源卡」仍只硬编码 claude-code/codex 两张;后续补 dsh 卡与 `--source-dsh` 色板 |
+| dsh 生成速度(F15 / ADR-0040) | ✅ 完成 | ADR-0029 之后 dsh 从未产出 `gen_ms`,速度视图一直把它列为未测。现从 dsh 逐 chunk 的时间戳取**纯生成**区间(最终尝试首个 chunk → message,不含首 token 等待、重试与工具)与每步 TTFT,v1/v3/v4 三种格式都支持;速度页给 dsh 行标「DeepSeek · 纯生成」,与其它来源同名合并的行标「混合口径」。本机实测 324 个文件 19,314 条事件覆盖 100%,新旧解析器除计时两列外逐字段相同(含 `event_id`);历史行需 `-rescan` 回填。v1→v3 迁移造成的重复计数(1.70% token)另立 ADR |
+| dsh 迁移重复计数(F27 / ADR-0041) | ✅ 完成 | dsh 换日志格式时复制旧会话且保留旧文件,v1→v3 重编了 `seq`,221 行(62.6M token,dsh 的 1.70%)被计两次。dsh 改为产出 `dedup_key = dsg:sha1(session_id\|time\|四分量)`,store 的冲突消解补上并列规则(`ts` 相同删 `event_id` 大的),留下哪条与到达顺序无关。本机全量历史回放:重扫删 221 行、再扫 0 变更,正逆两种扫描顺序留下的行完全相同;历史需 `-rescan` 清理 |
+| dsh 前端专属卡片/配色 | 未实施 | dsh 已计入所有聚合(总量/按模型/设备/项目、报表、明细、速度页独立分桶 —— 速度数据自 ADR-0040 起才有),但总览页「近 5h 来源卡」仍只硬编码 claude-code/codex 两张;后续补 dsh 卡与 `--source-dsh` 色板 |
 
 ## M12 — 菜单栏发布与自更新(2026-09-08 起)
 
@@ -336,3 +338,19 @@ display rules and Codex date-based valuation assumptions are not rewritten by ca
 | 品牌与状态层次 | ✅ 完成 | 来源图标、主题色、选中行及模型比例条；设备与连接异常用状态色，增长率保持中性。 |
 | 发布准备 | 进行中 | v0.3.0；用户自行检查更新本机安装；本地门禁、签名 bundle 与远端更新产物核验后发布完成。 |
 | Web 重构审视 | ✅ 设计完成，待实施确认 | 仅本次设计与验收方案，不包含 Web 页面重构或线上部署。 |
+
+## Web 工具界面重构（2026-10-29）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 具体设计与执行计划 | ✅ 完成 | ADR-0038、Web 重构 spec 与 implementation plan；3 组 subagent 按文件分工，主 agent 负责共享与集成。 |
+| 共享视觉、来源与配额 | ✅ 完成 | SourceUI/QuotaUI/tool.css；零、未知、超额、scope 关联、周约束独立验证；计费通道不画虚构额度条。 |
+| 总览与实时 | ✅ 完成 | 来源列表及官方配额优先，真实每日 token 趋势，诊断按需展开，SSE/GET 防旧快照覆盖。 |
+| 明细、报表与设置 | ✅ 完成 | 表格优先、完整筛选/分页 URL、原生详情抽屉；设置四组保留草稿和管理确认，导出维持所选范围。 |
+| 设备、模型、缓存与速度 | ✅ 完成 | 来源配色统一、缺测/零分母/未知价格如实表达；模型有效轴域，设备真实数据下钻，图表复用。 |
+| 验收 | ✅ 本地完成 | 47 项新增 Node 回归纳入 make check；实际隔离 Hub 2700 合成事件，9 路由 × 3 视口、14 组浏览器验收。远端 CI 交付时核验。 |
+| 生产部署 | 未执行 | 本次仅代码实现与 PR 交付，沿用现网版本直到独立部署。 |
+
+### Stable machine enrollment (ADR-0039)
+
+Implemented: machine-derived enrollment keys preserve canonical device IDs across agent reinstallations; admin enrollment rotates credentials independently. Confirmed merges no longer recreate revoked registry-only fleet rows.

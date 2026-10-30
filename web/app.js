@@ -70,6 +70,7 @@ function route() {
     return;
   }
   if (currentView) {
+    DetailDrawer.close({restoreFocus:false});
     Views[currentView].leave();
     Views[currentView].el().hidden = true;
   }
@@ -175,3 +176,27 @@ async function refreshAuthState() {
 refreshAuthState();
 
 route();
+
+// A new read identity must not inherit a prior identity's last-good page or an
+// in-flight response. Settings keeps its local draft and its separate scope.
+document.addEventListener("read-credentials-changed", () => {
+  for (const [name, view] of Object.entries(Views)) {
+    if (name === "settings") continue;
+    view.leave();
+    const module = {overview:Overview,live:Live,reports:Reports,details:Details,devices:DevicesView,models:ModelsView,cache:CacheView,speed:SpeedView}[name];
+    if (!module) continue;
+    module.lastData = null; module.data = null; module._rendered = false; module.built = false;
+    const root = view.el();
+    // Live has a static shell, so clear its data on the next successful snapshot.
+    if (name !== "live") {ChartRegistry.disposeWithin(root);root.replaceChildren();delete root.dataset.built;}
+    else {
+      Live.telemetryData = null; Live.snapshotReceivedAt = 0;
+      for (const id of ["quota-row","window-row","lanes","live-procs","live-sessions","live-devices","live-telemetry-card"]) {
+        const slot=document.getElementById(id);if(slot){ChartRegistry.disposeWithin(slot);slot.replaceChildren();}
+      }
+      document.getElementById("speed-tps").textContent="—";
+      document.getElementById("speed-sub").textContent="等待当前凭据的实时数据";
+      document.getElementById("live-status").textContent="读取凭据已变更";
+    }
+  }
+});

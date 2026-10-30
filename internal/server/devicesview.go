@@ -111,7 +111,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 
-	registered, err := s.store.ListDevices()
+	registered, err := s.fleetDevices()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

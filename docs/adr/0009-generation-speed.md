@@ -308,3 +308,8 @@ rollout id,而 `event_id` 由 rollout id + 时间戳 + 序号构成 —— 也�
 不变:新增的 `gen_ms` / `ttft_ms` 都是**派生列,不参与 `event_id`**,ADR-0004 的
 铁律不受触碰。历史回填沿用本 ADR 决策第 4 条的 UPSERT 模式 —— 只在新值有效时覆盖,
 **绝不碰任何计数列**。一次 turn 算多快,和它被计几次是两回事。
+
+## 后续(2026-10-30):dsh
+
+第三个日志来源 dsh 的区间取它逐 chunk 写下的时间戳(最终尝试首个 chunk → message 记录,
+不含首 token 等待、重试与工具),见 [ADR-0040](0040-dsh-generation-speed.md)。

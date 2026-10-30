@@ -18,6 +18,7 @@ type FileConfig struct {
 	AllowInsecureHTTP  bool     `json:"allow_insecure_http,omitempty"` // permit plaintext to a non-loopback target
 	Token              string   `json:"token,omitempty"`               // ingest bearer token
 	ProtocolVersion    int      `json:"protocol_version,omitempty"`    // absent means legacy v1
+	MachineID          string   `json:"machine_id,omitempty"`
 	DeviceID           string   `json:"device_id,omitempty"`
 	DeviceToken        string   `json:"device_token,omitempty"`
 	Outbox             string   `json:"outbox,omitempty"`
@@ -131,16 +132,16 @@ func WriteSkeletonConfig(path string) error {
 	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
-// PrepareEnrollment fills the v2 identity exactly once. Subsequent enrollment
-// updates may change display metadata and server location without replacing
-// the device principal or its credential.
+// PrepareEnrollment derives a stable machine key and preserves an existing
+// principal. The Hub can resolve that key back to a legacy ID after reinstall.
 func PrepareEnrollment(existing FileConfig, serverURL, displayName, deviceToken string) (FileConfig, error) {
+	machineID, err := MachineIdentity()
+	if err != nil {
+		return FileConfig{}, err
+	}
+	existing.MachineID = machineID
 	if existing.DeviceID == "" {
-		deviceID, err := newUUID()
-		if err != nil {
-			return FileConfig{}, fmt.Errorf("generate device ID: %w", err)
-		}
-		existing.DeviceID = deviceID
+		existing.DeviceID = machineID
 	}
 	if existing.DeviceToken == "" {
 		if deviceToken == "" {

@@ -340,6 +340,16 @@ function coverageLabel(speed) {
     .join(" · ")}`;
 }
 
+// Speed views list sources the way the daily cards do: Claude, Codex,
+// DeepSeek, then the rest alphabetically.
+function bySourceOrder(a, b) {
+  const rank = (source) =>
+    DAILY_SOURCES.includes(source)
+      ? DAILY_SOURCES.indexOf(source)
+      : DAILY_SOURCES.length;
+  return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
 function renderSpeedLanes() {
   const speed = latestTelemetry && latestTelemetry.speed;
   const root = $("speed-lanes");
@@ -351,14 +361,20 @@ function renderSpeedLanes() {
   const series = speed.series || [];
   const measured = new Set(speed.measured_sources || []);
   const unmeasured = new Set(speed.unmeasured_sources || []);
-  const discovered = new Set(
-    series.flatMap((bucket) => sourceRows(bucket).map((row) => row.source)),
-  );
-  const ordered = ["claude-code", "codex"];
-  [...discovered]
-    .filter((source) => !ordered.includes(source))
-    .sort()
-    .forEach((source) => ordered.push(source));
+  // Lanes follow the source cards: Claude and Codex always, then DeepSeek, then
+  // the rest alphabetically. An unmeasured source has no series rows, so the
+  // source sets are read too — otherwise its "速度不可用" lane would vanish.
+  const ordered = [
+    ...new Set([
+      "claude-code",
+      "codex",
+      ...series.flatMap((bucket) =>
+        sourceRows(bucket).map((row) => row.source),
+      ),
+      ...measured,
+      ...unmeasured,
+    ]),
+  ].sort(bySourceOrder);
   const peak = finite(speed.peak_tps)
     ? speed.peak_tps
     : series.reduce(
@@ -401,8 +417,15 @@ function renderSpeedLanes() {
     })
     .join("");
   const exactCoverage = coverageLabel(speed);
-  const measuredLabel = [...measured].map(sourceName).join("、") || "无";
-  const unavailableLabel = [...unmeasured].map(sourceName).join("、");
+  const measuredLabel =
+    ordered
+      .filter((source) => measured.has(source))
+      .map(sourceName)
+      .join("、") || "无";
+  const unavailableLabel = ordered
+    .filter((source) => unmeasured.has(source))
+    .map(sourceName)
+    .join("、");
   $("speed-coverage").textContent =
     exactCoverage ||
     (unavailableLabel
@@ -435,8 +458,12 @@ function renderAggregate() {
     speed && finite(speed.active_ratio)
       ? `${(speed.active_ratio * 100).toFixed(0)}%`
       : "—";
-  const measured = (speed && speed.measured_sources) || [];
-  const unavailable = (speed && speed.unmeasured_sources) || [];
+  const measured = [...((speed && speed.measured_sources) || [])].sort(
+    bySourceOrder,
+  );
+  const unavailable = [...((speed && speed.unmeasured_sources) || [])].sort(
+    bySourceOrder,
+  );
   $("summary-coverage").textContent = speed
     ? `已测：${measured.map(sourceName).join("、") || "无"}${unavailable.length ? ` · ${unavailable.map(sourceName).join("、")} 速度不可用` : ""}`
     : "测量覆盖未知";

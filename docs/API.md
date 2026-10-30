@@ -180,14 +180,22 @@ Cache 分析(F16):按模型命中率与节省金额、cache 写入 1h/5m TTL 结
 
 `coverage` = 有生成区间(`gen_ms > 0`)的事件占比。低于 1 的部分补不回来:
 Claude Code 30 天后清理日志,更早的事件没有可回填的来源(见 `-rescan`)。
+dsh 在 ADR-0040 之前入库的历史行同样没有区间,日志还在的部分 `-rescan` 一次即可补上。
 
 `models` 里**没有逐条中位数**,这是结论不是遗漏:日志推出的区间含等首 token 的
 时间,几个 token 的工具决策几乎全是等待,逐条比值会给出没有任何一次响应跑出过的
 数(实测 claude-sonnet-5 逐条中位 0.7 vs 整体 57.6)。把延迟与生成分开测是代理
 通道的事,所以中位数只出现在 `exact` 里。
 
-**Codex 三块都不在**:其 rollout 文件成批回放历史,70% 的记录时间戳是刷盘时刻,
-没有可用的生成区间(ADR-0009)。
+各来源的生成区间口径不同,`models[].sources` 标明一行来自哪些来源:
+
+| 来源 | 区间 | 含首 token 等待 | 含工具时间 |
+|---|---|---|---|
+| Claude Code | 上一条 user 记录 → assistant 记录(ADR-0009) | 是 | 否 |
+| Codex | 自记的 `duration_ms − time_to_first_token_ms`,按 turn(ADR-0009 修订) | 否 | 是,保守下界 |
+| dsh | 最终尝试的首个流式 chunk → message 记录(ADR-0040) | 否 | 否 |
+
+dsh 不含失败重试与退避,所以比 DSH Desktop 自己显示的速度略高。
 
 ### GET /api/v1/telemetry?range=today|5h|1h|24h
 
@@ -222,7 +230,7 @@ native_tps(group) = measured_output_tokens(group)
 
 `measured_sources` 和 `unmeasured_sources` 互斥，区分“至少有一个可靠速度区间”与“完全没有可靠速度区间”。部分覆盖由 `coverage[].measured_events < coverage[].total_events` 表示，不得把来源整体标成 unavailable。
 缺失生成区间的事件仍计入用量，但不会被伪造成 0 tok/s，也不会静默进入 `aggregate_tps`。
-Codex 的可测性按事件实际携带的生成区间判断。
+每个来源(含 Codex 与 dsh)的可测性都按事件实际携带的生成区间判断。
 
 ### GET /api/v1/quota
 

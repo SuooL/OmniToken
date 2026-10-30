@@ -72,7 +72,7 @@ func Open(path string) (*Store, error) {
 	}
 	// modernc/sqlite serializes writes; a single conn avoids lock contention.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + quotaSchema + capacitySchema + settingsSchema + procSchema + deviceRegistrySchema + ingestReceiptSchema); err != nil {
+	if _, err := db.Exec(schema + quotaSchema + capacitySchema + settingsSchema + procSchema + deviceRegistrySchema + machineIdentitySchema + ingestReceiptSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -359,8 +359,8 @@ func (r eventApplyResult) mutated() bool {
 
 func logEventApply(result eventApplyResult) {
 	if result.deduped > 0 {
-		log.Printf("store: 删除 %d 行 —— Codex 分叉线程把同一次生成复制进了第二个 rollout,"+
-			"每组只保留时间戳在先的那条(ADR-0020);这是唯一一处会让计数下降的操作", result.deduped)
+		log.Printf("store: 删除 %d 行 —— 同一次生成被复制进了第二个日志文件(Codex 分叉线程 / dsh 格式迁移),"+
+			"每组只保留时间戳在先、并列时 event_id 较小的那条(ADR-0020/0041);这是唯一一处会让计数下降的操作", result.deduped)
 	}
 	if result.filled > 0 {
 		log.Printf("store: merged a second observation into %d existing events (ADR-0013)", result.filled)
@@ -675,9 +675,12 @@ func insertEventsFromTx(tx *sql.Tx, events []model.Event, receivedAt int64, orig
 			case err == sql.ErrNoRows: // the key is free; this is a plain event_id repeat
 			case err != nil:
 				return result, err
-			case ownerID != e.EventID && e.TS >= ownerTS:
-				// This one is the fork's copy. Drop it, including any row an
-				// earlier scan wrote for it back when nothing could tell.
+			case ownerID != e.EventID && (e.TS > ownerTS || (e.TS == ownerTS && e.EventID > ownerID)):
+				// This one is the copy: the later ts, or on a tie (dsh keeps the
+				// original timestamps when it migrates a session, ADR-0041) the
+				// larger event_id, so the survivor never depends on arrival order.
+				// Drop it, including any row an earlier scan wrote for it back
+				// when nothing could tell.
 				r, err := dropCopy.Exec(e.EventID)
 				if err != nil {
 					return result, err

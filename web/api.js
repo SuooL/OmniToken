@@ -41,6 +41,7 @@ function canCommitRevision(current, sent) {
 }
 
 function classifyAPIError(error) {
+  if (error instanceof APIError && error.status === 403) return {kind:"unauthorized",title:"没有读取权限",detail:"当前凭据不能读取此数据，请在设置中检查读取凭据。"};
   if (error instanceof APIError && error.status === 401) {
     return {
       kind: "unauthorized",
@@ -176,8 +177,15 @@ const Api = {
   },
 
   saveTokens(readToken, adminToken) {
+    const changed = this.token !== (readToken || "");
+    if (changed) {
+      if (typeof LiveSnapshotCache !== "undefined") LiveSnapshotCache.invalidate();
+      if (typeof TelemetryCache !== "undefined") TelemetryCache.reset();
+      if (typeof DetailDrawer !== "undefined") DetailDrawer.close({restoreFocus:false});
+    }
     this.token = readToken || "";
     this.adminToken = adminToken || "";
+    if (changed && typeof document !== "undefined" && document.dispatchEvent) document.dispatchEvent(new Event("read-credentials-changed"));
     try {
       if (this.token) localStorage.setItem(this.TOKEN_KEY, this.token);
       else localStorage.removeItem(this.TOKEN_KEY);

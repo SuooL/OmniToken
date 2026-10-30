@@ -89,7 +89,7 @@ get no progress bar: they have no window to be a fraction of.</em>
 ![Speed](docs/images/speed.png)
 
 <em><b>Speed</b> — tok/s and TTFT per model, with each measurement channel labeled separately:
-proxy-exact, log-derived, and Codex conservative-lower-bound.</em>
+proxy-exact, log-derived, Codex conservative-lower-bound, and DeepSeek pure-generation.</em>
 
 </div>
 

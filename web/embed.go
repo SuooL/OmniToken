@@ -24,5 +24,5 @@ import "embed"
 // no build step, and they ship inside the binary so the panel renders without
 // reaching a CDN.
 //
-//go:embed index.html *.css *.js vendor/echarts.min.js
+//go:embed index.html *.css *.js vendor/echarts.min.js icons/*.svg icons/NOTICE.txt
 var FS embed.FS

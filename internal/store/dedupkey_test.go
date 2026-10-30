@@ -148,6 +148,98 @@ func TestRescanBackfillsKeyAndRemovesHistoricalDuplicate(t *testing.T) {
 	}
 }
 
+// ADR-0041. dsh copies a session into its new log format with the original
+// timestamps, so the two rows tie on ts. A tie must not fall to arrival order:
+// the smaller event_id survives whichever copy arrives first.
+const dshKey = "dsg:0123456789abcdef01234567"
+
+func dshCopy(id string) model.Event {
+	return model.Event{
+		EventID: id, DedupKey: dshKey, TS: 1787403618284,
+		Device: "mac", Source: "dsh", Model: "deepseek-flash", Provider: "deepseek-official",
+		InputTokens: 2, OutputTokens: 273, CacheReadTokens: 100, CacheCreationTokens: 18745,
+	}
+}
+
+func survivorOf(t *testing.T, s *Store, key string) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(`SELECT event_id FROM events WHERE dedup_key = ?`, key).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestTiedCopiesKeepSmallerEventIDInAnyOrder(t *testing.T) {
+	low, high := dshCopy("dsh:111111111111111111111111"), dshCopy("dsh:999999999999999999999999")
+	want := totals{rows: 1, input: 2, output: 273, read: 100, create: 18745}
+	for _, tc := range []struct {
+		name    string
+		batches [][]model.Event
+	}{
+		{"smaller id first", [][]model.Event{{low}, {high}}},
+		{"larger id first", [][]model.Event{{high}, {low}}},
+		{"one batch, smaller first", [][]model.Event{{low, high}}},
+		{"one batch, larger first", [][]model.Event{{high, low}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := open(t)
+			now := time.Now().UnixMilli()
+			// Twice over: the second pass is a rescan and must change nothing.
+			for pass := 0; pass < 2; pass++ {
+				for _, batch := range tc.batches {
+					if _, err := s.InsertEvents(batch, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := sum(t, s); got != want {
+					t.Fatalf("pass %d: counts = %+v, want %+v", pass, got, want)
+				}
+				if id := survivorOf(t, s, dshKey); id != low.EventID {
+					t.Fatalf("pass %d: survivor = %s, want %s regardless of arrival order", pass, id, low.EventID)
+				}
+			}
+		})
+	}
+}
+
+// The 221 migrated copies already stored predate the key: both rows exist with
+// none. A rescan backfills the key and must leave exactly the smaller id.
+func TestRescanRemovesTiedHistoricalCopy(t *testing.T) {
+	low, high := dshCopy("dsh:111111111111111111111111"), dshCopy("dsh:999999999999999999999999")
+	for _, tc := range []struct {
+		name  string
+		order []model.Event
+	}{
+		{"smaller id rescanned first", []model.Event{low, high}},
+		{"larger id rescanned first", []model.Event{high, low}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := open(t)
+			now := time.Now().UnixMilli()
+			history := []model.Event{low, high}
+			for i := range history {
+				history[i].DedupKey = ""
+			}
+			if n, err := s.InsertEvents(history, now); err != nil || n != 2 {
+				t.Fatalf("seeding history: n=%d err=%v", n, err)
+			}
+			for _, e := range tc.order {
+				if _, err := s.InsertEvents([]model.Event{e}, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := totals{rows: 1, input: 2, output: 273, read: 100, create: 18745}
+			if got := sum(t, s); got != want {
+				t.Fatalf("after rescan = %+v, want %+v", got, want)
+			}
+			if id := survivorOf(t, s, dshKey); id != low.EventID {
+				t.Errorf("survivor = %s, want %s", id, low.EventID)
+			}
+		})
+	}
+}
+
 // An empty key means "no second opinion", never "same as the other empty one".
 // 341 local events have no key at all (old Codex, MCP counter turn ids), and
 // every source other than Codex leaves it empty entirely.
