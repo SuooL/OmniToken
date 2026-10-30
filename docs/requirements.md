@@ -134,3 +134,12 @@ F7 定期更新补充(2026-10-28):Hub 默认每日从 LiteLLM 更新模型 ID �
 滚动及草稿；未知、零、过期不可混淆。配额不使用虚构参考分母，官方百分比与
 预估余量分开标注。筛选 URL 支持返回、分页、会话下钻；导出遵循所选范围。
 沿用现有后端接口、计算定义、认证范围和人工管理确认，不改变事件计数或历史。
+
+### Stable agent machine identity
+
+Agent reinstallation or loss of agent.json must not create a second machine.
+Machine identity is derived from a namespaced platform identifier, independent of
+hostname and credentials. Existing IDs are bound during admin enrollment and
+reused after reinstallation; credentials may rotate without changing history.
+Revoked identities cannot be reactivated implicitly. Raw machine identifiers are
+never uploaded. See ADR-0039 for OS reinstall and cloned-system limitations.

@@ -528,7 +528,7 @@ func TestEnrollRejectsRemotePlaintextWithoutExplicitOptIn(t *testing.T) {
 	err := Enroll(
 		"http://hub.example:8787",
 		"admin-secret",
-		FileConfig{
+		&FileConfig{
 			DeviceID:    outboxDeviceID,
 			DeviceToken: "device-secret",
 			Name:        "agent",

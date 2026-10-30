@@ -123,7 +123,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 			Running:         procCount[d.Device],
 		})
 	}
-	registered, err := s.store.ListDevices()
+	registered, err := s.fleetDevices()
 	if err != nil {
 		return nil, err
 	}

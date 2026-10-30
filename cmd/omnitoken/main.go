@@ -344,7 +344,7 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	if *allowInsecureHTTP {
 		candidate.AllowInsecureHTTP = true
 	}
-	if err := agent.Enroll(candidate.Server, admin, candidate, nil); err != nil {
+	if err := agent.Enroll(candidate.Server, admin, &candidate, nil); err != nil {
 		return err
 	}
 	if err := agent.SaveFileConfig(*configPath, candidate); err != nil {

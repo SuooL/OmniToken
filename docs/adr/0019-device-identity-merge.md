@@ -256,3 +256,9 @@ UPDATE quota_snapshots SET device = :target WHERE device = :source;
   的另一半理由。
 - 落地该能力的 PR 需要同步把 CLAUDE.md「只有两处允许覆盖已入库的行」改成三处,
   并在 `docs/roadmap.md` 追加自己那一行。
+
+### 2026-10-29 clarification (ADR-0039)
+
+Revoked registry principals covered by an explicit merge audit are omitted from
+fleet views when the target principal still exists. The registry, heartbeat and
+receipt records are retained; unmerged revoked identities remain visible.
