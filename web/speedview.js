@@ -11,10 +11,12 @@
 // numerator, and was wrong in both directions at once.
 //
 // Two channels, never averaged together: the union-basis table (Claude Code's
-// log-derived intervals and Codex's own per-turn timing) and the proxy's
-// directly measured numbers. Codex joined the first one with ADR-0009's
-// 2026-07-31 revision; its interval comes from task_complete, still contains
-// the turn's tool calls, and is therefore labelled as a lower bound.
+// log-derived intervals, Codex's own per-turn timing and dsh's per-chunk
+// timing) and the proxy's directly measured numbers. Codex joined the first one
+// with ADR-0009's 2026-07-31 revision; its interval comes from task_complete,
+// still contains the turn's tool calls, and is therefore labelled as a lower
+// bound. dsh (ADR-0040) is pure generation: first streamed chunk to message,
+// without the wait for the first token, retries or tools.
 
 function speedIsEmpty(data) {
   const groups = [data.models || [], data.exact || [], (data.series && data.series.buckets) || []];
@@ -161,7 +163,7 @@ const SpeedView = {
         <section class="card">
           <div class="card-head">
             <h2>按模型 · 近 <span id="speed-days">30</span> 天 <span id="speed-model-info"></span></h2>
-            <span class="chip badge approx">并集口径 · 日志推算 + Codex turn 计时</span>
+            <span class="chip badge approx">并集口径 · 日志推算 + 工具自记计时</span>
           </div>
           <div class="data-table" id="speed-model-table"></div>
           ${ToolUI.analysis("speed-bars-analysis", "模型速度条形比较", `<div class="bars" id="speed-bars"></div>`)}
@@ -377,7 +379,8 @@ const SpeedView = {
   // Which channel measured a row, and whether that channel's number is a lower
   // bound. A Codex interval is the turn's duration minus its TTFT, and the
   // turn's tool calls run inside it — so the figure is honest only if it says
-  // so on the row itself.
+  // so on the row itself. A dsh interval excludes the wait for the first token
+  // that Claude Code's includes, so a model fed by both says it is mixed.
   channelChip(row) {
     const sources = row.sources || [];
     if (sources.includes("codex")) {
@@ -385,6 +388,11 @@ const SpeedView = {
     }
     if (sources.includes("proxy")) {
       return `<span class="chip badge exact">代理实测</span>`;
+    }
+    if (sources.includes("dsh")) {
+      return sources.every((s) => s === "dsh")
+        ? `<span class="chip badge approx" title="dsh 逐 chunk 打点:最终一次尝试的首个流式 chunk → 消息写入,不含首 token 等待、失败重试与工具执行">DeepSeek · 纯生成</span>`
+        : `<span class="chip badge approx" title="同名模型来自多个来源,区间口径不同:DeepSeek 不含首 token 等待,Claude Code 的日志推算含">混合口径</span>`;
     }
     return `<span class="chip badge approx">日志推算</span>`;
   },
@@ -403,19 +411,25 @@ const SpeedView = {
   renderModels(rows) {
     const withData = rows.filter((r) => r.tps > 0);
     const hasCodex = withData.some((r) => (r.sources || []).includes("codex"));
+    const hasDsh = withData.some((r) => (r.sources || []).includes("dsh"));
     // Six lines of methodology that used to sit above the table and push it
     // below the fold. Folded behind the title's `i` (ADR-0024).
     document.getElementById("speed-model-info").innerHTML = infoTip(
       "速度 = Σ输出 tokens ÷ 生成区间并集,按「一条会话流」取并集后再跨流相加(ADR-0009)。" +
       "这里<b>不给逐条中位数</b>:日志推出来的区间里含着等首 token 的时间,长回答无所谓," +
       "几个 token 的工具决策则几乎全是等待,逐条比值会得出没有任何一次响应跑出过的数。" +
-      "TTFT 一列只在实测得到时才有值(代理在请求两端打点,Codex 把它写进 task_complete)," +
+      "TTFT 一列只在实测得到时才有值(代理在请求两端打点,Codex 把它写进 task_complete,dsh 给每个流式 chunk 打时间戳)," +
       "空白表示没有测过,不是 0。" +
       (hasCodex
         ? "<b>Codex 已纳入,但它的数是保守下界</b>:区间取自 Codex 自记的 " +
           "<code>duration_ms − time_to_first_token_ms</code>,里面还含着该 turn 的工具执行时间," +
           "所以比 Claude Code 低是口径差,不是模型慢一半。回放进新 rollout 的 turn 行时间戳是刷盘时刻," +
           "一律不计入,体现在覆盖率里。"
+        : "") +
+      (hasDsh
+        ? "<b>DeepSeek(dsh)取纯生成区间</b>:从最终一次尝试的首个流式 chunk 到消息写入,由 dsh 逐 chunk 打点," +
+          "不含首 token 等待、失败重试与工具执行(ADR-0040)。DSH Desktop 自己显示的速度把重试时间算进分母," +
+          "所以这里的数会略高。"
         : "") +
       "覆盖率 = 有生成区间的事件占比;30 天前的日志已被 Claude Code 清理,那部分历史永远补不回来。");
 

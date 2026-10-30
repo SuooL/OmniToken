@@ -60,3 +60,10 @@ cacheWriteTokens, reasoningTokens}`;`request/context`(或 `request/header.data.h
 - 不改 dsh 任何配置、不经代理;数据只来自 dsh 自己写的日志。
 
 背景:ADR-0004(event 身份)、ADR-0018(通道分类)、requirements F27。
+
+## 后续修订(2026-10-30)
+
+「影响与未做」里「速度页(`speedSourceKey` 给它独立分桶)」一句当时不成立:解析器没有产出
+`gen_ms`,速度视图只认 `gen_ms > 0` 的行,dsh 一直是未测来源 —— 分桶有了,桶是空的。
+由 [ADR-0040](0040-dsh-generation-speed.md) 补上。另外 dsh 后来改写 `session.v3.jsonl.zstd` /
+`session.v4.jsonl.zstd`,`*.jsonl.zstd` 的放行规则照样覆盖,用量字段不变。

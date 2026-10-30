@@ -76,7 +76,7 @@
 
 ![速度](docs/images/speed.png)
 
-<em><b>速度</b> —— 逐模型的 tok/s 与 TTFT，每条测量通道分别标注：代理实测、日志推算、Codex 保守下界。</em>
+<em><b>速度</b> —— 逐模型的 tok/s 与 TTFT，每条测量通道分别标注：代理实测、日志推算、Codex 保守下界、DeepSeek 纯生成。</em>
 
 </div>
 
