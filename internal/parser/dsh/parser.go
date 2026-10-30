@@ -13,6 +13,12 @@
 // re-read free of double counting. The reported Consumed is the number of
 // COMPRESSED bytes read, so the scan offset lines up with the file size on disk
 // (ADR-0029).
+//
+// Generation timing comes from the timestamps dsh writes on every streamed
+// chunk (ADR-0040): gen_ms runs from the final attempt's first chunk to the
+// message being recorded, ttft_ms from the request start (step/start, or the
+// latest llm/retry-started) to that first chunk. Failed attempts and retry
+// backoff fall outside both. Only timestamps are read, never chunk payloads.
 package dsh
 
 import (
@@ -37,7 +43,8 @@ const Source = "dsh"
 type record struct {
 	Type      string          `json:"type"`
 	Seq       int64           `json:"seq"`
-	Time      int64           `json:"time"` // unix milliseconds
+	Time      int64           `json:"time"`  // unix milliseconds
+	Time0     int64           `json:"time0"` // v1 batched chunk records: first delta
 	Data      json.RawMessage `json:"data"`
 	ID        string          `json:"id"`        // session line
 	CreatedAt int64           `json:"createdAt"` // session line
@@ -67,8 +74,40 @@ type usage struct {
 	CacheWriteTokens int64 `json:"cacheWriteTokens"`
 }
 
+// assistantMessage decodes usage and timing in one pass. When that fails the
+// message is decoded again as usageOnly, so a shape change in the timing fields
+// can only cost the timing, never the usage counts.
 type assistantMessage struct {
+	Usage  *usage          `json:"usage"`
+	Turn   json.RawMessage `json:"turn"`
+	Step   json.RawMessage `json:"step"`
+	Stream []streamChunk   `json:"stream"` // v3+: the final attempt's chunks
+}
+
+type usageOnly struct {
 	Usage *usage `json:"usage"`
+}
+
+// stepRef locates the LLM step a chunk, retry or message line belongs to. The
+// raw values are only compared, so their JSON type never matters.
+type stepRef struct {
+	Turn json.RawMessage `json:"turn"`
+	Step json.RawMessage `json:"step"`
+}
+
+func (s stepRef) key() string { return string(s.Turn) + "/" + string(s.Step) }
+
+// streamChunk declares only the timestamps; chunk payloads are content and are
+// never decoded.
+type streamChunk struct {
+	Time  int64 `json:"time"`
+	Time0 int64 `json:"time0"`
+}
+
+// stepTiming is what has been seen of a step's current attempt.
+type stepTiming struct {
+	requestStart int64 // step/start, or the latest llm/retry-started
+	firstChunk   int64 // earliest top-level chunk record (v1 layout)
 }
 
 // Parse reads a whole dsh session file (zstd-compressed JSONL) and emits one
@@ -88,6 +127,7 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 
 	br := bufio.NewReaderSize(dec, 1<<20)
 	var sessionID, cwd, curProvider, curModel string
+	steps := map[string]*stepTiming{}
 	for {
 		text, rerr := br.ReadString('\n')
 		if len(text) > 0 {
@@ -117,11 +157,39 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 							curModel = h.Header.Config.Model
 						}
 					}
+				case "step/start", "llm/retry-started":
+					// A new attempt: whatever the previous one streamed is
+					// not part of the generation that produces the message.
+					var s stepRef
+					if json.Unmarshal(rec.Data, &s) == nil {
+						steps[s.key()] = &stepTiming{requestStart: rec.Time}
+					}
+				case "assistant/chunk", "text-chunks", "reasoning-chunks", "tool-call-chunks":
+					var s stepRef
+					if json.Unmarshal(rec.Data, &s) == nil {
+						st := steps[s.key()]
+						if st == nil {
+							st = &stepTiming{}
+							steps[s.key()] = st
+						}
+						st.firstChunk = earliest(st.firstChunk, rec.Time, rec.Time0)
+					}
 				case "assistant/message":
 					var m assistantMessage
-					if json.Unmarshal(rec.Data, &m) == nil && m.Usage != nil {
+					var genMS, ttftMS int64
+					ok := json.Unmarshal(rec.Data, &m) == nil
+					if ok {
+						key := stepRef{Turn: m.Turn, Step: m.Step}.key()
+						genMS, ttftMS = generationTiming(rec.Time, m.Stream, steps[key])
+						delete(steps, key)
+					} else {
+						var uo usageOnly
+						ok = json.Unmarshal(rec.Data, &uo) == nil
+						m = assistantMessage{Usage: uo.Usage}
+					}
+					if ok {
 						u := m.Usage
-						if u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheReadTokens != 0 || u.CacheWriteTokens != 0 {
+						if u != nil && (u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheReadTokens != 0 || u.CacheWriteTokens != 0) {
 							res.Events = append(res.Events, model.Event{
 								EventID:             eventID(sessionID, rec.Seq, u),
 								TS:                  rec.Time,
@@ -133,6 +201,8 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 								OutputTokens:        u.OutputTokens,
 								CacheReadTokens:     u.CacheReadTokens,
 								CacheCreationTokens: u.CacheWriteTokens,
+								GenMS:               genMS,
+								TTFTMS:              ttftMS,
 								SessionID:           sessionID,
 								CWD:                 cwd,
 							})
@@ -145,6 +215,40 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 			return res
 		}
 	}
+}
+
+// generationTiming derives the step's gen_ms and ttft_ms (ADR-0040). The first
+// chunk comes from the message's embedded stream (v3+), else from the step's
+// top-level chunk records (v1). Anything not provably positive stays 0, which
+// readers treat as unmeasured rather than as zero speed.
+func generationTiming(msgTime int64, stream []streamChunk, st *stepTiming) (genMS, ttftMS int64) {
+	var first int64
+	for _, c := range stream {
+		first = earliest(first, c.Time, c.Time0)
+	}
+	if first == 0 && st != nil {
+		first = st.firstChunk
+	}
+	if first <= 0 {
+		return 0, 0
+	}
+	if msgTime > first {
+		genMS = msgTime - first
+	}
+	if st != nil && st.requestStart > 0 && first > st.requestStart {
+		ttftMS = first - st.requestStart
+	}
+	return genMS, ttftMS
+}
+
+// earliest returns the smallest positive value among cur and ts; 0 means none.
+func earliest(cur int64, ts ...int64) int64 {
+	for _, t := range ts {
+		if t > 0 && (cur == 0 || t < cur) {
+			cur = t
+		}
+	}
+	return cur
 }
 
 // eventID is deterministic and stable across re-reads: seq is unique within a
