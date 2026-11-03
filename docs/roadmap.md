@@ -359,6 +359,13 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 
 | Item | Status | Behavior |
 |---|---|---|
-| Three tool speed lanes | ✅ Complete | Overview/live/speed retain Claude, Codex, and DeepSeek in a stable order; absent measurements remain gaps. |
+| Three tool speed lanes | ✅ Complete | Overview/live/speed show sources measured in the selected window in stable tool order; absent measurements remain gaps. |
 | DeepSeek V4.1 Flash pricing | ✅ Complete | Reported versioned first-party IDs fall back to the catalog's `deepseek-flash` entry; exact overrides and explicit provider prices win. |
 | Quota elapsed-time marker | ✅ Complete | Official 5h/week tracks add a blue time tick; hover/focus shows elapsed percentage without persistent comparison text. Unknown and expired bounds have no marker. |
+
+### Toolbar parity patch (v0.4.2)
+
+| Item | Status | Behavior |
+|---|---|---|
+| Source visibility and elapsed-time tick | ✅ Complete | Only sources measured in the selected window have speed lanes; official 5h/week quota tracks show a blue time marker with hover/focus percentage and no persistent comparison text. |
+| Patch release | Prepared | Desktop package/config/lock are aligned at 0.4.2; release uses the documented patch workflow. |

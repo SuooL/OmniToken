@@ -1,6 +1,6 @@
 # Toolbar parity and patch release
 
-- Keep Claude, Codex, and DeepSeek lanes present even without source data; preserve missing measurement labels.
+- Show speed lanes only for sources with measured contributions in the selected window, ordered Claude, Codex, DeepSeek, then other sources. Apply to Web and toolbar. Preserve coverage metadata.
 - Add a blue elapsed-time tick to official 5h/week usage tracks. Derive from reset minus duration, clamp to track, omit unknown/expired bounds, and expose only hover/focus time text.
 - Prepare v0.4.2 with Cargo/config/lock versions consistent.
 - Add regressions before implementation; run make check, make desktop-check, real browser validation, and make desktop-install.

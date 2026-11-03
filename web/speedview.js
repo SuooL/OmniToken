@@ -226,12 +226,13 @@ const SpeedView = {
   renderSourceLanes(snapshot) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
-    // Keep tool identity stable across windows; absent measurements stay gaps.
+    // Capability alone is not a measurement in the selected window.
+    const contributed = new Set(buckets.flatMap((bucket) => (bucket.sources || [])
+      .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
+      .map(speedSourceKey)));
     const keys = [...new Set([
-      "claude-code", "codex", "dsh",
-      ...(speed.measured_sources || []),
-      ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
-    ])];
+      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+    ])].filter((source) => contributed.has(source));
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>

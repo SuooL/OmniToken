@@ -71,11 +71,13 @@ const Live = {
     document.getElementById("live-coverage").textContent = telemetryCoverageLabel(speed) + (result.stale ? " · 显示上次成功数据" : "");
     ToolUI.updateHTML(document.getElementById("live-unmeasured"), (speed.unmeasured_sources || []).map((source) => `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测 / not measured</div>`).join(""));
     const buckets = speed.series || [];
+    // Capability alone is not a measurement in the selected window.
+    const contributed = new Set(buckets.flatMap((bucket) => (bucket.sources || [])
+      .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
+      .map(speedSourceKey)));
     const sourceKeys = [...new Set([
-      "claude-code", "codex", "dsh",
-      ...(speed.measured_sources || []),
-      ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
-    ])];
+      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+    ])].filter((source) => contributed.has(source));
     const el = document.getElementById("live-source-chart");
     if (!buckets.length || !sourceKeys.length) {
       ChartRegistry.disposeWithin?.(el);
