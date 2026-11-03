@@ -161,3 +161,7 @@ in the selected window, in the same source order as Web. Official quota tracks u
 marker as Web, including 5h/week and hover/focus percentage only; missing or
 expired reset bounds have no marker. Existing risk colors and quota values stay
 independent of elapsed time.
+
+### Desktop release architecture
+
+The shared macOS updater archive must contain both ARM64 and x86_64 slices. Validate both architectures and the app resource signature before publishing either platform entry.

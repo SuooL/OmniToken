@@ -368,4 +368,10 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 | Item | Status | Behavior |
 |---|---|---|
 | Source visibility and elapsed-time tick | ✅ Complete | Only sources measured in the selected window have speed lanes; official 5h/week quota tracks show a blue time marker with hover/focus percentage and no persistent comparison text. |
-| Patch release | Prepared | Desktop package/config/lock are aligned at 0.4.2; release uses the documented patch workflow. |
+| Patch release | ✅ Released | v0.4.2 published; Hub deployed with preserved event/device invariants and restored HTTPS. |
+
+### Desktop universal release repair
+
+| Item | Status | Behavior |
+|---|---|---|
+| Shared macOS archive | ✅ Complete | Explicit universal build and lipo architecture gate prevent ARM-only archives from being offered to Intel Macs. v0.4.2 assets are repaired from the tagged application source. |

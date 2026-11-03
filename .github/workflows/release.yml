@@ -187,6 +187,8 @@ jobs:
           echo "stamped $VERSION"
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
@@ -211,24 +213,24 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is empty — generate a key with \`cargo tauri signer generate\` and add it before releasing."
             exit 1
           fi
-          cd desktop/src-tauri && cargo tauri build --bundles app
-          codesign --verify --deep --strict target/release/bundle/macos/OmniToken.app
+          cd desktop/src-tauri && cargo tauri build --target universal-apple-darwin --bundles app
+          APP=target/universal-apple-darwin/release/bundle/macos/OmniToken.app
+          lipo "$APP/Contents/MacOS/omnitoken-desktop" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict "$APP"
 
       - name: Write latest.json
         run: |
           set -euo pipefail
           VERSION="${{ needs.release.outputs.version }}"
-          OUT=desktop/src-tauri/target/release/bundle/macos
+          OUT=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 - "$VERSION" "$OUT" "$PUB_DATE" <<'PY'
           import json, pathlib, sys
           tag, out, pub_date = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
           sig = (out / "OmniToken.app.tar.gz.sig").read_text().strip()
           url = f"https://github.com/${{ github.repository }}/releases/download/{tag}/OmniToken.app.tar.gz"
-          # Both macOS arches point at the same bundle: the runner builds for its
-          # own arch, and an Intel Mac running it under Rosetta is still served a
-          # working app. Publishing only darwin-aarch64 would make the updater
-          # report "up to date" on an Intel Mac forever, which is worse.
+          # Both entries use the same verified universal bundle. Intel cannot
+          # execute an ARM-only binary; Rosetta only translates Intel on ARM.
           entry = {"signature": sig, "url": url}
           json.dump({
               "version": tag.lstrip("v"),
@@ -241,8 +243,8 @@ jobs:
       - name: Attach to the release
         run: |
           gh release upload "${{ needs.release.outputs.version }}" \
-            desktop/src-tauri/target/release/bundle/macos/OmniToken.app.tar.gz \
-            desktop/src-tauri/target/release/bundle/macos/OmniToken.app.tar.gz.sig \
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniToken.app.tar.gz \
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniToken.app.tar.gz.sig \
             latest.json --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

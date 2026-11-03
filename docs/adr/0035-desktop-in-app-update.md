@@ -99,8 +99,9 @@ updater 模块单独放到 info。
 
 - 发布流程多一个 job:`release.yml` 的 `desktop`(macos-14,`needs: release`),
   从同一个 tag 构建、签名、生成 latest.json,挂到同一个 Release 上。
-  两个 macOS 架构指向同一个 bundle —— 只发 `darwin-aarch64` 会让 Intel Mac 的
-  updater 永远报「已是最新」,那比让它跑 Rosetta 更糟。
+  两个 macOS 架构指向同一个 universal bundle；发布时显式构建 ARM64 和 x86_64，
+  并用 `lipo -verify_arch arm64 x86_64` 核验后才上传。Intel 无法运行 ARM-only
+  程序；Rosetta 仅支持 Apple Silicon 运行 Intel 程序。
 - 版本号从 tag 反推,同时写进 `Cargo.toml` 与 `tauri.conf.json`。两者不一致时,
   应用要么反复重装、要么永远不更新。
 - **私钥丢了就再也更新不了任何已安装的副本** —— 它们信任的公钥是编进去的。
