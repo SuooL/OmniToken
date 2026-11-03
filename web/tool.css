@@ -476,11 +476,11 @@ body.tool-app {
   font-weight: 600;
 }
 .tool-ui .quota-track {
+  position: relative;
   height: 5px;
   background: #a4afbe20;
   border-radius: 3px;
   margin-top: 5px;
-  overflow: hidden;
 }
 .tool-ui .quota-track > div {
   height: 100%;
@@ -878,4 +878,19 @@ body.drawer-open {
 }
 .tool-ui .tool-kv dd {
   margin: 0;
+}
+
+/* A time tick shares the usage scale without adding another label or bar. */
+.tool-ui .quota-time-marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: #3b82f6;
+  box-shadow: 0 0 0 1px var(--tool-surface);
+  transform: translateX(-1px);
+}
+.tool-ui .quota-time-marker:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
 }

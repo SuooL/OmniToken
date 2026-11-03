@@ -354,3 +354,11 @@ display rules and Codex date-based valuation assumptions are not rewritten by ca
 ### Stable machine enrollment (ADR-0039)
 
 Implemented: machine-derived enrollment keys preserve canonical device IDs across agent reinstallations; admin enrollment rotates credentials independently. Confirmed merges no longer recreate revoked registry-only fleet rows.
+
+### Web source, price, and quota consistency (2026-11-02)
+
+| Item | Status | Behavior |
+|---|---|---|
+| Three tool speed lanes | ✅ Complete | Overview/live/speed retain Claude, Codex, and DeepSeek in a stable order; absent measurements remain gaps. |
+| DeepSeek V4.1 Flash pricing | ✅ Complete | Reported versioned first-party IDs fall back to the catalog's `deepseek-flash` entry; exact overrides and explicit provider prices win. |
+| Quota elapsed-time marker | ✅ Complete | Official 5h/week tracks add a blue time tick; hover/focus shows elapsed percentage without persistent comparison text. Unknown and expired bounds have no marker. |

@@ -137,8 +137,10 @@ test("speed lanes share scale, retain missing measurements, and use canonical so
   );
   assert.equal(option.yAxis[0].max, option.yAxis[1].max);
   assert.ok(option.yAxis[0].max >= 100);
-  assert.equal(option.series[0].data[1], null);
-  assert.equal(option.series[0].itemStyle.color, "color:codex");
+  assert.equal(option.series[1].data[1], null);
+  assert.equal(option.series[1].itemStyle.color, "color:codex");
+  assert.deepEqual(Array.from(option.yAxis, axis => axis.name), ["claude-code", "codex", "dsh"]);
+  assert.ok(option.series[2].data.every(value => value === null));
   // ECharts prints max as the top tick, so the padded peak (100 × 1.1) has to
   // land on a clean number, with the midpoint tick pinned to half of it.
   assert.equal(option.yAxis[0].max, 120);
