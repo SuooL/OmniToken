@@ -143,3 +143,15 @@ hostname and credentials. Existing IDs are bound during admin enrollment and
 reused after reinstallation; credentials may rotate without changing history.
 Revoked identities cannot be reactivated implicitly. Raw machine identifiers are
 never uploaded. See ADR-0039 for OS reinstall and cloned-system limitations.
+
+### Web source and quota comparison (2026-11-02)
+
+Overview, live, and speed source charts keep Claude, Codex, and DeepSeek lanes
+in that order, followed by additional observed sources. Missing measurements
+remain gaps. Subscription quota tracks retain the official usage fill and
+percentage, and add a blue elapsed-time tick computed from the official reset
+and window duration (5h or week). Hover/focus exposes time progress; no extra
+comparison text is displayed. Missing or expired quota bounds have no tick.
+Versioned first-party DeepSeek V4.1 Flash display names use the catalog's
+`deepseek-flash` price when no exact price exists; overrides and explicit
+provider prices retain precedence.

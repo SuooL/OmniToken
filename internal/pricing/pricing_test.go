@@ -87,3 +87,31 @@ func TestOverrides(t *testing.T) {
 		t.Errorf("override not applied: %+v ok=%v", p, ok)
 	}
 }
+
+func TestDeepSeekFlashReportedNames(t *testing.T) {
+	tb := &Table{prices: map[string]Price{
+		"deepseek-flash":               {Input: 3e-7, Output: 1.2e-6},
+		"azure_ai/deepseek-v4.1-flash": {Input: 9e-7},
+	}, cache: map[string]*Price{}}
+	for _, name := range []string{"DeepSeek-V4.1-Flash", "deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash"} {
+		p, ok := tb.Lookup(name)
+		if !ok || p.Output != 1.2e-6 {
+			t.Errorf("%s: %+v, %v", name, p, ok)
+		}
+	}
+	p, _ := tb.Lookup("azure_ai/deepseek-v4.1-flash")
+	if p.Input != 9e-7 {
+		t.Fatal("provider-specific price lost")
+	}
+	for _, name := range []string{"router/deepseek-v4.1-flash", "deepseek-v4.2-flash", "deepseek-v4.1-flash-unknown"} {
+		if _, ok := tb.Lookup(name); ok {
+			t.Errorf("invented price for %s", name)
+		}
+	}
+	tb.prices["deepseek-v4.1-flash"] = Price{Input: 2e-7}
+	tb.cache = map[string]*Price{}
+	p, _ = tb.Lookup("DeepSeek-V4.1-Flash")
+	if p.Input != 2e-7 {
+		t.Fatal("exact override lost")
+	}
+}

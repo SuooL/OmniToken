@@ -216,7 +216,7 @@ const Overview = {
   renderSpeed(snapshot, liveSpeed = {}) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
-    const sourceKeys = [];
+    const sourceKeys = ["claude-code", "codex", "dsh"];
     buckets.forEach((bucket) => (bucket.sources || []).forEach((row) => {
       const key = speedSourceKey(row);
       if (!sourceKeys.includes(key)) sourceKeys.push(key);
@@ -259,8 +259,8 @@ const Overview = {
         axisTick: { show: false }, axisLabel: { show: index === sourceKeys.length - 1, color: cssVar("--text-muted") },
       })),
       yAxis: sourceKeys.map((key, index) => ({
-        type: "value", gridIndex: index, name: SourceUI.label(key),
-        nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "right" },
+        type: "value", gridIndex: index, name: SourceUI.label(key), nameGap: 4,
+        nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "left" },
         min: 0, splitNumber: 2, splitLine: { lineStyle: { color: cssVar("--grid") } },
         axisLabel: { color: cssVar("--text-muted"), formatter: (v) => compact(v) },
       })),

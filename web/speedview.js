@@ -226,19 +226,12 @@ const SpeedView = {
   renderSourceLanes(snapshot) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
-    // A source only gets a lane if it actually generated something in this
-    // window. `measured_sources` says "speed is measurable for this source",
-    // which is not the same as "it ran" — an installed but idle Codex used to
-    // take half the chart's height to draw a flat zero, and squeezed the lane
-    // that had data into the other half.
-    const contributed = new Set(buckets.flatMap((bucket) =>
-      (bucket.sources || [])
-        .filter((row) => (row.contribution_tps || 0) > 0)
-        .map(speedSourceKey)));
+    // Keep tool identity stable across windows; absent measurements stay gaps.
     const keys = [...new Set([
+      "claude-code", "codex", "dsh",
       ...(speed.measured_sources || []),
       ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
-    ])].filter((key) => contributed.has(key));
+    ])];
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
@@ -271,8 +264,8 @@ const SpeedView = {
         axisLine: {lineStyle: {color: cssVar("--baseline")}},
       })),
       yAxis: keys.map((key, i) => ({
-        type: "value", gridIndex: i, min: 0, max: maximum, name: SourceUI.label(key),
-        nameTextStyle: {color: SourceUI.color(key)},
+        type: "value", gridIndex: i, min: 0, max: maximum, name: SourceUI.label(key), nameGap: 4,
+        nameTextStyle: {color: SourceUI.color(key), align: "left"},
         // Two intervals is what fits a lane without the labels colliding; the
         // explicit interval pins the ticks to 0, max/2 and max.
         splitNumber: 2, interval: maximum / 2,

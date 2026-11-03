@@ -72,6 +72,7 @@ const Live = {
     ToolUI.updateHTML(document.getElementById("live-unmeasured"), (speed.unmeasured_sources || []).map((source) => `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测 / not measured</div>`).join(""));
     const buckets = speed.series || [];
     const sourceKeys = [...new Set([
+      "claude-code", "codex", "dsh",
       ...(speed.measured_sources || []),
       ...buckets.flatMap((bucket) => (bucket.sources || []).map(speedSourceKey)),
     ])];
@@ -97,9 +98,9 @@ const Live = {
         axisLine: { lineStyle: { color: cssVar("--baseline") } },
       })),
       yAxis: sourceKeys.map((key, index) => ({
-        type: "value", gridIndex: index, min: 0, name: SourceUI.label(key),
-        nameTextStyle: { color: ChartRegistry.sourceColor(key) },
-        splitLine: { lineStyle: { color: cssVar("--grid") } },
+        type: "value", gridIndex: index, min: 0, name: SourceUI.label(key), nameGap: 4,
+        nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "left" },
+        splitNumber: 2, splitLine: { lineStyle: { color: cssVar("--grid") } },
         axisLabel: { color: cssVar("--text-muted") },
       })),
       series: sourceKeys.map((key, index) => ({
