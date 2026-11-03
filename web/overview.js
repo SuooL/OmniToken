@@ -216,14 +216,13 @@ const Overview = {
   renderSpeed(snapshot, liveSpeed = {}) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
-    const sourceKeys = ["claude-code", "codex", "dsh"];
-    buckets.forEach((bucket) => (bucket.sources || []).forEach((row) => {
-      const key = speedSourceKey(row);
-      if (!sourceKeys.includes(key)) sourceKeys.push(key);
-    }));
-    (speed.measured_sources || []).forEach((key) => {
-      if (!sourceKeys.includes(key)) sourceKeys.push(key);
-    });
+    // Capability alone is not a measurement in the selected window.
+    const contributed = new Set(buckets.flatMap((bucket) => (bucket.sources || [])
+      .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
+      .map(speedSourceKey)));
+    const sourceKeys = [...new Set([
+      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+    ])].filter((source) => contributed.has(source));
     const liveSources = liveSpeed.sources || [];
     const visibleSum = liveSources.reduce((sum, row) => sum + (row.contribution_tps || 0), 0);
     const aggregate = currentAggregateTPS(liveSpeed);
