@@ -562,10 +562,10 @@ test("speed lanes put DeepSeek after the core sources and before the rest", () =
     ],
   });
 
-  assert.deepEqual(lanes, ["claude-code", "codex", "dsh", "api"]);
+  assert.deepEqual(lanes, ["claude-code", "dsh", "api"]);
 });
 
-test("an unmeasured source without history still gets an unavailable lane", () => {
+test("unmeasured and idle sources do not get speed lanes", () => {
   const { html, lanes } = showSpeed({
     peak_tps: 30,
     measured_sources: ["claude-code"],
@@ -575,14 +575,11 @@ test("an unmeasured source without history still gets an unavailable lane", () =
     ],
   });
 
-  assert.deepEqual(lanes, ["claude-code", "codex", "dsh"]);
+  assert.deepEqual(lanes, ["claude-code"]);
   const lane = html.match(
     /<div class="lane lane-dsh([^"]*)">([\s\S]*?)<\/div>/,
   );
-  assert.ok(lane, "missing DeepSeek lane");
-  assert.equal(lane[1], " unavailable");
-  assert.ok(lane[2].includes("DeepSeek"));
-  assert.ok(lane[2].includes("速度不可用"));
+  assert.equal(lane, null);
 });
 
 test("the speed summary names sources in lane order, not the server's sort", () => {
@@ -610,7 +607,7 @@ test("the speed summary names sources in lane order, not the server's sort", () 
   );
 });
 
-test("no DeepSeek lane appears for a user without any DeepSeek data", () => {
+test("DeepSeek lane is absent without any DeepSeek speed", () => {
   const { html, lanes } = showSpeed({
     peak_tps: 40,
     measured_sources: ["claude-code", "api"],
@@ -623,6 +620,25 @@ test("no DeepSeek lane appears for a user without any DeepSeek data", () => {
     ],
   });
 
-  assert.deepEqual(lanes, ["claude-code", "codex", "api"]);
+  assert.deepEqual(lanes, ["claude-code", "api"]);
   assert.ok(!html.includes("DeepSeek"));
+});
+
+test("quota time ticks share the usage track for both official windows", () => {
+ const oldNow=Date.now;Date.now=()=>2000000000;
+ try {
+  const html=showQuotas([{source:"codex",label:"Codex",five_hour_percent:60,weekly_percent:80,five_hour_resets_at_ms:2000000000+300*60000*.6,weekly_resets_at_ms:2000000000+10080*60000*.6}]);
+  assert.equal((html.match(/class="quota-time-marker"/g)||[]).length,2);
+  assert.equal((html.match(/left:40%/g)||[]).length,2);
+  assert.equal((html.match(/title="时间已过 40%"/g)||[]).length,2);
+  assert.match(html,/tabindex="0"/);
+  assert.match(html,/aria-valuetext="60%.*时间已过 40%/);
+  assert.doesNotMatch(html,/高于|低于|百分点/);
+  for(const reset of [null,0,NaN,1999999999]) {
+   const missing=showQuotas([{source:"codex",five_hour_percent:0,five_hour_resets_at_ms:reset}]);
+   assert.doesNotMatch(missing,/class="quota-time-marker"/);
+  }
+  const future=showQuotas([{source:"codex",five_hour_percent:0,five_hour_resets_at_ms:2000000000+600*60000}]);
+  assert.match(future,/left:0%/);
+ } finally {Date.now=oldNow;}
 });

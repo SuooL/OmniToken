@@ -216,14 +216,13 @@ const Overview = {
   renderSpeed(snapshot, liveSpeed = {}) {
     const speed = telemetrySpeed(snapshot);
     const buckets = speed.series || [];
-    const sourceKeys = [];
-    buckets.forEach((bucket) => (bucket.sources || []).forEach((row) => {
-      const key = speedSourceKey(row);
-      if (!sourceKeys.includes(key)) sourceKeys.push(key);
-    }));
-    (speed.measured_sources || []).forEach((key) => {
-      if (!sourceKeys.includes(key)) sourceKeys.push(key);
-    });
+    // Capability alone is not a measurement in the selected window.
+    const contributed = new Set(buckets.flatMap((bucket) => (bucket.sources || [])
+      .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
+      .map(speedSourceKey)));
+    const sourceKeys = [...new Set([
+      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+    ])].filter((source) => contributed.has(source));
     const liveSources = liveSpeed.sources || [];
     const visibleSum = liveSources.reduce((sum, row) => sum + (row.contribution_tps || 0), 0);
     const aggregate = currentAggregateTPS(liveSpeed);
@@ -259,8 +258,8 @@ const Overview = {
         axisTick: { show: false }, axisLabel: { show: index === sourceKeys.length - 1, color: cssVar("--text-muted") },
       })),
       yAxis: sourceKeys.map((key, index) => ({
-        type: "value", gridIndex: index, name: SourceUI.label(key),
-        nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "right" },
+        type: "value", gridIndex: index, name: SourceUI.label(key), nameGap: 4,
+        nameTextStyle: { color: ChartRegistry.sourceColor(key), align: "left" },
         min: 0, splitNumber: 2, splitLine: { lineStyle: { color: cssVar("--grid") } },
         axisLabel: { color: cssVar("--text-muted"), formatter: (v) => compact(v) },
       })),

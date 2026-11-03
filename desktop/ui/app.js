@@ -282,6 +282,12 @@ function quotaRemaining(quota, key) {
   return known ? remaining : null;
 }
 
+function quotaElapsed(percent, reset, minutes) {
+  const now = Date.now();
+  if (!finite(percent) || percent < 0 || !finite(reset) || reset <= now) return null;
+  return Math.max(0, Math.min(100, 100 * (1 - (reset - now) / (minutes * 60000))));
+}
+
 function renderQuotas() {
   const quotas = latestLive && latestLive.quotas;
   const root = $("quota-grid");
@@ -313,10 +319,13 @@ function renderQuotas() {
                       ? "留意"
                       : "";
             const risk = !known ? "missing" : severity || "normal";
+            const elapsed = quotaElapsed(percent, quota[`${window.key}_resets_at_ms`], window.key === "five_hour" ? 300 : 10080);
+            const timeText = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
+            const marker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
             return `<div class="quota-window" data-window="${window.key}" data-risk="${risk}">
       <span class="quota-window-label">${window.label}</span><div class="quota-reading">
       <strong class="fig" data-severity="${severity}">${known ? percentLabel(percent) : "暂无"}</strong>${hint ? `<small>${hint}</small>` : ""}
-      <div class="quota-meter${known ? "" : " missing"}" ${known ? `role="progressbar" aria-label="${esc(quota.label)} ${window.label} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(percent, 100)}" aria-valuetext="${percentLabel(percent)}${hint ? ` ${hint}` : ""}"` : 'role="img" aria-label="配额暂无读数"'}><div class="quota-meter-fill" style="width:${known ? Math.min(percent, 100) : 0}%"></div></div></div>
+      <div class="quota-meter${known ? "" : " missing"}" ${known ? `role="progressbar" aria-label="${esc(quota.label)} ${window.label} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(percent, 100)}" aria-valuetext="${percentLabel(percent)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"` : 'role="img" aria-label="配额暂无读数"'}><div class="quota-meter-fill" style="width:${known ? Math.min(percent, 100) : 0}%"></div>${marker}</div></div>
       <span class="quota-remainder" title="预估剩余额度（tokens）">${finite(remaining) ? compact(remaining) : "暂无估算"}</span>
       <span class="quota-reset">${quotaResetLabel(quota[`${window.key}_resets_at_ms`])}</span></div><!--quota-window-->`;
           },
@@ -361,20 +370,11 @@ function renderSpeedLanes() {
   const series = speed.series || [];
   const measured = new Set(speed.measured_sources || []);
   const unmeasured = new Set(speed.unmeasured_sources || []);
-  // Lanes follow the source cards: Claude and Codex always, then DeepSeek, then
-  // the rest alphabetically. An unmeasured source has no series rows, so the
-  // source sets are read too — otherwise its "速度不可用" lane would vanish.
-  const ordered = [
-    ...new Set([
-      "claude-code",
-      "codex",
-      ...series.flatMap((bucket) =>
-        sourceRows(bucket).map((row) => row.source),
-      ),
-      ...measured,
-      ...unmeasured,
-    ]),
-  ].sort(bySourceOrder);
+  // Show only sources with a measured contribution in this time window.
+  const ordered = [...new Set(series.flatMap((bucket) =>
+    sourceRows(bucket).filter((row) => finite(row.contribution_tps) && row.contribution_tps > 0)
+      .map((row) => row.source),
+  ))].sort(bySourceOrder);
   const peak = finite(speed.peak_tps)
     ? speed.peak_tps
     : series.reduce(
@@ -387,7 +387,7 @@ function renderSpeedLanes() {
       sourceRows(bucket).map((row) => row.contribution_tps || 0),
     ),
   );
-  root.innerHTML = ordered
+  root.innerHTML = ordered.length ? ordered
     .map((source) => {
       const unavailable = unmeasured.has(source) && !measured.has(source);
       if (unavailable) {
@@ -415,15 +415,14 @@ function renderSpeedLanes() {
       <span class="lane-bars">${bars}</span>
     </div>`;
     })
-    .join("");
+    .join("") : '<div class="empty">此范围暂无已测来源速度</div>';
   const exactCoverage = coverageLabel(speed);
   const measuredLabel =
     ordered
       .filter((source) => measured.has(source))
       .map(sourceName)
       .join("、") || "无";
-  const unavailableLabel = ordered
-    .filter((source) => unmeasured.has(source))
+  const unavailableLabel = [...unmeasured].sort(bySourceOrder)
     .map(sourceName)
     .join("、");
   $("speed-coverage").textContent =

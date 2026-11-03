@@ -135,3 +135,27 @@ test("custom source names that match prototype properties keep their literal ide
   assert.match(vm.runInContext('SourceUI.brand("__proto__")',c), /__proto__/);
   assert.equal(vm.runInContext('SourceUI.label("constructor")',c), 'constructor');
 });
+
+test("quota time marker uses reset duration for 5h and week without persistent comparison text", () => {
+  const c = load();
+  vm.runInContext('Date = class extends Date { static now() { return 2000000000; } }', c);
+  for (const minutes of [300, 10080]) {
+    const html = vm.runInContext(`QuotaUI.render([], [{source:"codex",window_minutes:${minutes},used_percent:60,resets_at:2000000000+${minutes}*60000*.6}])`, c);
+    assert.match(html, /class="quota-time-marker"/);
+    assert.match(html, /left:40%/);
+    assert.match(html, /title="时间已过 40%"/);
+    assert.match(html, /tabindex="0"/);
+    assert.doesNotMatch(html, /高于|低于|百分点/);
+    assert.match(html, /aria-valuetext="60%.*时间已过 40%/);
+  }
+});
+test("unknown or expired quota bounds do not fabricate time markers", () => {
+  const c = load();
+  vm.runInContext('Date = class extends Date { static now() { return 2000000000; } }', c);
+  for (const reset of ["undefined", "0", "NaN", "1999999999"]) {
+    const html = vm.runInContext(`QuotaUI.render([], [{source:"codex",window_minutes:300,used_percent:0,resets_at:${reset}}])`, c);
+    assert.doesNotMatch(html, /class="quota-time-marker"/);
+  }
+  const html = vm.runInContext('QuotaUI.render([], [{source:"codex",window_minutes:300,used_percent:0,resets_at:2000000000+300*60000*2}])', c);
+  assert.match(html, /left:0%/);
+});

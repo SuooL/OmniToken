@@ -153,6 +153,10 @@ const QuotaUI = {
     const minutes = Math.ceil(Math.max(0, deadline - Date.now()) / 60000);
     return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
   },
+  elapsed(row, now = Date.now()) {
+    if (row.value == null || !Number.isFinite(row.reset) || row.reset <= now || !(row.minutes > 0)) return null;
+    return Math.max(0, Math.min(100, 100 * (1 - (row.reset - now) / (row.minutes * 60000))));
+  },
   render(windows = [], quotas = []) {
     const rows = this.normalize(windows || [], quotas || []);
     const sources = [...new Set(rows.map((row) => row.source))];
@@ -166,13 +170,16 @@ const QuotaUI = {
               const risk = known ? this.severity(row.value) : "missing";
               const text = known ? `${row.value.toFixed(0)}%` : "暂无";
               const hint = known ? this.hint(row.value) : "";
+              const elapsed = this.elapsed(row);
+              const timeLabel = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
+              const timeMarker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeLabel}" aria-label="${timeLabel}"></i>`;
               const scope = /:/.test(row.scope)
                 ? ` · ${esc(row.scope.split(":").slice(1).join(":"))}`
                 : "";
               const observed = row.observed
                 ? `观测 ${relTime(row.observed)}`
                 : "观测时间未知";
-              return `<tr data-risk="${risk}" class="quota-data"><th scope="row">${row.minutes === 300 ? "5h" : "Week"}${scope}</th><td class="quota-used"><span class="quota-percent">${text}</span>${hint ? ` <small>${hint}</small>` : ""}<div class="quota-track${known ? "" : " quota-unknown"}" ${known ? `role="progressbar" aria-label="${esc(SourceUI.label(source))} ${row.minutes === 300 ? "5h" : "Week"} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(row.value, 100)}" aria-valuetext="${row.value}% ${hint}"` : 'role="img" aria-label="官方配额暂无读数"'}><div style="width:${known ? Math.min(row.value, 100) : 0}%"></div></div></td><td ${row.remaining == null ? "" : `data-remaining="${row.remaining}"`}>${row.remaining == null ? "暂无估算" : compact(row.remaining)}</td><td><span>${this.countdown(row.reset)}</span><span class="quota-observed">${observed}</span></td></tr>`;
+              return `<tr data-risk="${risk}" class="quota-data"><th scope="row">${row.minutes === 300 ? "5h" : "Week"}${scope}</th><td class="quota-used"><span class="quota-percent">${text}</span>${hint ? ` <small>${hint}</small>` : ""}<div class="quota-track${known ? "" : " quota-unknown"}" ${known ? `role="progressbar" aria-label="${esc(SourceUI.label(source))} ${row.minutes === 300 ? "5h" : "Week"} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(row.value, 100)}" aria-valuetext="${row.value}% ${hint}${timeLabel ? ` · ${timeLabel}` : ""}"` : 'role="img" aria-label="官方配额暂无读数"'}><div style="width:${known ? Math.min(row.value, 100) : 0}%"></div>${timeMarker}</div></td><td ${row.remaining == null ? "" : `data-remaining="${row.remaining}"`}>${row.remaining == null ? "暂无估算" : compact(row.remaining)}</td><td><span>${this.countdown(row.reset)}</span><span class="quota-observed">${observed}</span></td></tr>`;
             })
             .join("")}</tbody>`,
       )

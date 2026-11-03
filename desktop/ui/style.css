@@ -347,11 +347,11 @@ input {
   margin-left: 3px;
 }
 .quota-meter {
+  position: relative;
   height: 4px;
   background: var(--line);
   border-radius: 3px;
   margin-top: 3px;
-  overflow: hidden;
 }
 .quota-meter-fill {
   height: 100%;
@@ -695,4 +695,19 @@ body.details-window .panel {
   * {
     scroll-behavior: auto !important;
   }
+}
+
+/* The blue tick marks elapsed window time on the existing usage scale. */
+.quota-time-marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: #3b82f6;
+  box-shadow: 0 0 0 1px var(--surface);
+  transform: translateX(-1px);
+}
+.quota-time-marker:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
 }

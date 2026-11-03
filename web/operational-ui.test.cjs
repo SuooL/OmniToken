@@ -179,8 +179,9 @@ test("missing source bucket remains a chart gap rather than measured zero", () =
   // Only the coverage query needs a selector; chart hosts are returned by id.
   run('document.querySelector=()=>document.getElementById("coverage")');
   run(
-    'Overview.renderSpeed({speed:{measured_sources:["codex"],series:[{start_ms:0,sources:[]},{start_ms:60000,sources:[{source:"codex",contribution_tps:0}]}]}})',
+    'Overview.renderSpeed({speed:{measured_sources:["codex"],series:[{start_ms:0,sources:[]},{start_ms:60000,sources:[{source:"codex",contribution_tps:0}]},{start_ms:120000,sources:[{source:"codex",contribution_tps:10}]}]}})',
   );
+  assert.deepEqual(Array.from(chart[1].series, row => row.name), ["codex"]);
   assert.equal(chart[1].series[0].data[0], null);
   assert.equal(chart[1].series[0].data[1], 0);
   assert.equal(chart[2].columns[1].format(null), "—");
@@ -201,4 +202,18 @@ test("empty trend disposes its existing canvas and clears old companion data", (
   run("Overview.renderTrend([])");
   assert.equal(disposed, true);
   assert.equal(fallback.rows.length, 0);
+});
+
+test("live source lanes show only tools with speed in this window", () => {
+  let chart;
+  const { run } = load("live.js", {
+    telemetrySpeed: (snapshot) => snapshot.speed,
+    telemetryCoverageLabel: () => "部分可测",
+    speedSourceKey: (row) => row.source,
+    mixWithSurface: String,
+    ChartRegistry: {set: (_el, option) => { chart = option; }, sourceColor: String},
+  });
+  run('Live.renderTelemetry({data:{speed:{measured_sources:["dsh"],series:[{start_ms:0,sources:[{source:"dsh",contribution_tps:42}]}]}}})');
+  assert.deepEqual(Array.from(chart.series, row => row.name), ["dsh"]);
+  assert.equal(chart.series[0].data[0], 42);
 });
