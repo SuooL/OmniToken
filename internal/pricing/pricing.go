@@ -112,6 +112,13 @@ func (t *Table) Lookup(model string) (Price, bool) {
 
 func (t *Table) lookupUncached(m string) (Price, bool) {
 	candidates := []string{m, "anthropic/" + m, "openai/" + m}
+	// The first-party pricing table identifies deepseek-flash as V4.1 Flash.
+	// dsh reports its versioned display name. Never strip arbitrary providers:
+	// their exact prices (and manual overrides) must retain precedence.
+	switch strings.TrimPrefix(m, "deepseek/") {
+	case "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017":
+		candidates = append(candidates, "deepseek-flash", "deepseek/deepseek-flash")
+	}
 	// Bedrock: us.anthropic.claude-x-v1:0 → anthropic.claude-x-v1:0 → claude-x
 	stripped := bedrockRegion.ReplaceAllString(m, "")
 	if stripped != m {
