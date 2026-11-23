@@ -159,7 +159,14 @@ func TestSelfUpdateCommandChecksAndReplacesBinary(t *testing.T) {
 	if err != nil {
 		t.Skipf("unsupported host %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	payload := []byte("new-omnitoken-bin")
+	payload := []byte("#!/bin/sh\necho omnitoken v9.9.9\n")
+	if runtime.GOOS == "windows" {
+		if exe, err := os.Executable(); err == nil {
+			if b, err := os.ReadFile(exe); err == nil {
+				payload = b
+			}
+		}
+	}
 	sum := sha256.Sum256(payload)
 	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), asset)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

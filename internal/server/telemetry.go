@@ -57,69 +57,69 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := s.currentTime()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	usage, err := s.store.TelemetryUsage(todayStart, now)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	speedStart := now.Add(-selected.duration)
-	if rangeName == "today" {
-		speedStart = todayStart
-	}
-	speed, err := s.store.TelemetrySpeedSeries(speedStart, now, selected.bucket)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	tenMinute, err := s.store.TelemetrySpeedSeries(now.Add(-10*time.Minute), now, 10*time.Minute)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	speedResponse := telemetrySpeedResponse{
-		Range:             rangeName,
-		StartMS:           speed.StartMS,
-		EndMS:             speed.EndMS,
-		BucketMS:          speed.BucketMS,
-		MeasuredSources:   speed.MeasuredSources,
-		UnmeasuredSources: speed.UnmeasuredSources,
-		Coverage:          speed.Coverage,
-		Series:            speed.Series,
-	}
-	if len(tenMinute.Series) > 0 {
-		speedResponse.Aggregate10MTPS = tenMinute.Series[0].AggregateTPS
-	}
-	var totalActiveMS int64
-	for _, bucket := range speed.Series {
-		totalActiveMS += bucket.ActiveMS
-		if bucket.AggregateTPS > speedResponse.PeakTPS {
-			speedResponse.PeakTPS = bucket.AggregateTPS
-			speedResponse.PeakAt = bucket.StartMS
+	data, err := s.cachedJSON("telemetry:"+rangeName, liveCacheTTL, func() ([]byte, error) {
+		now := s.currentTime()
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		usage, err := s.store.TelemetryUsage(todayStart, now)
+		if err != nil {
+			return nil, err
 		}
-	}
-	if durationMS := speed.EndMS - speed.StartMS; durationMS > 0 {
-		speedResponse.ActiveRatio = float64(totalActiveMS) / float64(durationMS)
-	}
+		speedStart := now.Add(-selected.duration)
+		if rangeName == "today" {
+			speedStart = todayStart
+		}
+		speed, err := s.store.TelemetrySpeedSeries(speedStart, now, selected.bucket)
+		if err != nil {
+			return nil, err
+		}
+		tenMinute, err := s.store.TelemetrySpeedSeries(now.Add(-10*time.Minute), now, 10*time.Minute)
+		if err != nil {
+			return nil, err
+		}
 
-	resp := telemetryResponse{
-		GeneratedAt: now.UnixMilli(),
-		Timezone:    now.Location().String(),
-		Today:       usage.Today,
-		Rolling5H:   usage.Rolling5H,
-		Speed:       speedResponse,
-	}
-	data, err := json.Marshal(resp)
+		speedResponse := telemetrySpeedResponse{
+			Range:             rangeName,
+			StartMS:           speed.StartMS,
+			EndMS:             speed.EndMS,
+			BucketMS:          speed.BucketMS,
+			MeasuredSources:   speed.MeasuredSources,
+			UnmeasuredSources: speed.UnmeasuredSources,
+			Coverage:          speed.Coverage,
+			Series:            speed.Series,
+		}
+		if len(tenMinute.Series) > 0 {
+			speedResponse.Aggregate10MTPS = tenMinute.Series[0].AggregateTPS
+		}
+		var totalActiveMS int64
+		for _, bucket := range speed.Series {
+			totalActiveMS += bucket.ActiveMS
+			if bucket.AggregateTPS > speedResponse.PeakTPS {
+				speedResponse.PeakTPS = bucket.AggregateTPS
+				speedResponse.PeakAt = bucket.StartMS
+			}
+		}
+		if durationMS := speed.EndMS - speed.StartMS; durationMS > 0 {
+			speedResponse.ActiveRatio = float64(totalActiveMS) / float64(durationMS)
+		}
+
+		resp := telemetryResponse{
+			GeneratedAt: now.UnixMilli(),
+			Timezone:    now.Location().String(),
+			Today:       usage.Today,
+			Rolling5H:   usage.Rolling5H,
+			Speed:       speedResponse,
+		}
+		raw, err := json.Marshal(resp)
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) >= telemetryResponseLimit {
+			return nil, fmt.Errorf("telemetry response exceeds %d byte limit", telemetryResponseLimit)
+		}
+		return raw, nil
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(data) >= telemetryResponseLimit {
-		http.Error(w,
-			fmt.Sprintf("telemetry response exceeds %d byte limit", telemetryResponseLimit),
-			http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

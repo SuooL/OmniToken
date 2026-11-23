@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"sort"
 	"time"
 
@@ -30,24 +32,32 @@ type DeviceStatus struct {
 // of every historical row for an index-only pass — the live endpoint's residual
 // intrinsic floor once ingest no longer starves it of CPU (ADR-0030).
 func (s *Store) DeviceStatuses(todayStart time.Time) ([]DeviceStatus, error) {
-	lastSeen, err := s.rdb.Query(`SELECT device, MAX(ts) FROM events GROUP BY device`)
+	tx, err := s.rdb.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	defer lastSeen.Close()
+	defer tx.Rollback()
+
+	lastSeen, err := tx.Query(`SELECT device, MAX(ts) FROM events GROUP BY device`)
+	if err != nil {
+		return nil, err
+	}
 	var out []DeviceStatus
 	for lastSeen.Next() {
 		var d DeviceStatus
 		if err := lastSeen.Scan(&d.Device, &d.LastTS); err != nil {
+			lastSeen.Close()
 			return nil, err
 		}
 		out = append(out, d)
 	}
 	if err := lastSeen.Err(); err != nil {
+		lastSeen.Close()
 		return nil, err
 	}
+	lastSeen.Close()
 
-	today, err := s.rdb.Query(
+	today, err := tx.Query(
 		`SELECT device,
 		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
 		        COUNT(*)

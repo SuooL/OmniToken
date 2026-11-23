@@ -21,6 +21,7 @@ function devicesIsEmpty(data) {
 
 const DevicesView = {
   _timer: null,
+  days: 30,
   lastData: null,
   _loadGeneration: 0,
 
@@ -43,7 +44,7 @@ const DevicesView = {
     }
     try {
       const results = await Promise.allSettled([
-        Api.get("/api/v1/devices?days=30"),
+        Api.get(`/api/v1/devices?days=${this.days || 30}`),
         LiveSnapshotCache.load().catch((error) => {
           if (error && (error.status === 401 || error.status === 403)) throw error;
           return { speed: {}, unavailable: true };
@@ -125,7 +126,11 @@ const DevicesView = {
       root.innerHTML = `
         <section class="stat-row" id="devices-tiles"></section>
         <section class="instrument-card">
-          <h2 id="devices-table-title">设备明细</h2>
+          <div class="card-head">
+            <h2 id="devices-table-title">设备明细</h2>
+            <div class="range-switch" id="devices-range" role="group" aria-label="时间范围">${[7, 30, 90].map((n) =>
+              `<button type="button" class="ghost-btn" data-days="${n}" aria-pressed="${n === (this.days || 30)}">近 ${n} 天</button>`).join("")}</div>
+          </div>
           <p class="subtle">连接状态来自设备心跳；最近 token 活动与进程观测分别显示。点击设备查看详情。</p>
           <div class="data-table data-table-shell" id="devices-table"></div>
         </section>
@@ -145,8 +150,19 @@ const DevicesView = {
           event.preventDefault(); this.openDevice(row.dataset.deviceKey, row);
         }
       });
+      const rangeEl = document.getElementById("devices-range");
+      if (rangeEl) {
+        rangeEl.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-days]");
+          if (!btn) return;
+          const next = Number(btn.dataset.days);
+          if (next && next !== this.days) { this.days = next; this.load(); }
+        });
+      }
       root.dataset.built = "1";
     }
+    document.querySelectorAll?.("#devices-range [data-days]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.days) === (this.days || 30))));
     document.getElementById("devices-chart-title").textContent =
       `每日用量 · 按设备堆叠 · 近 ${days} 天`;
     document.getElementById("devices-table-title").textContent = `设备明细 · 近 ${days} 天`;
@@ -179,7 +195,7 @@ const DevicesView = {
     if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "当前设备吞吐贡献",
-      grid: {left: 12, right: 48, top: 8, bottom: 8, containLabel: true},
+      grid: {left: 12, right: 86, top: 8, bottom: 8, containLabel: true},
       xAxis: {type: "value", min: 0, splitLine: {lineStyle: {color: cssVar("--grid")}}, axisLabel: {color: cssVar("--text-muted")}},
       yAxis: {type: "category", inverse: true, data: rows.map((row) => {
         const identity = row.key || row.device;
@@ -265,6 +281,12 @@ const DevicesView = {
       subtitle: `近 ${d.days || 30} 天 · ${key}`, html: this.deviceDetail(row, d), trigger});
   },
 
+  isOutdated(agentVersion, hubVersion) {
+    if (!agentVersion || !hubVersion || typeof compareSemver !== "function") return false;
+    const cmp = compareSemver(agentVersion, hubVersion);
+    return cmp != null && cmp < 0;
+  },
+
   deviceDetail(row, d) {
     const live = d.live || {};
     const status = (live.devices || []).find((device) => device.device === row.device);
@@ -272,16 +294,31 @@ const DevicesView = {
     const sessions = (live.sessions || []).filter((session) => session.device === row.device);
     const heartbeat = row.identity_status === "registered"
       ? (row.last_seen_at ? relTime(row.last_seen_at) : "从未连接") : "不适用";
-    return `<p class="subtle">${this.liveStatus(d)}</p><dl class="detail-fields">
-      <dt>最近心跳</dt><dd>${heartbeat}</dd>
+    const hubVer = d.hub_version || (typeof Api !== "undefined" ? Api.hubVersion : "") || "";
+    const outdated = row.identity_status === "registered" && this.isOutdated(row.agent_version, hubVer);
+    const versionText = row.identity_status !== "registered"
+      ? (row.identity_status === "local" ? (hubVer || "本机") : "旧版 v1")
+      : (row.agent_version ? `${esc(row.agent_version)}${outdated ? ` <span class="version-badge outdated">落后于 Hub ${esc(hubVer)}</span>` : ""}` : "未上报");
+    const scanUpload = (row.last_scan_at || row.last_upload_at)
+      ? `扫描 ${row.last_scan_at ? relTime(row.last_scan_at) : "—"} · 上传 ${row.last_upload_at ? relTime(row.last_upload_at) : "—"}`
+      : "尚未收到时间戳";
+    const upgradeBox = outdated
+      ? `<div class="copy-cmd-row"><code>omnitoken self-update -restart</code><button type="button" class="ghost-btn" onclick="copySnippet('omnitoken self-update -restart', this)">复制升级命令</button></div>`
+      : "";
+    const warningsHTML = (row.warnings && row.warnings.length)
+      ? `<dt>Agent 告警</dt><dd>${row.warnings.map((w) => esc(w)).join("、")}</dd>` : "";
+    return `<p class="subtle">${esc(this.liveStatus(d))} · <a class="inline-link" href="#details?device=${encodeURIComponent(row.device || "")}&amp;days=${d.days || 30}">查看该设备事件明细 →</a></p>${upgradeBox}<dl class="detail-fields">
+      <dt>Agent 版本</dt><dd>${versionText}</dd>
+      <dt>最近心跳</dt><dd>${esc(heartbeat)}</dd>
       <dt>最近 token 活动</dt><dd>${row.last_ts ? relTime(row.last_ts) : "暂无"}</dd>
       <dt>待上报批次</dt><dd>${row.identity_status === "registered" ? full(row.queued_batches || 0) : "不可观测"}</dd>
-      <dt>采集 / 上传时间</dt><dd>当前接口未提供独立时间</dd>
+      <dt>采集 / 上传时间</dt><dd>${esc(scanUpload)}</dd>
+      ${warningsHTML}
       <dt>进程观测</dt><dd>${status && status.has_procs ? `${full(status.running)} 个打开的会话` : "会话状态不可观测"}</dd>
       <dt>最近 10 分钟有用量的会话</dt><dd>${live.sessions ? full(sessions.length) : "不可观测"}</dd>
       <dt>区间 tokens</dt><dd>${full(row.total_tokens || 0)}</dd>
       <dt>主力模型</dt><dd>${esc(row.top_model || "暂无")} · ${compact(row.top_model_tokens || 0)} tokens</dd>
-      </dl><p class="subtle">当前设备接口提供主力模型；未提供完整来源与模型拆分。</p>
+      </dl>
       <h3>每日用量 · 近 ${d.days || 30} 天</h3>
       <div class="data-table"><table><thead><tr><th>日期</th><th>tokens</th></tr></thead><tbody>${daily.map((day) => `<tr><td>${esc(day.bucket)}</td><td>${full(day.total_tokens)}</td></tr>`).join("")}</tbody></table>${daily.length ? "" : '<p class="empty">暂无每日用量</p>'}</div>`;
   },
@@ -345,8 +382,9 @@ const DevicesView = {
   // "无定价" and "$0" are different facts (ADR-0005).
   table(summary) {
     if (!summary.length) return `<span class="empty">暂无数据</span>`;
+    const hubVer = ((this._displayData || {}).hub_version) || (typeof Api !== "undefined" ? Api.hubVersion : "") || "";
     return `<table><thead><tr>
-        <th>设备</th><th>连接</th><th>最近心跳</th><th>待上报</th><th>今日</th><th>区间 tokens</th><th>成本</th>
+        <th>设备</th><th>版本</th><th>连接</th><th>最近心跳</th><th>待上报</th><th>今日</th><th>区间 tokens</th><th>成本</th>
         <th>最近 token 活动</th><th>会话观测</th><th>项目</th><th>主力模型</th>
       </tr></thead><tbody>` +
       summary.map((r) => {
@@ -361,12 +399,15 @@ const DevicesView = {
         const model = r.top_model
           ? `${esc(r.top_model)} <span class="dev-share">${compact(r.top_model_tokens)}</span>`
           : "—";
-        // Three kinds of row, not two. The hub's own machine has no agent to
-        // be online or offline and nothing to enrol, so calling it a legacy
-        // device pointed at an upgrade that does not exist.
         const connection = r.identity_status === "registered"
           ? this.connectionLabel(r.connection_state)
           : r.identity_status === "local" ? "本机" : "旧版设备";
+        const outdated = r.identity_status === "registered" && this.isOutdated(r.agent_version, hubVer);
+        const verCell = r.identity_status === "local"
+          ? (hubVer ? `<span class="version-badge">${esc(hubVer)}</span>` : "本机")
+          : r.agent_version
+            ? `<span class="version-badge${outdated ? " outdated" : ""}" title="${outdated ? `落后于 Hub ${esc(hubVer)}` : "版本同步"}">${esc(r.agent_version)}${outdated ? " · 落后" : ""}</span>`
+            : "—";
 
         const backlog = r.identity_status === "registered"
           ? (r.queued_batches
@@ -378,7 +419,8 @@ const DevicesView = {
             ${esc(this.label(r))}
             ${r.display_name && r.device_id ? `<span class="dev-share">${esc(r.device_id.slice(0, 8))}</span>` : ""}
           </td>
-          <td><span class="dot ${r.connection_state || "stale"}"></span>${connection}</td>
+          <td>${verCell}</td>
+          <td><span class="dot ${esc(r.connection_state || "stale")}"></span>${esc(connection)}</td>
           <td>${r.identity_status === "registered" ? (r.last_seen_at ? relTime(r.last_seen_at) : "从未连接") : "—"}</td>
           <td>${backlog}</td>
           <td>${compact(r.today_tokens || 0)}</td>

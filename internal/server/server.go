@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -127,7 +128,10 @@ func (s *Server) Run() error {
 
 	go s.runPricingUpdates(context.Background())
 	go s.runCollectors()
-	go s.backfillCapacity()
+	go func() {
+		s.backfillCapacity()
+		s.runOperationalRetention()
+	}()
 	s.startProxy()
 
 	if s.cfg.Token == "" {
@@ -179,17 +183,31 @@ func (s *Server) routes() http.Handler {
 	// Health stays open on purpose: it carries no usage data, and it is what a
 	// client probes to tell "wrong address" from "wrong token".
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "auth_required": s.siteAuth != nil || !s.loopbackOnly(), "site_auth_enabled": s.siteAuth != nil})
+		writeJSON(w, map[string]any{
+			"status":            "ok",
+			"hub_version":       s.hubVersion(),
+			"auth_required":     s.siteAuth != nil || !s.loopbackOnly(),
+			"site_auth_enabled": s.siteAuth != nil,
+		})
 	})
 	// Legacy installs serve a public shell and authenticate each API request.
 	// Site-login installs also gate the shell and use a host-only browser cookie.
-	var panel http.Handler = http.FileServerFS(web.FS)
+	var panel http.Handler = withSecurityHeaders(http.FileServerFS(web.FS))
 	if s.siteAuth != nil {
 		s.siteAuth.RegisterRoutes(mux)
 		panel = s.siteAuth.Protect(panel)
 	}
 	mux.Handle("GET /", panel)
 	return mux
+}
+
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func newHTTPServer(address string, handler http.Handler) *http.Server {
@@ -201,6 +219,13 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+}
+
+func (s *Server) hubVersion() string {
+	if s.cfg != nil && strings.TrimSpace(s.cfg.Version) != "" {
+		return strings.TrimSpace(s.cfg.Version)
+	}
+	return "dev"
 }
 
 func (s *Server) currentTime() time.Time {
@@ -218,6 +243,14 @@ func (s *Server) currentTime() time.Time {
 // requirement from the listen address instead (ADR-0016).
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.sameOriginMutationOK(r) {
+			http.Error(w, "forbidden cross-origin request", http.StatusForbidden)
+			return
+		}
+		if s.siteAuth != nil && s.cfg.Token == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		if s.cfg.Token != "" {
 			if !credentialOK(r, s.cfg.Token) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -229,15 +262,45 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // adminAuth guards settings mutation with the independently scoped admin
-// credential. An empty credential retains the legacy loopback/no-auth setup.
+// credential. An empty credential retains the legacy loopback/no-auth setup
+// only when siteAuth is not enabled.
 func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.sameOriginMutationOK(r) {
+			http.Error(w, "forbidden cross-origin request", http.StatusForbidden)
+			return
+		}
+		if s.siteAuth != nil && s.cfg.AdminToken == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		if s.cfg.AdminToken != "" && !credentialOK(r, s.cfg.AdminToken) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// sameOriginMutationOK blocks cross-site browser CSRF requests (including CORS
+// simple POSTs with text/plain on unauthenticated loopback installs). Non-browser
+// clients (agent, curl) omit Origin and Sec-Fetch-Site and pass cleanly.
+func (s *Server) sameOriginMutationOK(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	if s.cfg != nil && s.cfg.SiteAuthOrigin != "" && strings.EqualFold(origin, strings.TrimRight(s.cfg.SiteAuthOrigin, "/")) {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 func credentialOK(r *http.Request, token string) bool {
@@ -345,23 +408,23 @@ func (s *Server) loopbackOnly() bool {
 // standing in front of it. Failing loudly at startup, with the two ways to fix
 // it named, is the only version of this that actually protects anybody.
 func (s *Server) requireAuthConsistency() error {
-	if s.loopbackOnly() {
+	if s.siteAuth == nil && s.loopbackOnly() {
 		return nil
 	}
 	if s.cfg.Token == "" {
 		return fmt.Errorf(
-			"listen=%q 可被其它机器访问,但 v1 ingest 路由仍启用且没有配置 token",
-			s.cfg.Listen)
+			"listen=%q(site_auth=%v) v1 ingest 路由仍启用且没有配置 token",
+			s.cfg.Listen, s.siteAuth != nil)
 	}
-	if s.cfg.ReadToken == "" {
+	if s.siteAuth == nil && s.cfg.ReadToken == "" {
 		return fmt.Errorf(
 			"listen=%q 可被其它机器访问,但没有配置 read_token —— 读接口会把全部用量数据对外公开",
 			s.cfg.Listen)
 	}
 	if s.cfg.AdminToken == "" {
 		return fmt.Errorf(
-			"listen=%q 可被其它机器访问,但没有配置 admin_token —— settings 写接口缺少管理凭据",
-			s.cfg.Listen)
+			"listen=%q(site_auth=%v) 没有配置 admin_token —— settings/merge 写接口缺少管理凭据",
+			s.cfg.Listen, s.siteAuth != nil)
 	}
 	return nil
 }
@@ -613,10 +676,49 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"by": dim, "rows": named})
 }
 
+func (s *Server) invalidateReadViews() {
+	if s.readCache != nil {
+		s.readCache.clear()
+	}
+	if s.bcast != nil {
+		s.bcast.Notify()
+	}
+}
+
+func (s *Server) runOperationalRetention() {
+	prune := func() {
+		qDel, rDel, err := s.store.PruneOperationalTables(time.Now())
+		if err != nil {
+			log.Printf("store[prune]: %v", err)
+			return
+		}
+		if qDel > 0 || rDel > 0 {
+			log.Printf("store[prune]: removed %d aged quota snapshots (>35d) and %d ingest receipts (>14d)", qDel, rDel)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		prune()
+	}
+}
+
+const maxQueryIntBound = 100_000
+
 func queryInt(r *http.Request, key string, def int) int {
 	if v := r.URL.Query().Get(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
+			maxVal := maxQueryIntBound
+			switch key {
+			case "days":
+				maxVal = 3650
+			case "limit":
+				maxVal = 5000
+			case "top":
+				maxVal = 100
+			}
+			return min(n, maxVal)
 		}
 	}
 	return def

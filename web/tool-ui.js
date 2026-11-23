@@ -61,6 +61,19 @@ const QuotaUI = {
         ? 300
         : 0;
   },
+  pool(source, scope) {
+    const s = String(scope || "").trim().toLowerCase();
+    if (source === "antigravity") {
+      if (s.includes("argon")) return "gemini-argon";
+      if (s.startsWith("gemini")) return "gemini";
+      if (s.startsWith("3p")) return "3p";
+    } else if (source === "claude-code") {
+      if (s.includes("opus")) return "opus";
+      if (s.includes("sonnet")) return "sonnet";
+      if (s.includes("haiku")) return "haiku";
+    }
+    return "all";
+  },
   // An authoritative window has a valid zero even when Go's omitempty omitted
   // used_percent. A placeholder window is never evidence of a zero reading.
   normalize(windows = [], quotas = []) {
@@ -144,9 +157,11 @@ const QuotaUI = {
       }
       const five = rows.find((r) => r.source === source && r.minutes === 300);
       const week = rows.find((r) => r.source === source && r.minutes === 10080);
-      if (week.remaining === 0 && five.value !== null) five.remaining = 0;
-      else if (five.remaining != null && week.remaining != null)
-        five.remaining = Math.min(five.remaining, week.remaining);
+      if (this.pool(source, five.scope) === this.pool(source, week.scope)) {
+        if (week.remaining === 0 && five.value !== null) five.remaining = 0;
+        else if (five.remaining != null && week.remaining != null)
+          five.remaining = Math.min(five.remaining, week.remaining);
+      }
     }
     return rows;
   },

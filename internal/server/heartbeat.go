@@ -113,7 +113,7 @@ func (s *Server) handleRevokeDeviceV2(w http.ResponseWriter, r *http.Request) {
 		writeIngestV2Error(w, http.StatusInternalServerError, "store_error")
 		return
 	}
-	s.bcast.Notify()
+	s.invalidateReadViews()
 	writeJSON(w, map[string]any{
 		"device_id":  deviceID,
 		"status":     "revoked",
@@ -122,6 +122,11 @@ func (s *Server) handleRevokeDeviceV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHeartbeatV2(w http.ResponseWriter, r *http.Request) {
+	credential, ok := bearerCredential(r)
+	if !ok {
+		writeHeartbeatUnauthorized(w)
+		return
+	}
 	var heartbeat model.Heartbeat
 	if err := decodeStrictJSON(w, r, heartbeatV2BodyMax, &heartbeat); err != nil {
 		writeV2RequestError(w, err)
@@ -132,11 +137,6 @@ func (s *Server) handleHeartbeatV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credential, ok := bearerCredential(r)
-	if !ok {
-		writeHeartbeatUnauthorized(w)
-		return
-	}
 	record, authenticated, err := s.store.AuthenticateDevice(heartbeat.DeviceID, credential)
 	if err != nil {
 		writeIngestV2Error(w, http.StatusInternalServerError, "authentication_error")

@@ -179,6 +179,36 @@ func TestEdgeCasesAndDirectParse(t *testing.T) {
 	}
 }
 
+func TestTruncatedJSONNumericTimestampAndDedup(t *testing.T) {
+	// Mid-write truncated .json must leave Consumed == 0 so the next scan retries.
+	truncated := `{"sessionId":"s-trunc","messages":[{"id":"m1","type":"gemini","tokens":{"input":10`
+	res := ParsePath("/tmp/chats/session-trunc.json", strings.NewReader(truncated), "dev", 0)
+	if res.Consumed != 0 || len(res.Events) != 0 {
+		t.Fatalf("truncated .json = %+v, want Consumed=0 and 0 events", res)
+	}
+
+	// Numeric epoch timestamps (seconds and milliseconds) + duplicate message ID
+	// last-wins deduplication in session .json files.
+	sess := `{
+		"sessionId": "s-num",
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{"id": "dup-1", "type": "gemini", "timestamp": 1780000000, "tokens": {"input": 100, "output": 10}},
+			{"id": "dup-1", "type": "gemini", "timestamp": 1780000001000, "tokens": {"input": 100, "output": 45}}
+		]
+	}`
+	res2 := ParsePath("/tmp/chats/session-num.json", strings.NewReader(sess), "dev", 0)
+	if res2.Consumed != int64(len(sess)) {
+		t.Fatalf("consumed = %d, want %d", res2.Consumed, len(sess))
+	}
+	if len(res2.Events) != 1 {
+		t.Fatalf("got %d events, want 1 after last-wins dedup: %+v", len(res2.Events), res2.Events)
+	}
+	if res2.Events[0].Model != "gemini-2.5-pro" || res2.Events[0].OutputTokens != 45 || res2.Events[0].TS != 1780000001000 {
+		t.Errorf("dedup/numeric ts event = %+v", res2.Events[0])
+	}
+}
+
 func TestMatchFile(t *testing.T) {
 	cases := []struct {
 		path string

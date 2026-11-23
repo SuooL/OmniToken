@@ -90,6 +90,13 @@ pub fn details_get(state: tauri::State<'_, State>) -> Option<Value> {
     state.0.lock().unwrap().clone()
 }
 
+pub fn is_valid_detail_kind(kind: &str) -> bool {
+    kind == "speed"
+        || kind == "devices"
+        || kind.starts_with("source:")
+        || kind.starts_with("quota:")
+}
+
 #[tauri::command]
 pub fn details_set(
     app: tauri::AppHandle,
@@ -98,7 +105,7 @@ pub fn details_set(
     activate: bool,
 ) -> Result<bool, String> {
     let kind = payload["kind"].as_str().unwrap_or_default();
-    if kind != "speed" && kind != "devices" && !kind.starts_with("source:") {
+    if !is_valid_detail_kind(kind) {
         return Err("Unknown detail view".into());
     }
     if !activate && state.0.lock().unwrap().is_none() {
@@ -238,5 +245,15 @@ mod tests {
         assert!(!should_dismiss(true, false));
         assert!(!should_dismiss(false, true));
         assert!(should_dismiss(false, false));
+    }
+
+    #[test]
+    fn accepts_known_detail_kinds_including_quota() {
+        assert!(is_valid_detail_kind("speed"));
+        assert!(is_valid_detail_kind("devices"));
+        assert!(is_valid_detail_kind("source:claude-code"));
+        assert!(is_valid_detail_kind("quota:antigravity"));
+        assert!(!is_valid_detail_kind("unknown"));
+        assert!(!is_valid_detail_kind(""));
     }
 }

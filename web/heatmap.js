@@ -26,6 +26,11 @@ const Heatmap = {
   _days: null,    // last payload, for repaint on colour-scheme change
   _at: 0,
 
+  reset() {
+    this._days = null;
+    this._at = 0;
+  },
+
   // load fetches and renders, reusing a recent payload so the overview's 30s
   // poll (and dark-mode repaints) don't re-scan a year of events each time.
   async load(el, span) {

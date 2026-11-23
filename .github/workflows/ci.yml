@@ -42,9 +42,9 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # Track the toolchain declared in go.mod rather than pinning it twice.
           go-version-file: go.mod
@@ -78,33 +78,46 @@ jobs:
             echo "docs sync: 无需提示"
           fi
 
-  desktop-verify:
-    name: desktop-verify
-    runs-on: macos-15
+  web-verify:
+    name: web-verify
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Desktop gate
-        run: make desktop-check
-      - name: Install isolated browser test dependency
-        run: npm install --prefix "$RUNNER_TEMP/desktop-browser" playwright@1.56.1
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Cache Playwright package
+        id: pw-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/omnitoken-playwright-1.56.1
+          key: playwright-npm-${{ runner.os }}-1.56.1
+      - name: Install isolated browser test dependency
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/omnitoken-playwright-1.56.1
+          npm install --prefix ~/.cache/omnitoken-playwright-1.56.1 playwright@1.56.1
       - name: Build isolated Web acceptance binary
         run: make build
       - name: Production Web browser acceptance
-        run: NODE_PATH="$RUNNER_TEMP/desktop-browser/node_modules" OMNITOKEN_QA_ARTIFACT_ROOT="$RUNNER_TEMP" node scripts/web-tool-browser.cjs
+        run: |
+          set -euo pipefail
+          BROWSER_CHANNEL="chrome"
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1; then
+            ~/.cache/omnitoken-playwright-1.56.1/node_modules/.bin/playwright install chromium
+            BROWSER_CHANNEL=""
+          fi
+          NODE_PATH="$HOME/.cache/omnitoken-playwright-1.56.1/node_modules" \
+            OMNITOKEN_QA_BROWSER="$BROWSER_CHANNEL" \
+            OMNITOKEN_QA_ARTIFACT_ROOT="$RUNNER_TEMP" \
+            node scripts/web-tool-browser.cjs
       - name: Preserve Web browser acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-tool-ui-browser
           path: |
@@ -113,12 +126,38 @@ jobs:
             ${{ runner.temp }}/omnitoken-web-tool-browser-*/*.csv
           if-no-files-found: ignore
           retention-days: 7
+
+  desktop-verify:
+    name: desktop-verify
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Desktop gate
+        run: make desktop-check
+      - name: Cache Playwright package
+        id: pw-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/omnitoken-playwright-1.56.1
+          key: playwright-npm-${{ runner.os }}-1.56.1
+      - name: Install isolated browser test dependency
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/omnitoken-playwright-1.56.1
+          npm install --prefix ~/.cache/omnitoken-playwright-1.56.1 playwright@1.56.1
       - name: Production desktop browser regression
-        run: NODE_PATH="$RUNNER_TEMP/desktop-browser/node_modules" node scripts/desktop-browser.cjs
+        run: NODE_PATH="$HOME/.cache/omnitoken-playwright-1.56.1/node_modules" node scripts/desktop-browser.cjs
 
   merge:
     name: squash-merge-and-delete-branch
-    needs: [verify, desktop-verify]
+    needs: [verify, web-verify, desktop-verify]
     runs-on: ubuntu-latest
     # Don't merge draft PRs.
     if: github.event.pull_request.draft == false

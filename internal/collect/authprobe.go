@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/suool/omnitoken/internal/model"
 )
+
+const authProbeCmdTimeout = 5 * time.Second
 
 // Provider values produced by ProbeClaudeAuth, matching the Provider taxonomy
 // in internal/model (ADR-0005 real vs equivalent cost split).
@@ -270,13 +273,18 @@ func defaultPSOutput() ([]byte, error) {
 	if u := os.Getenv("USER"); u != "" {
 		args = append(args, "-u", u)
 	}
-	return exec.Command("ps", args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), authProbeCmdTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "ps", args...).Output()
 }
 
 // defaultKeychainProbe asks the macOS keychain whether the Claude Code
-// credentials item exists. The secret itself is discarded unread.
+// credentials item exists, without `-w`, so keychain metadata is checked
+// without ever requesting or unlocking secret password bytes.
 func defaultKeychainProbe() bool {
-	cmd := exec.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w")
+	ctx, cancel := context.WithTimeout(context.Background(), authProbeCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil

@@ -31,7 +31,12 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 /// would open a fresh connection every few seconds.
 pub(crate) fn http() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("http client")
+    })
 }
 
 /// Fetch JSON from the configured server, on the frontend's behalf.
@@ -57,7 +62,7 @@ impl std::fmt::Display for FetchError {
 
 pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Value, FetchError> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let mut req = http().get(&url);
+    let mut req = http().get(&url).timeout(std::time::Duration::from_secs(15));
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
@@ -80,17 +85,6 @@ pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Valu
         .map_err(|e| FetchError::Other(format!("{url}: {e}")))
 }
 
-/// The frontend passes only the path: the address and the token are the Rust
-/// side's business, and handing a credential to the webview to hand back would
-/// be a way for it to leak into a rendered string.
-#[tauri::command]
-async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
-    let s = settings::load(&app);
-    get_json(&s.server, &path, &s.token)
-        .await
-        .map_err(|error| error.to_string())
-}
-
 #[tauri::command]
 async fn telemetry_get(
     app: tauri::AppHandle,
@@ -109,23 +103,45 @@ fn settings_get(app: tauri::AppHandle) -> settings::SettingsView {
 /// The response is redacted even after success: the webview learns only whether
 /// a credential exists, never what it is.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn settings_set(
     app: tauri::AppHandle,
     server: String,
     token: String,
     panel_url: String,
     autostart: bool,
+    clear_token: Option<bool>,
+    tray_title: Option<settings::TrayTitle>,
+    notify: Option<bool>,
+    hotkey: Option<bool>,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
-    let mut next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    let mut next = settings::validate_candidate(
+        &current,
+        &server,
+        &token,
+        &panel_url,
+        clear_token.unwrap_or(false),
+    )
+    .await?;
     next.autostart = autostart;
+    if let Some(title) = tray_title {
+        next.tray_title = title;
+    }
+    if let Some(n) = notify {
+        next.notify = n;
+    }
+    if let Some(hk) = hotkey {
+        next.hotkey = hk;
+    }
     settings::save(&app, &next)?;
 
-    // Register/unregister the LaunchAgent to match what was just stored. Writing
-    // the flag alone is not enough — the OS state only changes here (same step
-    // the tray's "开机自启" item runs, lib.rs `on_menu`).
+    // Register/unregister the LaunchAgent and global shortcut to match what was
+    // just stored. Writing the flag alone is not enough — the OS state only
+    // changes here (same step the tray's menu items run, lib.rs `on_menu`).
     apply_autostart(&app, next.autostart);
-    // Keep the tray's own checkmark honest now that the panel can flip the flag.
+    apply_hotkey(&app, next.hotkey);
+    // Keep the tray's own checkmarks honest now that the panel can flip them.
     tray::sync_checks(&app);
 
     // Point the bridge at the new address now instead of waiting for the old
@@ -358,7 +374,6 @@ pub fn run() {
         .manage(tray::State::default())
         .manage(panel::State::default())
         .invoke_handler(tauri::generate_handler![
-            api_get,
             telemetry_get,
             settings_get,
             settings_set,

@@ -95,6 +95,8 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		DisplayName     string `json:"display_name,omitempty"`
 		IdentityStatus  string `json:"identity_status"`
 		ConnectionState string `json:"connection_state"`
+		AgentVersion    string `json:"agent_version,omitempty"`
+		QueuedBatches   int    `json:"queued_batches,omitempty"`
 		LastSeenAt      int64  `json:"last_seen_at,omitempty"`
 		LastSeenAgeMS   *int64 `json:"last_seen_age_ms,omitempty"`
 		// Running is meaningless unless HasProcs is true: a device with no
@@ -127,6 +129,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	heartbeats, err := s.store.ListLatestHeartbeats()
+	if err != nil {
+		return nil, err
+	}
 	for _, record := range registered {
 		index, exists := viewByDevice[record.DeviceID]
 		if !exists {
@@ -143,6 +149,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		view.IdentityStatus = "registered"
 		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
 		view.LastSeenAt = record.LastSeenAt
+		if hb, ok := heartbeats[record.DeviceID]; ok {
+			view.AgentVersion = hb.AgentVersion
+			view.QueuedBatches = hb.QueuedBatches
+		}
 		if record.LastSeenAt > 0 {
 			age := max(now.UnixMilli()-record.LastSeenAt, 0)
 			view.LastSeenAgeMS = &age
@@ -269,7 +279,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// The server-wide write deadline protects every bounded response from slow
 	// readers. SSE is the one intentional exception: it owns the connection
 	// until the client leaves and emits a bounded state-bearing refresh below.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache, no-transform")
@@ -281,13 +292,24 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if s.siteAuth != nil && !s.readAuthorized(r, true) {
 			return fmt.Errorf("site session expired or revoked")
 		}
-		payload, err := s.livePayload(s.currentTime())
+		data, err := s.cachedJSON("live", liveCacheTTL, func() ([]byte, error) {
+			payload, err := s.livePayload(s.currentTime())
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(payload)
+		})
 		if err != nil {
 			return err
 		}
-		data, _ := json.Marshal(payload)
+		// Bound each write so a half-open / stalled client TCP connection
+		// fails quickly instead of pinning a goroutine indefinitely.
+		_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
-		fl.Flush()
+		if err == nil {
+			fl.Flush()
+		}
+		_ = rc.SetWriteDeadline(time.Time{})
 		return err
 	}
 	if err := send("snapshot"); err != nil {
@@ -313,7 +335,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ch:
-			time.Sleep(time.Second) // coalesce bursts; pending signals collapse
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-r.Context().Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			select {
 			case <-ch:
 			default:

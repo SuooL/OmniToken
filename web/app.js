@@ -67,6 +67,8 @@ function route() {
   const next = Views[parsed.name] ? parsed.name : "overview";
   if (next === currentView) {
     if (next === "details") Details.applyRoute(parsed.params);
+    else if (next === "reports") Reports.applyRoute?.(parsed.params);
+    else if (next === "settings") SettingsView.applyRoute?.(parsed.params);
     return;
   }
   if (currentView) {
@@ -75,9 +77,12 @@ function route() {
     Views[currentView].el().hidden = true;
   }
   if (next === "details") Details.applyRoute(parsed.params, false);
+  else if (next === "reports") Reports.applyRoute?.(parsed.params, false);
+  else if (next === "settings") SettingsView.applyRoute?.(parsed.params, false);
   currentView = next;
   Views[next].el().hidden = false;
   Views[next].enter();
+  if (typeof window !== "undefined" && window.scrollTo) window.scrollTo(0, 0);
   // The view was hidden until a moment ago; anything canvas-based needs to be
   // told its real size now that it has one.
   requestAnimationFrame(() => {
@@ -132,11 +137,49 @@ Api.loadToken();
 // identical 401s with no hint about where to fix it. /api/v1/health is
 // unauthenticated precisely so this check is possible. Token saves call this
 // again so an obsolete warning never survives after credentials change.
+function setHubHealthBadge(ok) {
+  const health = document.getElementById("hub-health");
+  if (!health) return;
+  if (ok) {
+    health.className = "hub-health healthy";
+    health.title = Api.hubVersion ? `Hub ${Api.hubVersion}` : "Hub 运行正常";
+    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 正常</span>`;
+  } else {
+    health.className = "hub-health unavailable";
+    health.title = "无法连接到 Hub 服务";
+    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 不可达</span>`;
+  }
+}
+
+document.addEventListener("hub-health", (ev) => {
+  setHubHealthBadge(Boolean(ev.detail && ev.detail.ok));
+});
+
+const refreshBtn = document.getElementById("btn-refresh");
+if (refreshBtn) {
+  refreshBtn.addEventListener("click", () => {
+    refreshAuthState();
+    const loaders = {
+      overview: () => Overview.load(),
+      live: () => Live.loadTelemetry(),
+      speed: () => SpeedView.load(),
+      reports: () => Reports.load(),
+      details: () => Details.load(),
+      devices: () => DevicesView.load(),
+      models: () => ModelsView.load(),
+      cache: () => CacheView.load(),
+      settings: () => SettingsView.load(),
+    };
+    if (currentView && loaders[currentView]) loaders[currentView]();
+  });
+}
+
 async function refreshAuthState() {
   document.querySelector(".auth-banner")?.remove();
-  const health = document.getElementById("hub-health");
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
+    Api.siteAuthEnabled = Boolean(h.site_auth_enabled);
+    Api.hubVersion = h.hub_version || "";
     if (h.site_auth_enabled && !document.getElementById("site-account")) {
       const account = document.createElement("a");
       account.id = "site-account";
@@ -145,8 +188,7 @@ async function refreshAuthState() {
       account.className = "subtle";
       document.querySelector(".page-utilities").prepend(account);
     }
-    health.className = "hub-health healthy";
-    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 正常</span>`;
+    setHubHealthBadge(true);
     // Only warn when a read actually fails. A reverse proxy in front of the hub
     // can inject the token, so `auth_required && !Api.token` no longer implies a
     // 401 — probe an authenticated read and trust the result instead of the
@@ -168,8 +210,7 @@ async function refreshAuthState() {
       }
     }
   } catch (e) {
-    health.className = "hub-health unavailable";
-    health.innerHTML = `<span class="health-dot" aria-hidden="true"></span><span>Hub 不可达</span>`;
+    setHubHealthBadge(false);
   }
 }
 
@@ -180,6 +221,7 @@ route();
 // A new read identity must not inherit a prior identity's last-good page or an
 // in-flight response. Settings keeps its local draft and its separate scope.
 document.addEventListener("read-credentials-changed", () => {
+  if (typeof Heatmap !== "undefined" && Heatmap.reset) Heatmap.reset();
   for (const [name, view] of Object.entries(Views)) {
     if (name === "settings") continue;
     view.leave();

@@ -78,3 +78,53 @@ function tooltipStyle() {
     extraCssText: "border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.4);backdrop-filter:blur(12px);",
   };
 }
+
+// Parse vX.Y.Z semver strings for fleet version comparison. Returns null when
+// either string is not a release semver (e.g. "dev" or commit hash).
+function compareSemver(a, b) {
+  const parse = (s) => {
+    const m = String(s || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const va = parse(a), vb = parse(b);
+  if (!va || !vb) return null;
+  for (let i = 0; i < 3; i++) {
+    if (va[i] !== vb[i]) return va[i] < vb[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+function formatWorkMS(ms) {
+  const sec = Math.round((Number(ms) || 0) / 1000);
+  if (sec <= 0) return "—";
+  if (sec < 60) return `${sec}s`;
+  const mins = Math.round(sec / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+async function copySnippet(text, btn) {
+  const original = btn ? btn.textContent : "";
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    if (btn) {
+      btn.textContent = "已复制";
+      setTimeout(() => { btn.textContent = original; }, 1600);
+    }
+  } catch (_) {
+    if (btn) btn.textContent = "复制失败";
+  }
+}

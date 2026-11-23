@@ -32,7 +32,119 @@ CREATE TABLE IF NOT EXISTS quota_snapshots (
 	PRIMARY KEY (device, source, limit_id, scope, window_minutes, observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at);
+CREATE TABLE IF NOT EXISTS quota_latest (
+	device TEXT NOT NULL,
+	source TEXT NOT NULL,
+	scope TEXT NOT NULL DEFAULT '',
+	window_minutes INTEGER NOT NULL DEFAULT 0,
+	limit_id TEXT NOT NULL DEFAULT '',
+	used_percent REAL NOT NULL DEFAULT 0,
+	resets_at INTEGER NOT NULL DEFAULT 0,
+	observed_at INTEGER NOT NULL,
+	plan_type TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (device, source, scope, window_minutes)
+);
+CREATE INDEX IF NOT EXISTS idx_quota_latest_observed ON quota_latest(observed_at);
 `
+
+// migrateQuotaLatest populates quota_latest from existing quota_snapshots once
+// on upgrade so LatestQuotas serves in O(active scopes) without scanning the
+// historical snapshot table.
+func migrateQuotaLatest(db *sql.DB) error {
+	var have int
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM quota_latest)`).Scan(&have); err != nil {
+		return err
+	}
+	if have == 1 {
+		return nil
+	}
+	_, err := db.Exec(`
+		INSERT OR REPLACE INTO quota_latest
+			(device, source, scope, window_minutes, limit_id, used_percent, resets_at, observed_at, plan_type)
+		SELECT device, source, scope, window_minutes, limit_id, used_percent, resets_at, observed_at, plan_type
+		FROM (
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY device, source, scope, window_minutes
+				ORDER BY resets_at / 3600000 DESC, observed_at DESC
+			) AS rn
+			FROM quota_snapshots
+		)
+		WHERE rn = 1`)
+	return err
+}
+
+func insertQuotasTx(tx *sql.Tx, qs []model.QuotaSnapshot) (int, []model.QuotaSnapshot, error) {
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO quota_snapshots
+		(device, source, limit_id, scope, window_minutes, used_percent, resets_at, observed_at, plan_type)
+		VALUES (?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer stmt.Close()
+	latestStmt, err := tx.Prepare(`INSERT INTO quota_latest
+		(device, source, scope, window_minutes, limit_id, used_percent, resets_at, observed_at, plan_type)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(device, source, scope, window_minutes) DO UPDATE SET
+			limit_id = excluded.limit_id,
+			used_percent = excluded.used_percent,
+			resets_at = excluded.resets_at,
+			observed_at = excluded.observed_at,
+			plan_type = excluded.plan_type
+		WHERE (excluded.resets_at / 3600000 > quota_latest.resets_at / 3600000)
+		   OR (excluded.resets_at / 3600000 = quota_latest.resets_at / 3600000
+		       AND excluded.observed_at > quota_latest.observed_at)`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer latestStmt.Close()
+
+	n := 0
+	var fresh []model.QuotaSnapshot
+	for _, q := range qs {
+		res, err := stmt.Exec(q.Device, q.Source, q.LimitID, q.Scope, q.WindowMinutes,
+			q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType)
+		if err != nil {
+			return 0, nil, err
+		}
+		if c, _ := res.RowsAffected(); c > 0 {
+			n++
+			fresh = append(fresh, q)
+			if _, err := latestStmt.Exec(q.Device, q.Source, q.Scope, q.WindowMinutes,
+				q.LimitID, q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType); err != nil {
+				return 0, nil, err
+			}
+		}
+	}
+	return n, fresh, nil
+}
+
+func refreshQuotaLatestForDeviceTx(tx *sql.Tx, device string) error {
+	if _, err := tx.Exec(`DELETE FROM quota_latest WHERE device = ?`, device); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		INSERT OR REPLACE INTO quota_latest
+			(device, source, scope, window_minutes, limit_id, used_percent, resets_at, observed_at, plan_type)
+		SELECT device, source, scope, window_minutes, limit_id, used_percent, resets_at, observed_at, plan_type
+		FROM (
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY device, source, scope, window_minutes
+				ORDER BY resets_at / 3600000 DESC, observed_at DESC
+			) AS rn
+			FROM quota_snapshots
+			WHERE device = ?
+		)
+		WHERE rn = 1`, device)
+	return err
+}
+
+func (s *Store) observeCapacityBatch(fresh []model.QuotaSnapshot, now int64) {
+	for _, q := range fresh {
+		if err := s.ObserveCapacityFromQuota(q, now); err != nil {
+			log.Printf("quota[capacity]: observe %s/%s/%dm: %v", q.Source, q.Scope, q.WindowMinutes, err)
+		}
+	}
+}
 
 // migrateQuotaSchema rebuilds quota_snapshots when it predates scope being
 // part of the key. Snapshots are re-observable state (the next poll or scan
@@ -66,40 +178,19 @@ func (s *Store) InsertQuotas(qs []model.QuotaSnapshot) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO quota_snapshots
-		(device, source, limit_id, scope, window_minutes, used_percent, resets_at, observed_at, plan_type)
-		VALUES (?,?,?,?,?,?,?,?,?)`)
+	n, fresh, err := insertQuotasTx(tx, qs)
 	if err != nil {
 		return 0, err
 	}
-	defer stmt.Close()
-	n := 0
-	var fresh []model.QuotaSnapshot
-	for _, q := range qs {
-		res, err := stmt.Exec(q.Device, q.Source, q.LimitID, q.Scope, q.WindowMinutes,
-			q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType)
-		if err != nil {
-			return n, err
-		}
-		if c, _ := res.RowsAffected(); c > 0 {
-			n++
-			fresh = append(fresh, q)
-		}
-	}
 	if err := tx.Commit(); err != nil {
-		return n, err
+		return 0, err
 	}
 	// The calibration follows the snapshot, on every arrival path (ADR-0034),
 	// and after the commit so the token scan never runs inside a write
 	// transaction. A failure is logged rather than returned: the snapshot itself
 	// is stored and correct, and a missed sample only leaves an estimate — one
 	// designed to be absent until it has evidence — slightly less sharp.
-	now := time.Now().UnixMilli()
-	for _, q := range fresh {
-		if err := s.ObserveCapacityFromQuota(q, now); err != nil {
-			log.Printf("quota[capacity]: observe %s/%s/%dm: %v", q.Source, q.Scope, q.WindowMinutes, err)
-		}
-	}
+	s.observeCapacityBatch(fresh, time.Now().UnixMilli())
 	return n, nil
 }
 
@@ -148,12 +239,9 @@ func (s *Store) LatestQuotas(since time.Time) ([]model.QuotaSnapshot, error) {
 	rows, err := s.rdb.Query(
 		`SELECT device, source, limit_id, scope, window_minutes,
 		        used_percent, resets_at, observed_at, plan_type
-		 FROM (SELECT *, ROW_NUMBER() OVER (
-		         PARTITION BY device, source, scope, window_minutes
-		         ORDER BY resets_at / 3600000 DESC, observed_at DESC) AS rn
-		       FROM quota_snapshots WHERE observed_at >= ?)
-		 WHERE rn = 1
-		 ORDER BY window_minutes, device`,
+		 FROM quota_latest
+		 WHERE observed_at >= ?
+		 ORDER BY window_minutes, device, source, scope`,
 		since.UnixMilli())
 	if err != nil {
 		return nil, err

@@ -261,11 +261,7 @@ func (a *Agent) collectStatusQuota(now time.Time) error {
 	if a.quotaReader == nil {
 		return nil
 	}
-	qs := a.quotaReader.Collect(now)
-	if len(qs) == 0 {
-		return nil
-	}
-	return a.pushQuotas(qs)
+	return a.quotaReader.CollectAndDeliver(now, a.pushQuotas)
 }
 
 func (a *Agent) Close() error {
@@ -351,7 +347,7 @@ func (a *Agent) Run() error {
 		go func() {
 			err := proxy.Run(proxy.Config{
 				Listen:    a.cfg.ProxyListen,
-				Device:    a.cfg.DeviceName,
+				Device:    a.scanDevice(),
 				Upstreams: a.cfg.ProxyUpstreams,
 			}, a.push)
 			log.Printf("proxy: %v", err)
@@ -533,6 +529,7 @@ func (a *Agent) sendHeartbeat() error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("heartbeat server %s: %s", resp.Status, msg)
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
 
@@ -646,16 +643,23 @@ func (a *Agent) drainOutbox() (int, error) {
 	}
 }
 
+func isPermanentIngestReject(status int) bool {
+	switch status {
+	case http.StatusBadRequest,
+		http.StatusConflict,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 func (a *Agent) uploadOldest() error {
-	envelope, err := a.outbox.PeekBatch()
+	raw, err := a.outbox.PeekRaw()
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/v2/ingest", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/v2/ingest", bytes.NewReader(raw.Payload))
 	if err != nil {
 		return err
 	}
@@ -669,6 +673,15 @@ func (a *Agent) uploadOldest() error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		if isPermanentIngestReject(resp.StatusCode) {
+			reason := strings.TrimSpace(string(msg))
+			if qerr := a.outbox.QuarantineOldest(raw.BatchID, resp.StatusCode, reason); qerr != nil {
+				log.Printf("agent: quarantine batch %s failed: %v", raw.BatchID, qerr)
+			} else {
+				log.Printf("agent: quarantined permanently rejected batch %s (HTTP %d: %s)", raw.BatchID, resp.StatusCode, reason)
+				return nil
+			}
+		}
 		return fmt.Errorf("server %s: %s", resp.Status, msg)
 	}
 	ackBody, err := io.ReadAll(io.LimitReader(resp.Body, ingestAckBodyMax+1))
@@ -755,6 +768,7 @@ func (a *Agent) postIngest(payload map[string]any) error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("server %s: %s", resp.Status, msg)
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
 
@@ -783,6 +797,16 @@ func (a *Agent) relayServer() (*http.Server, error) {
 		return nil, errors.New("relay token is required")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		// Reverse-proxying to an HTTPS or virtual-hosted Hub requires the Host
+		// header to match the upstream target rather than the relay listener.
+		req.Host = upstream.Host
+	}
+	if a.client != nil && a.client.Transport != nil {
+		proxy.Transport = a.client.Transport
+	}
 	mux := http.NewServeMux()
 	for path, maxBytes := range map[string]int64{
 		"/api/v1/ingest":    relayV1IngestBodyMax,

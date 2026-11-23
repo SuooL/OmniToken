@@ -17,9 +17,21 @@ import (
 )
 
 const (
-	outboxSchemaVersion   = 1
+	outboxSchemaVersion   = 2
 	DefaultOutboxMaxBytes = 64 << 20
 )
+
+// RawBatch is the wire-ready oldest outbox entry alongside its envelope
+// identity columns so uploading and acknowledging skip redundant 16 MiB JSON
+// unmarshal/marshal round-trips.
+type RawBatch struct {
+	ID              int64
+	BatchID         string
+	DeviceID        string
+	ProtocolVersion int
+	Sequence        uint64
+	Payload         []byte
+}
 
 var (
 	ErrOutboxEmpty            = errors.New("outbox is empty")
@@ -50,7 +62,7 @@ func OpenOutbox(path string, maxBytes int64) (*Outbox, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultOutboxMaxBytes
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create outbox directory: %w", err)
 	}
 
@@ -64,10 +76,19 @@ func OpenOutbox(path string, maxBytes int64) (*Outbox, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	_ = os.Chmod(path, 0o600)
 	return outbox, nil
 }
 
 func (o *Outbox) initialize() error {
+	var version int
+	if err := o.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read outbox schema version: %w", err)
+	}
+	if version == 0 {
+		// auto_vacuum must be configured before creating the first table.
+		_, _ = o.db.Exec(`PRAGMA auto_vacuum = INCREMENTAL`)
+	}
 	for _, pragma := range []string{
 		`PRAGMA journal_mode = WAL`,
 		`PRAGMA synchronous = NORMAL`,
@@ -78,37 +99,69 @@ func (o *Outbox) initialize() error {
 		}
 	}
 
-	var version int
-	if err := o.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("read outbox schema version: %w", err)
-	}
-	if version != 0 && version != outboxSchemaVersion {
+	if version != 0 && version != 1 && version != outboxSchemaVersion {
 		return fmt.Errorf("unsupported outbox schema version %d", version)
 	}
 	if version == outboxSchemaVersion {
 		return nil
 	}
 
-	tx, err := o.db.Begin()
+	tx, err := o.beginImmediate()
 	if err != nil {
 		return fmt.Errorf("begin outbox migration: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`
-		CREATE TABLE outbox_batches (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			batch_id TEXT NOT NULL UNIQUE,
-			envelope BLOB NOT NULL,
-			payload_bytes INTEGER NOT NULL,
-			enqueued_at INTEGER NOT NULL
-		);
-		CREATE TABLE outbox_meta (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL
-		);
-		INSERT INTO outbox_meta(key, value) VALUES ('last_sequence', '0');
-	`); err != nil {
-		return fmt.Errorf("create outbox schema: %w", err)
+
+	if version == 0 {
+		if _, err := tx.Exec(`
+			CREATE TABLE outbox_batches (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				batch_id TEXT NOT NULL UNIQUE,
+				device_id TEXT NOT NULL DEFAULT '',
+				protocol_version INTEGER NOT NULL DEFAULT 0,
+				sequence TEXT NOT NULL DEFAULT '0',
+				envelope BLOB NOT NULL,
+				payload_bytes INTEGER NOT NULL,
+				enqueued_at INTEGER NOT NULL
+			);
+			CREATE TABLE outbox_meta (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL
+			);
+			CREATE TABLE outbox_dead_letters (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				batch_id TEXT NOT NULL,
+				envelope BLOB NOT NULL,
+				payload_bytes INTEGER NOT NULL,
+				enqueued_at INTEGER NOT NULL,
+				failed_at INTEGER NOT NULL,
+				http_status INTEGER NOT NULL,
+				reason TEXT NOT NULL DEFAULT ''
+			);
+			INSERT INTO outbox_meta(key, value) VALUES ('last_sequence', '0');
+		`); err != nil {
+			return fmt.Errorf("create outbox schema: %w", err)
+		}
+	} else if version == 1 {
+		for _, stmt := range []string{
+			`ALTER TABLE outbox_batches ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE outbox_batches ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE outbox_batches ADD COLUMN sequence TEXT NOT NULL DEFAULT '0'`,
+			`CREATE TABLE IF NOT EXISTS outbox_dead_letters (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				batch_id TEXT NOT NULL,
+				envelope BLOB NOT NULL,
+				payload_bytes INTEGER NOT NULL,
+				enqueued_at INTEGER NOT NULL,
+				failed_at INTEGER NOT NULL,
+				http_status INTEGER NOT NULL,
+				reason TEXT NOT NULL DEFAULT ''
+			)`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("upgrade outbox v1->v2: %w", err)
+			}
+		}
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, outboxSchemaVersion)); err != nil {
 		return fmt.Errorf("set outbox schema version: %w", err)
@@ -117,6 +170,17 @@ func (o *Outbox) initialize() error {
 		return fmt.Errorf("commit outbox migration: %w", err)
 	}
 	return nil
+}
+
+func (o *Outbox) beginImmediate() (*sql.Tx, error) {
+	// With MaxOpenConns(1) a standard transaction acquires the write lock on
+	// first write, and using an explicit IMMEDIATE lock avoids busy upgrades
+	// if another local process inspects the SQLite file concurrently.
+	tx, err := o.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
 }
 
 func (o *Outbox) Close() error {
@@ -129,12 +193,12 @@ func (o *Outbox) Enqueue(envelope model.IngestEnvelopeV2) error {
 		return err
 	}
 
-	tx, err := o.db.Begin()
+	tx, err := o.beginImmediate()
 	if err != nil {
 		return fmt.Errorf("begin enqueue: %w", err)
 	}
 	defer tx.Rollback()
-	if err := o.enqueuePayloadTx(tx, envelope.BatchID, payload, time.Now().UnixMilli()); err != nil {
+	if err := o.enqueuePayloadTx(tx, envelope, payload, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -206,7 +270,7 @@ func (o *Outbox) EnqueueManyNext(envelopes []model.IngestEnvelopeV2) ([]model.In
 	}
 	enqueuedAt := time.Now().UnixMilli()
 	for i, envelope := range assigned {
-		if err := o.insertNewPayloadTx(tx, envelope.BatchID, payloads[i], enqueuedAt); err != nil {
+		if err := o.insertNewPayloadTx(tx, envelope, payloads[i], enqueuedAt); err != nil {
 			return nil, err
 		}
 	}
@@ -236,9 +300,9 @@ func encodeOutboxEnvelope(envelope model.IngestEnvelopeV2) ([]byte, error) {
 	return payload, nil
 }
 
-func (o *Outbox) enqueuePayloadTx(tx *sql.Tx, batchID string, payload []byte, enqueuedAt int64) error {
+func (o *Outbox) enqueuePayloadTx(tx *sql.Tx, envelope model.IngestEnvelopeV2, payload []byte, enqueuedAt int64) error {
 	var existing []byte
-	err := tx.QueryRow(`SELECT envelope FROM outbox_batches WHERE batch_id = ?`, batchID).Scan(&existing)
+	err := tx.QueryRow(`SELECT envelope FROM outbox_batches WHERE batch_id = ?`, envelope.BatchID).Scan(&existing)
 	switch {
 	case err == nil && bytes.Equal(existing, payload):
 		return nil
@@ -254,57 +318,112 @@ func (o *Outbox) enqueuePayloadTx(tx *sql.Tx, batchID string, payload []byte, en
 	if int64(len(payload)) > o.maxBytes-queuedBytes {
 		return ErrOutboxFull
 	}
-	return o.insertNewPayloadTx(tx, batchID, payload, enqueuedAt)
+	return o.insertNewPayloadTx(tx, envelope, payload, enqueuedAt)
 }
 
-func (o *Outbox) insertNewPayloadTx(tx *sql.Tx, batchID string, payload []byte, enqueuedAt int64) error {
+func (o *Outbox) insertNewPayloadTx(tx *sql.Tx, envelope model.IngestEnvelopeV2, payload []byte, enqueuedAt int64) error {
 	if _, err := tx.Exec(
-		`INSERT INTO outbox_batches(batch_id, envelope, payload_bytes, enqueued_at) VALUES (?, ?, ?, ?)`,
-		batchID, payload, len(payload), enqueuedAt,
+		`INSERT INTO outbox_batches(batch_id, device_id, protocol_version, sequence, envelope, payload_bytes, enqueued_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		envelope.BatchID,
+		envelope.DeviceID,
+		envelope.ProtocolVersion,
+		strconv.FormatUint(envelope.Sequence, 10),
+		payload,
+		len(payload),
+		enqueuedAt,
 	); err != nil {
 		return fmt.Errorf("enqueue batch: %w", err)
 	}
 	return nil
 }
 
-func (o *Outbox) PeekBatch() (model.IngestEnvelopeV2, error) {
-	var payload []byte
-	if err := o.db.QueryRow(`SELECT envelope FROM outbox_batches ORDER BY id LIMIT 1`).Scan(&payload); err != nil {
+// PeekRaw returns the wire-ready JSON bytes and identity columns for the
+// oldest batch without unmarshaling the full payload.
+func (o *Outbox) PeekRaw() (RawBatch, error) {
+	var raw RawBatch
+	var seqStr string
+	if err := o.db.QueryRow(
+		`SELECT id, batch_id, device_id, protocol_version, sequence, envelope
+		 FROM outbox_batches ORDER BY id LIMIT 1`,
+	).Scan(&raw.ID, &raw.BatchID, &raw.DeviceID, &raw.ProtocolVersion, &seqStr, &raw.Payload); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.IngestEnvelopeV2{}, ErrOutboxEmpty
+			return RawBatch{}, ErrOutboxEmpty
 		}
-		return model.IngestEnvelopeV2{}, fmt.Errorf("read oldest batch: %w", err)
+		return RawBatch{}, fmt.Errorf("read oldest batch: %w", err)
+	}
+	if raw.ProtocolVersion == 0 || raw.DeviceID == "" {
+		// Legacy v1 row upgraded before headers were stored in columns.
+		var envelope model.IngestEnvelopeV2
+		if err := json.Unmarshal(raw.Payload, &envelope); err != nil {
+			return RawBatch{}, fmt.Errorf("decode oldest batch: %w", err)
+		}
+		raw.DeviceID = envelope.DeviceID
+		raw.ProtocolVersion = envelope.ProtocolVersion
+		raw.Sequence = envelope.Sequence
+		return raw, nil
+	}
+	seq, err := strconv.ParseUint(seqStr, 10, 64)
+	if err != nil {
+		return RawBatch{}, fmt.Errorf("parse oldest batch sequence: %w", err)
+	}
+	raw.Sequence = seq
+	return raw, nil
+}
+
+func (o *Outbox) PeekBatch() (model.IngestEnvelopeV2, error) {
+	raw, err := o.PeekRaw()
+	if err != nil {
+		return model.IngestEnvelopeV2{}, err
 	}
 	var envelope model.IngestEnvelopeV2
-	if err := json.Unmarshal(payload, &envelope); err != nil {
+	if err := json.Unmarshal(raw.Payload, &envelope); err != nil {
 		return model.IngestEnvelopeV2{}, fmt.Errorf("decode oldest batch: %w", err)
 	}
 	return envelope, nil
 }
 
 func (o *Outbox) Acknowledge(ack model.IngestAckV2) error {
-	tx, err := o.db.Begin()
+	tx, err := o.beginImmediate()
 	if err != nil {
 		return fmt.Errorf("begin acknowledgement: %w", err)
 	}
 	defer tx.Rollback()
 
 	var id int64
+	var batchID, deviceID, seqStr string
+	var protoVer int
 	var payload []byte
-	if err := tx.QueryRow(`SELECT id, envelope FROM outbox_batches ORDER BY id LIMIT 1`).Scan(&id, &payload); err != nil {
+	if err := tx.QueryRow(
+		`SELECT id, batch_id, device_id, protocol_version, sequence, envelope
+		 FROM outbox_batches ORDER BY id LIMIT 1`,
+	).Scan(&id, &batchID, &deviceID, &protoVer, &seqStr, &payload); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOutboxEmpty
 		}
 		return fmt.Errorf("read acknowledged batch: %w", err)
 	}
-	var envelope model.IngestEnvelopeV2
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return fmt.Errorf("decode acknowledged batch: %w", err)
+	var seq uint64
+	if protoVer == 0 || deviceID == "" {
+		var envelope model.IngestEnvelopeV2
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return fmt.Errorf("decode acknowledged batch: %w", err)
+		}
+		protoVer = envelope.ProtocolVersion
+		deviceID = envelope.DeviceID
+		batchID = envelope.BatchID
+		seq = envelope.Sequence
+	} else {
+		parsed, err := strconv.ParseUint(seqStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse acknowledged batch sequence: %w", err)
+		}
+		seq = parsed
 	}
-	if ack.ProtocolVersion != envelope.ProtocolVersion ||
-		ack.DeviceID != envelope.DeviceID ||
-		ack.BatchID != envelope.BatchID ||
-		ack.AckSequence != envelope.Sequence {
+	if ack.ProtocolVersion != protoVer ||
+		ack.DeviceID != deviceID ||
+		ack.BatchID != batchID ||
+		ack.AckSequence != seq {
 		return ErrInvalidAcknowledgement
 	}
 	if _, err := tx.Exec(`DELETE FROM outbox_batches WHERE id = ?`, id); err != nil {
@@ -314,6 +433,58 @@ func (o *Outbox) Acknowledge(ack model.IngestAckV2) error {
 		return fmt.Errorf("commit acknowledgement: %w", err)
 	}
 	return nil
+}
+
+// QuarantineOldest moves a permanently rejected oldest batch (HTTP 400/409/413/422)
+// into outbox_dead_letters so it cannot wedge FIFO delivery of subsequent healthy
+// batches while preserving the raw payload for post-mortem inspection.
+func (o *Outbox) QuarantineOldest(batchID string, httpStatus int, reason string) error {
+	tx, err := o.beginImmediate()
+	if err != nil {
+		return fmt.Errorf("begin dead-letter quarantine: %w", err)
+	}
+	defer tx.Rollback()
+
+	var id, payloadBytes, enqueuedAt int64
+	var gotBatchID string
+	var payload []byte
+	if err := tx.QueryRow(
+		`SELECT id, batch_id, envelope, payload_bytes, enqueued_at
+		 FROM outbox_batches ORDER BY id LIMIT 1`,
+	).Scan(&id, &gotBatchID, &payload, &payloadBytes, &enqueuedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOutboxEmpty
+		}
+		return fmt.Errorf("read oldest batch for quarantine: %w", err)
+	}
+	if gotBatchID != batchID {
+		return ErrInvalidAcknowledgement
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO outbox_dead_letters
+		   (batch_id, envelope, payload_bytes, enqueued_at, failed_at, http_status, reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		gotBatchID, payload, payloadBytes, enqueuedAt, time.Now().UnixMilli(), httpStatus, reason,
+	); err != nil {
+		return fmt.Errorf("insert dead letter: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM outbox_batches WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("remove quarantined batch: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit quarantine: %w", err)
+	}
+	_, _ = o.db.Exec(`PRAGMA incremental_vacuum(64)`)
+	return nil
+}
+
+// DeadLetterCount returns how many permanently rejected batches have been quarantined.
+func (o *Outbox) DeadLetterCount() (int, error) {
+	var n int
+	if err := o.db.QueryRow(`SELECT COUNT(*) FROM outbox_dead_letters`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (o *Outbox) Stats() (OutboxStats, error) {

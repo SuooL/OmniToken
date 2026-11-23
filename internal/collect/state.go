@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+const negativeRepoCacheTTL = 5 * time.Minute
 
 // State tracks per-file read offsets and the cwd→repo cache so scans are
 // incremental. It is persisted after every successful sink delivery, so a
@@ -13,8 +16,9 @@ import (
 type State struct {
 	mu        sync.Mutex
 	path      string
+	negRepoAt map[string]time.Time
 	Files     map[string]int64  `json:"files"`       // abs path -> committed offset
-	RepoByCWD map[string]string `json:"repo_by_cwd"` // cwd -> normalized repo ("" = probed, not a repo)
+	RepoByCWD map[string]string `json:"repo_by_cwd"` // cwd -> normalized repo (non-empty persisted; empty cached in memory with TTL)
 	// TurnStart carries each file's in-flight turn start across incremental
 	// reads (ADR-0009). Written only by Commit, so it advances with the offset
 	// and never ahead of it: a failed upload re-reads the same bytes and must
@@ -294,20 +298,37 @@ func (s *State) Commit(file string, offset, turnStartMS int64, chunks map[int]st
 }
 
 // RepoFor caches per (device, cwd): different machines can have the same
-// path pointing at different repos.
+// path pointing at different repos. Empty resolutions are cached in memory
+// only with a short TTL so transient SSH errors or newly initialized git repos
+// heal automatically on a later scan.
 func (s *State) RepoFor(device, cwd string, resolve func(string) string) string {
 	key := device + "|" + cwd
 	s.mu.Lock()
-	repo, ok := s.RepoByCWD[key]
-	s.mu.Unlock()
-	if ok {
+	if repo, ok := s.RepoByCWD[key]; ok && repo != "" {
+		s.mu.Unlock()
 		return repo
 	}
-	repo = resolve(cwd)
-	s.mu.Lock()
-	s.RepoByCWD[key] = repo
-	s.saveLocked()
+	if s.negRepoAt != nil {
+		if ts, ok := s.negRepoAt[key]; ok && time.Since(ts) < negativeRepoCacheTTL {
+			s.mu.Unlock()
+			return ""
+		}
+	}
 	s.mu.Unlock()
+
+	repo := resolve(cwd)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if repo == "" {
+		if s.negRepoAt == nil {
+			s.negRepoAt = map[string]time.Time{}
+		}
+		s.negRepoAt[key] = time.Now()
+		return ""
+	}
+	delete(s.negRepoAt, key)
+	s.RepoByCWD[key] = repo
+	_ = s.saveLocked()
 	return repo
 }
 

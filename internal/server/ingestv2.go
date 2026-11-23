@@ -12,6 +12,11 @@ import (
 )
 
 func (s *Server) handleIngestV2(w http.ResponseWriter, r *http.Request) {
+	if _, ok := bearerCredential(r); !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="omnitoken-device"`)
+		writeIngestV2Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	envelope, err := decodeIngestV2(w, r)
 	if err != nil {
 		var tooLarge *http.MaxBytesError

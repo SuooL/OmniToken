@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS ingest_receipts (
 	duplicates INTEGER NOT NULL,
 	server_time INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ingest_receipts_device
-	ON ingest_receipts(device_id, server_time);
+CREATE INDEX IF NOT EXISTS idx_ingest_receipts_server_time
+	ON ingest_receipts(server_time);
 `
 
 var ErrIngestReceiptConflict = errors.New("ingest receipt belongs to another device")
@@ -64,6 +64,7 @@ func (s *Store) ApplyIngestV2(envelope model.IngestEnvelopeV2, receivedAt int64)
 	}
 	result := IngestV2Result{Ack: ack}
 	var eventResult eventApplyResult
+	var freshQuotas []model.QuotaSnapshot
 
 	switch envelope.Kind {
 	case model.IngestKindEvents:
@@ -72,7 +73,7 @@ func (s *Store) ApplyIngestV2(envelope model.IngestEnvelopeV2, receivedAt int64)
 		result.Ack.Duplicates = len(envelope.Events) - eventResult.inserted
 		result.Mutated = eventResult.mutated()
 	case model.IngestKindQuotas:
-		result.Ack.Accepted, err = insertQuotasTx(tx, envelope.Quotas)
+		result.Ack.Accepted, freshQuotas, err = insertQuotasTx(tx, envelope.Quotas)
 		result.Ack.Duplicates = len(envelope.Quotas) - result.Ack.Accepted
 		result.Mutated = result.Ack.Accepted > 0
 	case model.IngestKindProcs:
@@ -108,6 +109,9 @@ func (s *Store) ApplyIngestV2(envelope model.IngestEnvelopeV2, receivedAt int64)
 		return IngestV2Result{}, err
 	}
 	logEventApply(eventResult)
+	if len(freshQuotas) > 0 {
+		s.observeCapacityBatch(freshQuotas, receivedAt)
+	}
 	return result, nil
 }
 
@@ -141,38 +145,6 @@ func ingestReceiptTx(tx *sql.Tx, batchID string) (model.IngestAckV2, bool, error
 	}
 	ack.Rejected = []model.IngestRejection{}
 	return ack, true, nil
-}
-
-func insertQuotasTx(tx *sql.Tx, quotas []model.QuotaSnapshot) (int, error) {
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO quota_snapshots
-		(device, source, limit_id, scope, window_minutes, used_percent, resets_at, observed_at, plan_type)
-		VALUES (?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return 0, err
-	}
-	defer stmt.Close()
-
-	inserted := 0
-	for _, quota := range quotas {
-		result, err := stmt.Exec(
-			quota.Device,
-			quota.Source,
-			quota.LimitID,
-			quota.Scope,
-			quota.WindowMinutes,
-			quota.UsedPercent,
-			quota.ResetsAt,
-			quota.ObservedAt,
-			quota.PlanType,
-		)
-		if err != nil {
-			return inserted, err
-		}
-		if affected, _ := result.RowsAffected(); affected > 0 {
-			inserted++
-		}
-	}
-	return inserted, nil
 }
 
 func applyProcReportTx(tx *sql.Tx, report model.ProcReport) (bool, error) {

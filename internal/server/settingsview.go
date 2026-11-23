@@ -92,10 +92,18 @@ func (s *Server) priceTable(catalog map[string]pricing.Price) (*pricing.Table, e
 	return pricing.LoadCatalog(catalog, merged)
 }
 
+type registeredDeviceView struct {
+	DeviceID    string `json:"device_id"`
+	DisplayName string `json:"display_name"`
+	LastSeenAt  int64  `json:"last_seen_at,omitempty"`
+	RevokedAt   int64  `json:"revoked_at,omitempty"`
+}
+
 type settingsResponse struct {
-	PricingUpdate    pricingRefreshStatus        `json:"pricing_update"`
-	PricingOverrides map[string]pricing.Override `json:"pricing_overrides"`
-	DeviceLabels     map[string]string           `json:"device_labels"`
+	PricingUpdate     pricingRefreshStatus        `json:"pricing_update"`
+	PricingOverrides  map[string]pricing.Override `json:"pricing_overrides"`
+	DeviceLabels      map[string]string           `json:"device_labels"`
+	RegisteredDevices []registeredDeviceView      `json:"registered_devices"`
 	// DeviceMerges is the audit log of ADR-0019 merges, oldest first. It is
 	// read-only and has no delete counterpart: a merge cannot be undone, so the
 	// record of it is the only thing left to check against afterwards.
@@ -149,6 +157,23 @@ func (s *Server) currentSettings() (settingsResponse, error) {
 		return resp, err
 	}
 	resp.LocalIdentity = identity
+	fleet, err := s.fleetDevices()
+	if err != nil {
+		return resp, err
+	}
+	names, err := s.deviceNames()
+	if err != nil {
+		return resp, err
+	}
+	resp.RegisteredDevices = make([]registeredDeviceView, 0, len(fleet))
+	for _, dev := range fleet {
+		resp.RegisteredDevices = append(resp.RegisteredDevices, registeredDeviceView{
+			DeviceID:    dev.DeviceID,
+			DisplayName: names.name(dev.DeviceID),
+			LastSeenAt:  dev.LastSeenAt,
+			RevokedAt:   dev.RevokedAt,
+		})
+	}
 	return resp, nil
 }
 
@@ -215,9 +240,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Tell the panel a repaint is worthwhile: every cost on screen just moved.
-	if overrides != nil {
-		s.bcast.Notify()
+	// Tell the panel a repaint is worthwhile whenever costs or device labels changed.
+	if overrides != nil || labels != nil {
+		s.invalidateReadViews()
 	}
 	writeJSON(w, map[string]any{
 		"status":           settingsSavedMsg,

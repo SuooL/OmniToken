@@ -15,6 +15,7 @@ function cacheIsEmpty(data) {
 
 const CacheView = {
   _timer: null,
+  days: 30,
   lastData: null,
   _loadGeneration: 0,
 
@@ -35,14 +36,14 @@ const CacheView = {
       renderState(root, { kind: "loading", title: "正在加载缓存数据" });
     }
     try {
-      const data = await Api.get("/api/v1/cache?days=30");
+      const data = await Api.get(`/api/v1/cache?days=${this.days || 30}`);
       if (!isCurrentGeneration(this._loadGeneration, loadID)) return;
       this.render(data);
       this.lastData = data;
       if (cacheIsEmpty(data)) {
         renderState(root, {
           kind: "empty", title: "暂无缓存用量",
-          detail: "近 30 天没有输入、缓存读取或缓存写入数据。",
+          detail: `近 ${this.days || 30} 天没有输入、缓存读取或缓存写入数据。`,
         });
       } else {
         renderState(root, { kind: "ready", title: "" });
@@ -87,19 +88,32 @@ const CacheView = {
     if (!root.dataset.built) {
       root.innerHTML = `
         <section class="stat-row" id="cache-tiles"></section>
-        <section class="instrument-card"><h2 id="cache-table-title">按模型</h2>
+        <section class="instrument-card"><div class="card-head"><h2 id="cache-table-title">按模型</h2>
+          <div class="range-switch" id="cache-range" role="group" aria-label="时间范围">${[7, 30, 90].map((n) =>
+            `<button type="button" class="ghost-btn" data-days="${n}" aria-pressed="${n === (this.days || 30)}">近 ${n} 天</button>`).join("")}</div></div>
           <div class="data-table data-table-shell" id="cache-model-table"></div></section>
         <section class="chart-card"><div class="card-head"><h2>输入与缓存构成</h2><span class="subtle">读取 / 写入 / 非缓存输入</span></div>
           <div id="cache-composition-chart" style="height:260px" data-chart="cache-composition"></div></section>
         ${ToolUI.analysis("cache-model-analysis", "模型缓存比较", `<div id="cache-model-chart" style="height:300px" data-chart="cache-model-comparison"></div>`)}
         ${ToolUI.analysis("cache-daily-analysis", "每日命中率 · 缓存读取 / (缓存读取 + 输入)", `<div class="bars" id="cache-daily-bars"></div>`)}
       `;
+      const rangeEl = document.getElementById("cache-range");
+      if (rangeEl) {
+        rangeEl.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-days]");
+          if (!btn) return;
+          const next = Number(btn.dataset.days);
+          if (next && next !== this.days) { this.days = next; this.load(); }
+        });
+      }
       root.dataset.built = "1";
     }
+    document.querySelectorAll?.("#cache-range [data-days]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.days) === (this.days || 30))));
     const models = d.models || [];
     const hasPriced = models.some((model) => !unpriced.has(model.model));
-    ToolUI.updateHTML(document.getElementById("cache-tiles"), this.tiles(t, cacheComposition, hasPriced, unpriced.size > 0));
-    document.getElementById("cache-table-title").textContent = `按模型 · 近 ${d.days || 30} 天`;
+    ToolUI.updateHTML(document.getElementById("cache-tiles"), this.tiles(t, cacheComposition, hasPriced, unpriced.size > 0, d.days || this.days || 30));
+    document.getElementById("cache-table-title").textContent = `按模型 · 近 ${d.days || this.days || 30} 天`;
     ToolUI.updateHTML(document.getElementById("cache-model-table"), this.modelTable(models, unpriced));
     ToolUI.updateHTML(document.getElementById("cache-daily-bars"), this.dailyBars(d.daily || []));
     this.compositionChart(cacheComposition);
@@ -110,8 +124,8 @@ const CacheView = {
     const el = document.getElementById("cache-composition-chart");
     const rows = [
       {name: "缓存读取", value: t.cache_read_tokens || 0, color: cssVar("--status-healthy")},
-      {name: "缓存写入", value: t.cache_creation_tokens || 0, color: cssVar("--series-2")},
-      {name: "非缓存输入", value: t.input_tokens || 0, color: cssVar("--series-3")},
+      {name: "缓存写入", value: t.cache_creation_tokens || 0, color: cssVar("--series-4")},
+      {name: "非缓存输入", value: t.input_tokens || 0, color: cssVar("--series-1")},
     ];
     if (!rows.some((row) => row.value > 0)) {
       ChartRegistry.disposeWithin?.(el);
@@ -144,7 +158,7 @@ const CacheView = {
     ChartRegistry.set(el, {
       titleText: "模型缓存命中率与节省",
       grid: {left: 12, right: 44, top: 16, bottom: 48, containLabel: true},
-      xAxis: {type: "category", data: rows.map((row) => row.model || "(未知)"), axisLabel: {color: cssVar("--text-muted"), rotate: rows.length > 5 ? 25 : 0}},
+      xAxis: {type: "category", data: rows.map((row) => row.model || "日志未记录模型"), axisLabel: {color: cssVar("--text-muted"), rotate: rows.length > 5 ? 25 : 0}},
       yAxis: [
         {type: "value", name: "命中率", max: 1, axisLabel: {color: cssVar("--text-muted"), formatter: (v) => pct(v)}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
         {type: "value", name: "节省 USD", axisLabel: {color: cssVar("--text-muted"), formatter: usd}, splitLine: {show: false}},
@@ -156,7 +170,7 @@ const CacheView = {
     });
   },
 
-  tiles(t, composition = {}, hasPriced = true, partial = false) {
+  tiles(t, composition = {}, hasPriced = true, partial = false, days = 30) {
     const denominator = (composition.input_tokens || 0) + (composition.cache_read_tokens || 0);
     const writes = (t.cache_1h_tokens || 0) + (t.cache_5m_tokens || 0);
     const split = writes > 0
@@ -167,7 +181,7 @@ const CacheView = {
       : "日志无 TTL 分量";
     return `
       <div class="stat-tile">
-        <div class="label">总命中率(近 30 天)</div>
+        <div class="label">总命中率(近 ${days} 天)</div>
         <div class="value">${denominator > 0 ? pct(t.hit_rate) : "暂无可计算输入"}</div>
         <div class="sub">缓存读取 / (缓存读取 + 输入)</div>
       </div>
@@ -193,9 +207,11 @@ const CacheView = {
       models.map((m) => {
         const ttl = m.cache_1h_tokens + m.cache_5m_tokens > 0
           ? `${compact(m.cache_1h_tokens)} / ${compact(m.cache_5m_tokens)}` : "—";
-        const saved = unpriced.has(m.model) ? "无定价" : usd(m.saved_usd || 0);
+        const saved = unpriced.has(m.model)
+          ? (m.model ? `<a class="unpriced-link" href="#settings?group=pricing&amp;prefill=${encodeURIComponent(m.model)}">无定价 · 去配置</a>` : "无定价")
+          : usd(m.saved_usd || 0);
         return `<tr>
-          <td>${esc(m.model || "(未知)")}</td>
+          <td>${m.model ? `<a class="inline-link" href="#details?model=${encodeURIComponent(m.model)}&amp;days=${this.days || 30}">${esc(m.model)}</a>` : "日志未记录模型"}</td>
           <td>${m.input_tokens + m.cache_read_tokens > 0 ? pct(m.hit_rate) : "暂无可计算输入"}</td>
           <td>${full(m.cache_read_tokens)}</td>
           <td>${full(m.cache_creation_tokens)}</td>

@@ -84,8 +84,15 @@ const Details = {
     <section class="instrument-card">
       <div class="card-head">
         <h2>事件明细</h2>
-        <div class="head-tools"><span class="subtle" id="d-note"></span></div>
+        <div class="head-tools">
+          <div class="btn-group" id="d-export">
+            <button class="ghost-btn" type="button" data-format="csv">导出 CSV</button>
+            <button class="ghost-btn" type="button" data-format="json">导出 JSON</button>
+          </div>
+          <span class="subtle" id="d-note"></span>
+        </div>
       </div>
+      <p class="subtle" id="d-export-status" aria-live="polite" hidden></p>
       <div class="filter-row tool-toolbar">
         <select id="d-f-device" aria-label="设备筛选"><option value="">全部设备</option></select>
         <select id="d-f-source" aria-label="来源筛选"><option value="">全部来源</option></select>
@@ -125,6 +132,13 @@ const Details = {
         this.navigate({ offset: this.offset + this.limit });
       }
     });
+    const exportGroup = document.getElementById("d-export");
+    if (exportGroup) {
+      exportGroup.addEventListener("click", (ev) => {
+        const btn = ev.target.closest("[data-format]");
+        if (btn) this.download(btn.dataset.format, btn);
+      });
+    }
     const table = document.getElementById("d-table");
     const activate = (ev) => {
       if (ev.target.closest("a")) return;
@@ -332,17 +346,52 @@ const Details = {
     return this.deviceNames[identity] || identity;
   },
 
+  async download(format, button) {
+    if (button.disabled) return;
+    const status = document.getElementById("d-export-status");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (status) { status.textContent = "正在导出…"; status.hidden = false; }
+    try {
+      const p = new URLSearchParams({ days: this.filters.days, format });
+      for (const k of ["device", "source", "model", "repo", "session"]) {
+        if (this.filters[k]) p.set(k, this.filters[k]);
+      }
+      await downloadAPI("/api/v1/events?" + p, `omnitoken-events-${this.filters.days}d.${format}`);
+      if (status) status.hidden = true;
+    } catch (e) {
+      if (status) {
+        status.textContent = e instanceof APIError && e.status === 401
+          ? "导出失败：未授权，请在设置页填写读取 token"
+          : `导出失败：${e.message}`;
+        status.hidden = false;
+      }
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  },
+
   renderChips() {
     const labels = {
       device: "设备", source: "来源", model: "模型", repo: "项目", days: "范围",
     };
     const chips = Object.entries(this.filters)
       .filter(([key, value]) => key !== "session" && value && !(key === "days" && value === "7"))
-      .map(([key, value]) => `<span class="chip">${labels[key]} ${esc(
-        key === "device" ? this.deviceLabel(value) : key === "source" ? SourceUI.label(value) : value)}</span>`);
+      .map(([key, value]) => {
+        const display = key === "device" ? this.deviceLabel(value)
+          : key === "source" ? SourceUI.label(value)
+          : key === "days" ? `近 ${value} 天`
+          : value;
+        const reset = key === "days" ? { days: "7", offset: 0 } : { [key]: "", offset: 0 };
+        return `<span class="chip">${labels[key]} ${esc(display)} <a class="chip-x" href="${esc(this.routeHref(reset))}" aria-label="清除${labels[key]}过滤">×</a></span>`;
+      });
     if (this.filters.session) {
       chips.push(`<span class="chip">会话 ${esc(this.filters.session.slice(0, 8))}
         <a id="d-clear-session" class="chip-x" href="${esc(this.routeHref({session: "", offset: 0}))}" aria-label="清除会话过滤">×</a></span>`);
+    }
+    if (chips.length > 0) {
+      chips.push(`<a class="chip-clear-all" href="#details">清空全部</a>`);
     }
     document.getElementById("d-chips").innerHTML = chips.join("");
   },

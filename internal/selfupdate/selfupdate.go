@@ -242,6 +242,29 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		}
 	}()
 
+	mode := os.FileMode(0o755)
+	if info, err := os.Stat(binPath); err == nil {
+		mode = info.Mode().Perm() | 0o111
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil && goos != "windows" {
+		return res, fmt.Errorf("chmod new binary: %w", err)
+	}
+	if goos == runtime.GOOS && goarch == runtime.GOARCH {
+		if err := smokeTestBinary(ctx, tmpPath); err != nil {
+			return res, fmt.Errorf("new binary failed pre-install smoke test: %w", err)
+		}
+	}
+
+	backupPath, err := backupBinary(binPath, goos)
+	if err != nil {
+		return res, err
+	}
+	defer func() {
+		if backupPath != "" {
+			_ = os.Remove(backupPath)
+		}
+	}()
+
 	if err := replaceBinary(tmpPath, binPath, goos); err != nil {
 		return res, err
 	}
@@ -252,6 +275,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		restarted, err := restartServices(ctx, goos, opts.AutoRestart, opts.RestartServices, runner)
 		res.Restarted = restarted
 		if err != nil {
+			if backupPath != "" {
+				if rerr := restoreBinary(backupPath, binPath, goos); rerr == nil {
+					backupPath = ""
+					res.Updated = false
+					return res, fmt.Errorf("%w (rolled back to previous binary)", err)
+				}
+			}
 			return res, err
 		}
 	}
@@ -365,6 +395,57 @@ func downloadVerified(ctx context.Context, client *http.Client, url, dir, wantHe
 	return tmpPath, nil
 }
 
+func smokeTestBinary(ctx context.Context, path string) error {
+	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(tctx, path, "version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func backupBinary(targetPath, goos string) (string, error) {
+	if goos == "windows" {
+		return "", nil
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat current binary: %w", err)
+	}
+	src, err := os.Open(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("open current binary for backup: %w", err)
+	}
+	defer src.Close()
+	bak, err := os.CreateTemp(filepath.Dir(targetPath), ".omnitoken-backup-*")
+	if err != nil {
+		return "", fmt.Errorf("create backup temp file: %w", err)
+	}
+	bakPath := bak.Name()
+	if _, err := io.Copy(bak, src); err != nil {
+		_ = bak.Close()
+		_ = os.Remove(bakPath)
+		return "", fmt.Errorf("copy current binary to backup: %w", err)
+	}
+	if err := bak.Close(); err != nil {
+		_ = os.Remove(bakPath)
+		return "", err
+	}
+	_ = os.Chmod(bakPath, info.Mode().Perm())
+	return bakPath, nil
+}
+
+func restoreBinary(backupPath, targetPath, goos string) error {
+	if goos == "windows" {
+		return nil
+	}
+	return os.Rename(backupPath, targetPath)
+}
+
 func replaceBinary(tmpPath, targetPath, goos string) error {
 	mode := os.FileMode(0o755)
 	if info, err := os.Stat(targetPath); err == nil {
@@ -374,7 +455,7 @@ func replaceBinary(tmpPath, targetPath, goos string) error {
 		return fmt.Errorf("chmod new binary: %w", err)
 	}
 	if goos == "windows" {
-		oldPath := targetPath + ".old"
+		oldPath := fmt.Sprintf("%s.old.%d", targetPath, os.Getpid())
 		_ = os.Remove(oldPath)
 		if _, err := os.Stat(targetPath); err == nil {
 			if err := os.Rename(targetPath, oldPath); err != nil {
@@ -436,6 +517,11 @@ func restartServices(ctx context.Context, goos string, auto bool, explicit []str
 			targets = []string{"com.omnitoken.agent"}
 		}
 		uid := strconv.Itoa(os.Getuid())
+		if os.Getuid() == 0 {
+			if sudoUID := strings.TrimSpace(os.Getenv("SUDO_UID")); sudoUID != "" {
+				uid = sudoUID
+			}
+		}
 		var restarted []string
 		for _, label := range targets {
 			target := "gui/" + uid + "/" + label

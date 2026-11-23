@@ -135,3 +135,38 @@ func TestGeminiProviderPrefixes(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstPartyPrefixStrippingAndDateSuffix(t *testing.T) {
+	tb := &Table{prices: map[string]Price{
+		"claude-opus-4-8": {Input: 5e-6, Output: 25e-6},
+		"gpt-5":           {Input: 2e-6, Output: 10e-6},
+	}, cache: map[string]*Price{}}
+	for _, tc := range []struct {
+		model   string
+		wantOut float64
+	}{
+		{"anthropic/claude-opus-4-8", 25e-6},
+		{"anthropic/claude-opus-4-8-20260730", 25e-6},
+		{"openai/gpt-5-2026-08-07", 10e-6},
+	} {
+		p, ok := tb.Lookup(tc.model)
+		if !ok || p.Output != tc.wantOut {
+			t.Errorf("Lookup(%q) = %+v ok=%v, want out=%g", tc.model, p, ok, tc.wantOut)
+		}
+	}
+}
+
+func TestCostChargesUnsplitCacheCreationRemainder(t *testing.T) {
+	tb := &Table{prices: map[string]Price{
+		"claude-test": {Input: 1.0, Output: 2.0, CacheWrite: 1.25, CacheWrite1h: 2.0, CacheRead: 0.1},
+	}, cache: map[string]*Price{}}
+	// Total cacheCreation=100, with 20 explicitly in 1h and 30 in 5m -> 50 unsplit remainder charged at CacheWrite (1.25).
+	got, ok := tb.Cost("claude-test", time.Now(), 0, 0, 0, 100, 20, 30)
+	if !ok {
+		t.Fatal("expected model to price")
+	}
+	want := 20*2.0 + 30*1.25 + 50*1.25
+	if got != want {
+		t.Fatalf("Cost = %v, want %v", got, want)
+	}
+}

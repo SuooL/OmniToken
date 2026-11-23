@@ -20,6 +20,8 @@ let detailGeneration = 0;
 let detailUpdatePending = false;
 let lastDetailHeight = 0;
 let lastSourceHTML = "";
+let lastQuotaHTML = "";
+let pendingRender = false;
 
 let SERVER = "";
 let HAS_TOKEN = false;
@@ -27,6 +29,9 @@ let HAS_TOKEN = false;
 let PANEL_URL = "";
 // Whether the app registers itself to launch at login (LaunchAgent).
 let AUTOSTART = false;
+let TRAY_TITLE = "off";
+let NOTIFY = true;
+let HOTKEY = false;
 let latestLive = null;
 let latestTelemetry = null;
 let telemetryError = "";
@@ -283,10 +288,43 @@ function quotaResetLabel(deadline) {
   return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }
 
+function quotaPool(source, scope) {
+  const s = String(scope || "").trim().toLowerCase();
+  if (source === "antigravity") {
+    if (s.includes("argon")) return "gemini-argon";
+    if (s.startsWith("gemini")) return "gemini";
+    if (s.startsWith("3p")) return "3p";
+  } else if (source === "claude-code") {
+    if (s.includes("opus")) return "opus";
+    if (s.includes("sonnet")) return "sonnet";
+    if (s.includes("haiku")) return "haiku";
+  }
+  return "all";
+}
+
+function quotaScopeLabel(scope) {
+  const s = String(scope || "").trim();
+  const map = {
+    "gemini-5h": "Gemini",
+    "gemini-weekly": "Gemini",
+    "gemini-argon-wtu-weekly": "Argon",
+    "3p-5h": "第三方",
+    "3p-weekly": "第三方",
+    seven_day_opus: "Opus",
+    seven_day_sonnet: "Sonnet",
+  };
+  if (map[s]) return map[s];
+  if (s.includes(":")) return s.split(":").slice(1).join(":");
+  return "";
+}
+
 function quotaRemaining(quota, key) {
   const remaining = quota[`${key}_remaining_tokens`];
   const known = finite(remaining) && remaining >= 0;
   if (key !== "five_hour") return known ? remaining : null;
+  if (quotaPool(quota.source, quota.five_hour_scope) !== quotaPool(quota.source, quota.weekly_scope)) {
+    return known ? remaining : null;
+  }
   const weekly = quota.weekly_remaining_tokens;
   if (finite(weekly) && weekly >= 0) {
     if (weekly === 0 && finite(quota.five_hour_percent)) return 0;
@@ -304,11 +342,9 @@ function quotaElapsed(percent, reset, minutes) {
 function renderQuotas() {
   const quotas = latestLive && latestLive.quotas;
   const root = $("quota-grid");
-  if (!quotas || !quotas.length) {
-    root.innerHTML = '<div class="empty">官方配额不可用</div>';
-    return;
-  }
-  root.innerHTML = quotas
+  const markup = !quotas || !quotas.length
+    ? '<div class="empty">官方配额不可用</div>'
+    : quotas
     .map((quota) => {
       const hasBuckets = Array.isArray(quota.buckets) && quota.buckets.length > 0;
       const detailKey = `quota:${quota.source}`;
@@ -339,8 +375,10 @@ function renderQuotas() {
             const elapsed = quotaElapsed(percent, quota[`${window.key}_resets_at_ms`], window.key === "five_hour" ? 300 : 10080);
             const timeText = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
             const marker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
+            const scopeName = quotaScopeLabel(quota[`${window.key}_scope`]);
+            const winLabel = scopeName ? `${window.label} · ${scopeName}` : window.label;
             return `<div class="quota-window" data-window="${window.key}" data-risk="${risk}">
-      <span class="quota-window-label">${window.label}</span><div class="quota-reading">
+      <span class="quota-window-label" title="${esc(winLabel)}">${esc(winLabel)}</span><div class="quota-reading">
       <strong class="fig" data-severity="${severity}">${known ? percentLabel(percent) : "暂无"}</strong>${hint ? `<small>${hint}</small>` : ""}
       <div class="quota-meter${known ? "" : " missing"}" ${known ? `role="progressbar" aria-label="${esc(quota.label)} ${window.label} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(percent, 100)}" aria-valuetext="${percentLabel(percent)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"` : 'role="img" aria-label="配额暂无读数"'}><div class="quota-meter-fill" style="width:${known ? Math.min(percent, 100) : 0}%"></div>${marker}</div></div>
       <span class="quota-remainder" title="预估剩余额度（tokens）">${finite(remaining) ? compact(remaining) : "暂无估算"}</span>
@@ -349,6 +387,18 @@ function renderQuotas() {
         ).join("")}</section>`;
     })
     .join("");
+  if (markup !== lastQuotaHTML) {
+    const focused =
+      document.activeElement &&
+      document.activeElement.dataset &&
+      document.activeElement.dataset.detail;
+    root.innerHTML = markup;
+    lastQuotaHTML = markup;
+    if (focused && focused.startsWith("quota:"))
+      document
+        .querySelector(`[data-detail="${CSS.escape(focused)}"]`)
+        ?.focus({ preventScroll: true });
+  }
 }
 
 function sourceRows(bucket) {
@@ -552,7 +602,7 @@ function renderDevices() {
             return `<div class="device-row">
       <span class="device-dot" data-state="${esc(device.state)}"></span>
       <span class="device-name" title="${esc(device.name)}">${esc(device.name)}</span>
-      <span class="device-state" data-state="${esc(device.state)}">${state}</span><small>${processState}</small>
+      <span class="device-state" data-state="${esc(device.state)}">${esc(state)}</span><small>${processState}</small>
     </div>`;
           })
           .join("")
@@ -571,6 +621,11 @@ function renderDevices() {
 }
 
 function renderAll() {
+  if (typeof document !== "undefined" && document.hidden && !DETAIL_WINDOW) {
+    pendingRender = true;
+    return;
+  }
+  pendingRender = false;
   renderFreshness();
   renderHero();
   renderDailyUsage();
@@ -709,7 +764,8 @@ function renderSelectedDetail() {
               elapsed == null
                 ? ""
                 : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
-            return `<div class="quota-bucket-row" data-risk="${risk}"><div class="quota-bucket-head"><strong>${esc(b.label || b.scope)} · ${winLabel}</strong><span class="quota-bucket-val"><strong class="fig" data-severity="${severity}">${percentLabel(pct)}</strong>${hint ? `<small>${hint}</small>` : ""}</span></div><div class="quota-meter" role="progressbar" aria-label="${esc(b.label || b.scope)} ${winLabel} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}" aria-valuetext="${percentLabel(pct)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"><div class="quota-meter-fill" style="width:${Math.min(pct, 100)}%"></div>${marker}</div><div class="secondary quota-bucket-reset">距重置 ${quotaResetLabel(b.resets_at_ms)}</div></div>`;
+            const obsText = finite(b.observed_at_ms) && b.observed_at_ms > 0 ? ` · 观测于 ${relTime(b.observed_at_ms)}` : "";
+            return `<div class="quota-bucket-row" data-risk="${risk}"><div class="quota-bucket-head"><strong>${esc(b.label || b.scope)} · ${winLabel}</strong><span class="quota-bucket-val"><strong class="fig" data-severity="${severity}">${percentLabel(pct)}</strong>${hint ? `<small>${hint}</small>` : ""}</span></div><div class="quota-meter" role="progressbar" aria-label="${esc(b.label || b.scope)} ${winLabel} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}" aria-valuetext="${percentLabel(pct)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"><div class="quota-meter-fill" style="width:${Math.min(pct, 100)}%"></div>${marker}</div><div class="secondary quota-bucket-reset">距重置 ${quotaResetLabel(b.resets_at_ms)}${obsText}</div></div>`;
           })
           .join("")}<section class="detail-note">来自官方 statusLine 实时上报；蓝色刻度为窗口已过去时间比例。</section>`
       : '<div class="empty">暂无官方配额分桶读数</div>';
@@ -773,6 +829,7 @@ async function openDetail(kind) {
   renderDailyUsage();
   renderQuotas();
   fitWindow();
+  if (inlineDetail) $("detail-close")?.focus({ preventScroll: true });
 }
 function closeDetail() {
   ++detailGeneration;
@@ -832,7 +889,12 @@ const settingsEls = {
   settings: $("settings"),
   input: $("server-input"),
   token: $("token-input"),
+  clearTokenWrap: $("clear-token-wrap"),
+  clearToken: $("clear-token-input"),
   panel: $("panel-input"),
+  trayTitle: $("tray-title-input"),
+  notify: $("notify-input"),
+  hotkey: $("hotkey-input"),
   autostart: $("autostart-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
@@ -880,7 +942,12 @@ function openSettings() {
   settingsEls.token.placeholder = HAS_TOKEN
     ? "已保存访问令牌；留空保持不变"
     : "服务端只监听本机时留空";
+  if (settingsEls.clearToken) settingsEls.clearToken.checked = false;
+  if (settingsEls.clearTokenWrap) settingsEls.clearTokenWrap.hidden = !HAS_TOKEN;
   settingsEls.panel.value = PANEL_URL;
+  if (settingsEls.trayTitle) settingsEls.trayTitle.value = TRAY_TITLE;
+  if (settingsEls.notify) settingsEls.notify.checked = NOTIFY;
+  if (settingsEls.hotkey) settingsEls.hotkey.checked = HOTKEY;
   settingsEls.autostart.checked = AUTOSTART;
   settingsEls.checkUpdate.disabled = false;
   settingsEls.updateVersion.textContent = "";
@@ -910,11 +977,18 @@ async function saveSettings() {
       token: settingsEls.token.value,
       panelUrl: settingsEls.panel.value,
       autostart: settingsEls.autostart.checked,
+      clearToken: !!(settingsEls.clearToken && settingsEls.clearToken.checked),
+      trayTitle: settingsEls.trayTitle ? settingsEls.trayTitle.value : TRAY_TITLE,
+      notify: settingsEls.notify ? settingsEls.notify.checked : NOTIFY,
+      hotkey: settingsEls.hotkey ? settingsEls.hotkey.checked : HOTKEY,
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
     PANEL_URL = stored.panel_url;
     AUTOSTART = !!stored.autostart;
+    if (stored.tray_title != null) TRAY_TITLE = stored.tray_title;
+    if (stored.notify != null) NOTIFY = !!stored.notify;
+    if (stored.hotkey != null) HOTKEY = !!stored.hotkey;
     latestTelemetry = null;
     closeSettings();
   } catch (error) {
@@ -966,12 +1040,19 @@ async function boot() {
     inlineDetail = false;
     renderSelectedDetail();
     renderDailyUsage();
+    renderQuotas();
   });
   const stored = await invoke("settings_get");
   SERVER = stored.server;
   HAS_TOKEN = !!stored.has_token;
   PANEL_URL = stored.panel_url || "";
   AUTOSTART = !!stored.autostart;
+  if (stored.tray_title != null) TRAY_TITLE = stored.tray_title;
+  if (stored.notify != null) NOTIFY = !!stored.notify;
+  if (stored.hotkey != null) HOTKEY = !!stored.hotkey;
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && pendingRender) renderAll();
+  });
   await listen("live", (event) => onLive(event.payload));
   await listen("open-settings", openSettings);
   await pullTelemetry();
