@@ -56,36 +56,6 @@ func (s *Store) UsageByProvider(from, to time.Time) ([]ProviderUsage, error) {
 	return out, rows.Err()
 }
 
-// SourceModelUsage aggregates [from, to) for a single source grouped by
-// (source, provider, model). Used by rolling quota-group summaries (ADR-0044)
-// so they only scan one source's slice rather than every source.
-func (s *Store) SourceModelUsage(source string, from, to time.Time) ([]ProviderUsage, error) {
-	rows, err := s.rdb.Query(
-		`SELECT source, provider, model,
-		        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
-		        COALESCE(SUM(output_tokens),0), COUNT(*),
-		        COALESCE(SUM(input_tokens),0), COALESCE(SUM(cache_read_tokens),0),
-		        COALESCE(SUM(cache_creation_tokens),0),
-		        COALESCE(SUM(cache_1h_tokens),0), COALESCE(SUM(cache_5m_tokens),0)
-		 FROM events WHERE source = ? AND ts >= ? AND ts < ?
-		 GROUP BY source, provider, model`,
-		source, from.UnixMilli(), to.UnixMilli())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ProviderUsage
-	for rows.Next() {
-		var c ProviderUsage
-		if err := rows.Scan(&c.Source, &c.Provider, &c.Model, &c.Tokens, &c.OutTokens, &c.Events,
-			&c.Input, &c.CacheRead, &c.CacheCreate, &c.Cache1h, &c.Cache5m); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
 // IsSubscription reports whether usage falls under a subscription quota window.
 //
 // The provider label decides, for every source alike. Proxy traffic used to be
