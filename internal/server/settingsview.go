@@ -93,9 +93,10 @@ func (s *Server) priceTable(catalog map[string]pricing.Price) (*pricing.Table, e
 }
 
 type settingsResponse struct {
-	PricingUpdate    pricingRefreshStatus        `json:"pricing_update"`
-	PricingOverrides map[string]pricing.Override `json:"pricing_overrides"`
-	DeviceLabels     map[string]string           `json:"device_labels"`
+	PricingUpdate           pricingRefreshStatus              `json:"pricing_update"`
+	PricingOverrides        map[string]pricing.Override       `json:"pricing_overrides"`
+	DeviceLabels            map[string]string                 `json:"device_labels"`
+	AntigravityQuotaBudgets map[string]AntigravityGroupBudget `json:"antigravity_quota_budgets"`
 	// DeviceMerges is the audit log of ADR-0019 merges, oldest first. It is
 	// read-only and has no delete counterpart: a merge cannot be undone, so the
 	// record of it is the only thing left to check against afterwards.
@@ -109,18 +110,20 @@ type settingsResponse struct {
 // an empty object means "replace with nothing" — the panel needs the latter to
 // delete the last override or label.
 type settingsRequest struct {
-	PricingOverrides *map[string]pricing.Override `json:"pricing_overrides"`
-	DeviceLabels     *map[string]string           `json:"device_labels"`
+	PricingOverrides        *map[string]pricing.Override       `json:"pricing_overrides"`
+	DeviceLabels            *map[string]string                 `json:"device_labels"`
+	AntigravityQuotaBudgets *map[string]AntigravityGroupBudget `json:"antigravity_quota_budgets"`
 }
 
-// currentSettings reads all three documents, applying defaults for unset keys.
+// currentSettings reads all settings documents, applying defaults for unset keys.
 // Only overrides stored here are returned; overrides written into config.json
 // stay in force but are not editable from the panel (the panel says so).
 func (s *Server) currentSettings() (settingsResponse, error) {
 	resp := settingsResponse{
-		PricingUpdate:    s.pricingUpdateStatus(),
-		PricingOverrides: map[string]pricing.Override{},
-		DeviceLabels:     map[string]string{},
+		PricingUpdate:           s.pricingUpdateStatus(),
+		PricingOverrides:        map[string]pricing.Override{},
+		DeviceLabels:            map[string]string{},
+		AntigravityQuotaBudgets: map[string]AntigravityGroupBudget{},
 	}
 	if err := s.store.GetSettingsJSON(settingsKeyPricing, &resp.PricingOverrides); err != nil {
 		return resp, err
@@ -128,11 +131,17 @@ func (s *Server) currentSettings() (settingsResponse, error) {
 	if err := s.store.GetSettingsJSON(settingsKeyDeviceLabels, &resp.DeviceLabels); err != nil {
 		return resp, err
 	}
+	if err := s.store.GetSettingsJSON(settingsKeyAntigravityBudgets, &resp.AntigravityQuotaBudgets); err != nil {
+		return resp, err
+	}
 	if resp.PricingOverrides == nil {
 		resp.PricingOverrides = map[string]pricing.Override{}
 	}
 	if resp.DeviceLabels == nil {
 		resp.DeviceLabels = map[string]string{}
+	}
+	if resp.AntigravityQuotaBudgets == nil {
+		resp.AntigravityQuotaBudgets = map[string]AntigravityGroupBudget{}
 	}
 	merges, err := s.store.DeviceMergeHistory()
 	if err != nil {
@@ -190,6 +199,15 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		labels = normalized
 	}
+	var budgets map[string]AntigravityGroupBudget
+	if req.AntigravityQuotaBudgets != nil {
+		normalized, err := validateAntigravityBudgets(*req.AntigravityQuotaBudgets)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		budgets = normalized
+	}
 
 	if overrides != nil {
 		if err := s.store.SetSettingsJSON(settingsKeyPricing, overrides); err != nil {
@@ -209,14 +227,23 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if budgets != nil {
+		if err := s.store.SetSettingsJSON(settingsKeyAntigravityBudgets, budgets); err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if s.readCache != nil {
+			s.readCache.clear()
+		}
+	}
 
 	resp, err := s.currentSettings()
 	if err != nil {
 		http.Error(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Tell the panel a repaint is worthwhile: every cost on screen just moved.
-	if overrides != nil {
+	// Tell the panel a repaint is worthwhile when pricing or quota budgets moved.
+	if overrides != nil || budgets != nil {
 		s.bcast.Notify()
 	}
 	writeJSON(w, map[string]any{

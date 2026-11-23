@@ -190,6 +190,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	quotaGroups, err := s.buildQuotaGroups(now)
+	if err != nil {
+		return nil, err
+	}
 	quotaViews := make([]map[string]any, 0, len(quotas))
 	for _, q := range quotas {
 		if q.ResetsAt > 0 && q.ResetsAt < now.UnixMilli() {
@@ -227,6 +231,7 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		// the union of generation intervals ("how fast is it generating").
 		"speed":        speed,
 		"windows":      windows,
+		"quota_groups": quotaGroups,
 		"generated_at": now.UnixMilli(),
 	}, nil
 }

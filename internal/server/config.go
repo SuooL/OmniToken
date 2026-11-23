@@ -45,6 +45,10 @@ type Config struct {
 	PricingOverrides    map[string]pricing.Override `json:"pricing_overrides,omitempty"`
 	PricingAutoUpdate   *bool                       `json:"pricing_auto_update,omitempty"`
 	PricingRefreshHours int                         `json:"pricing_refresh_hours,omitempty"`
+	// AntigravityQuotaBudgets: optional reference token caps per Antigravity
+	// model pool (gemini-pro, gemini-flash, third-party) for rolling-window
+	// remaining estimates (ADR-0044).
+	AntigravityQuotaBudgets map[string]AntigravityGroupBudget `json:"antigravity_quota_budgets,omitempty"`
 	// WorktimeIdleMinutes: idle gap that stops the work clock (F8); default 5.
 	WorktimeIdleMinutes int `json:"worktime_idle_minutes,omitempty"`
 	// ProxyListen runs the local API proxy (F14) inside the server, e.g.
@@ -200,6 +204,13 @@ func (c *Config) resolveTimezone() error {
 		return fmt.Errorf(`timezone %q: %w (需 IANA 名,如 "America/New_York")`, c.Timezone, err)
 	}
 	c.location = loc
+	if len(c.AntigravityQuotaBudgets) > 0 {
+		normalized, err := validateAntigravityBudgets(c.AntigravityQuotaBudgets)
+		if err != nil {
+			return err
+		}
+		c.AntigravityQuotaBudgets = normalized
+	}
 	return nil
 }
 

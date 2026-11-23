@@ -43,6 +43,36 @@ function buildPricingPayload(rows) {
 // is ever sent — and the confirmation is compared byte for byte, exactly as the
 // server does it. Anything looser here would train the user to expect the
 // forgiving version and then surprise them with a 400.
+const ANTIGRAVITY_QUOTA_GROUPS = [
+  { id: "gemini-pro", label: "Gemini Pro / 4" },
+  { id: "gemini-flash", label: "Gemini Flash" },
+  { id: "third-party", label: "Claude / 第三方" },
+];
+
+// Accepts M tokens (million tokens) in the UI and converts to exact integer tokens.
+function buildAntigravityBudgetPayload(draft) {
+  const value = {};
+  for (const group of ANTIGRAVITY_QUOTA_GROUPS) {
+    const entry = (draft && draft[group.id]) || {};
+    const parsed = {};
+    for (const [field, key, label] of [
+      ["five_hour_mtok", "five_hour_tokens", "5h 上限"],
+      ["weekly_mtok", "weekly_tokens", "Week 上限"],
+    ]) {
+      const raw = entry[field];
+      if (raw == null || String(raw).trim() === "") continue;
+      const number = Number(raw);
+      if (!isFinite(number) || number < 0 || number > 100000000) {
+        return { ok: false, error: `${group.label} 的${label} ${raw} 非法(须 ≥ 0，单位 M tokens)` };
+      }
+      const tokens = Math.round(number * 1000000);
+      if (tokens > 0) parsed[key] = tokens;
+    }
+    if (Object.keys(parsed).length) value[group.id] = parsed;
+  }
+  return { ok: true, value };
+}
+
 function mergeSubmission(merge) {
   const from = String((merge && merge.from) || "");
   const to = String((merge && merge.to) || "");
@@ -57,6 +87,7 @@ function mergeSubmission(merge) {
 
 const SettingsView = {
   _rows: [],       // pricing overrides being edited: {model, in, out, cr, cw}
+  _agBudgets: {},  // group id -> {five_hour_mtok, weekly_mtok}
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
   _merges: [],     // audit log of past identity merges (read-only, ADR-0019)
@@ -64,9 +95,9 @@ const SettingsView = {
   _loaded: false,
   _activeGroup: "connection",
   _advancedOpen: false,
-  _draft: { pricing: null, devices: null, readToken: null, adminToken: null },
-  _revision: { pricing: 0, devices: 0, tokens: 0 },
-  _saving: { pricing: false, devices: false },
+  _draft: { pricing: null, agBudgets: null, devices: null, readToken: null, adminToken: null },
+  _revision: { pricing: 0, agBudgets: 0, devices: 0, tokens: 0 },
+  _saving: { pricing: false, agBudgets: false, devices: false },
   // The merge tool's own state. `plan` is whatever the server last previewed;
   // it is thrown away the moment either side changes, so a confirmation can
   // never be typed against numbers computed for a different pair.
@@ -128,6 +159,15 @@ const SettingsView = {
       cw: po[m].cache_write_per_mtok || 0,
     }));
     this._labels = (settings && settings.device_labels) || {};
+    const agRaw = (settings && settings.antigravity_quota_budgets) || {};
+    this._agBudgets = {};
+    for (const g of ANTIGRAVITY_QUOTA_GROUPS) {
+      const b = agRaw[g.id] || {};
+      this._agBudgets[g.id] = {
+        five_hour_mtok: b.five_hour_tokens > 0 ? String(Number((b.five_hour_tokens / 1000000).toFixed(3))) : "",
+        weekly_mtok: b.weekly_tokens > 0 ? String(Number((b.weekly_tokens / 1000000).toFixed(3))) : "",
+      };
+    }
     this._merges = (settings && settings.device_merges) || [];
     this._local = (settings && settings.local_identity) || {};
     this._devices = (devices && devices.rows) || [];
@@ -147,7 +187,7 @@ const SettingsView = {
         `<button type="button" class="settings-nav-row" data-settings-nav="${key}" aria-controls="settings-panel-${key}" aria-pressed="${key === this._activeGroup}">${title}</button>`).join("")}</nav>
       <div class="settings-content">
         ${panel("connection", this.tokenCard())}
-        ${panel("pricing", this.pricingCard())}
+        ${panel("pricing", this.pricingCard() + this.antigravityBudgetCard())}
         ${panel("devices", this.deviceCard() + `<details id="settings-device-advanced" class="settings-advanced"${this._advancedOpen ? " open" : ""}><summary>高级操作 · 设备身份</summary>${this.mergeCard()}${this.dangerCard()}</details>`)}
         ${panel("appearance", this.preferencesCard())}
       </div></div>`;
@@ -199,6 +239,33 @@ const SettingsView = {
         <p class="subtle">覆盖内置价格表中的单个模型。成本为查询时计算,保存后历史成本立即按新价重算,<b>无需重启</b>。模型名不区分大小写;写在 config.json 里的覆盖不在此列表,但仍然生效(此处同名条目优先)。</p>
         <div class="data-table">${body}</div>
         <div class="save-note" data-note="price">&nbsp;</div>
+      </section>`;
+  },
+
+  antigravityBudgetCard() {
+    const budgets = this._draft.agBudgets || this._agBudgets || {};
+    const rows = ANTIGRAVITY_QUOTA_GROUPS.map((g) => {
+      const entry = budgets[g.id] || { five_hour_mtok: "", weekly_mtok: "" };
+      return `<tr>
+        <td>${esc(g.label)}</td>
+        <td><input class="form-input ag-budget" data-group="${esc(g.id)}" data-f="five_hour_mtok" type="number" min="0" step="0.1" value="${esc(entry.five_hour_mtok || "")}" placeholder="留空表示不设上限"></td>
+        <td><input class="form-input ag-budget" data-group="${esc(g.id)}" data-f="weekly_mtok" type="number" min="0" step="0.1" value="${esc(entry.weekly_mtok || "")}" placeholder="留空表示不设上限"></td>
+      </tr>`;
+    }).join("");
+    return `
+      <section class="instrument-card" id="card-antigravity-budgets"
+               data-settings-group="antigravity-budgets" data-settings-scope="section">
+        <div class="card-head">
+          <h2>Antigravity 分组预算（可选 · M tokens）</h2>
+          <div class="head-tools">
+            <button class="ghost-btn" data-act="save-ag-budgets">保存</button>
+          </div>
+        </div>
+        <p class="subtle">Antigravity 暂不落盘官方配额百分比。此处可按三个官方模型池设置参考上限（单位：百万 tokens），留空仅汇总滚动已用；保存后立即生效，<b>无需重启</b>。</p>
+        <div class="data-table"><table><thead><tr>
+          <th>模型分组</th><th>5h 上限 (M tokens)</th><th>Week 上限 (M tokens)</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="save-note" data-note="ag-budgets">&nbsp;</div>
       </section>`;
   },
 
@@ -454,6 +521,8 @@ const SettingsView = {
         this.render();
       } else if (act === "save-price") {
         this.savePricing();
+      } else if (act === "save-ag-budgets") {
+        this.saveAntigravityBudgets();
       } else if (act === "save-devices") {
         this.saveDevices();
       } else if (act === "save-tokens") {
@@ -490,6 +559,21 @@ const SettingsView = {
     return this._draft.devices;
   },
 
+  agBudgetsDraft() {
+    if (!this._draft.agBudgets) {
+      const next = {};
+      for (const g of ANTIGRAVITY_QUOTA_GROUPS) {
+        const cur = (this._agBudgets && this._agBudgets[g.id]) || {};
+        next[g.id] = {
+          five_hour_mtok: cur.five_hour_mtok || "",
+          weekly_mtok: cur.weekly_mtok || "",
+        };
+      }
+      this._draft.agBudgets = next;
+    }
+    return this._draft.agBudgets;
+  },
+
   updateDraft(target) {
     if (target.matches("input.model, input.num")) {
       const row = this.pricingDraft()[Number(target.dataset.i)];
@@ -497,6 +581,12 @@ const SettingsView = {
       if (target.classList.contains("model")) row.model = target.value;
       else row[target.dataset.f] = target.value;
       this._revision.pricing += 1;
+    } else if (target.matches("input.ag-budget")) {
+      const draft = this.agBudgetsDraft();
+      const g = target.dataset.group;
+      if (!draft[g]) draft[g] = { five_hour_mtok: "", weekly_mtok: "" };
+      draft[g][target.dataset.f] = target.value;
+      this._revision.agBudgets += 1;
     } else if (target.matches("input.label")) {
       this.devicesDraft()[target.dataset.host] = target.value;
       this._revision.devices += 1;
@@ -543,6 +633,35 @@ const SettingsView = {
       }
     } finally {
       this._saving.pricing = false;
+    }
+  },
+
+  async saveAntigravityBudgets() {
+    if (this._saving.agBudgets) {
+      return this.note("ag-budgets", false, "保存进行中,请等待当前请求完成");
+    }
+    this._saving.agBudgets = true;
+    try {
+      const src = this._draft.agBudgets || this._agBudgets || {};
+      const snapshot = {};
+      for (const g of ANTIGRAVITY_QUOTA_GROUPS) {
+        snapshot[g.id] = { ...(src[g.id] || { five_hour_mtok: "", weekly_mtok: "" }) };
+      }
+      const sentRevision = this._revision.agBudgets;
+      const built = buildAntigravityBudgetPayload(snapshot);
+      if (!built.ok) return this.note("ag-budgets", false, built.error);
+      const ok = await this.put({ antigravity_quota_budgets: built.value }, "ag-budgets");
+      if (ok) {
+        if (canCommitRevision(this._revision.agBudgets, sentRevision)) {
+          this._agBudgets = snapshot;
+          this._draft.agBudgets = null;
+          this.note("ag-budgets", true, "已保存 Antigravity 分组预算,配额与预估已立即刷新");
+        } else {
+          this.note("ag-budgets", true, "发送版本已保存;当前编辑仍未保存");
+        }
+      }
+    } finally {
+      this._saving.agBudgets = false;
     }
   },
 
