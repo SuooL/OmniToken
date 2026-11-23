@@ -31,7 +31,12 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 /// would open a fresh connection every few seconds.
 pub(crate) fn http() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("http client")
+    })
 }
 
 /// Fetch JSON from the configured server, on the frontend's behalf.
@@ -57,7 +62,7 @@ impl std::fmt::Display for FetchError {
 
 pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Value, FetchError> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let mut req = http().get(&url);
+    let mut req = http().get(&url).timeout(std::time::Duration::from_secs(15));
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
@@ -78,17 +83,6 @@ pub(crate) async fn get_json(base: &str, path: &str, token: &str) -> Result<Valu
     res.json::<Value>()
         .await
         .map_err(|e| FetchError::Other(format!("{url}: {e}")))
-}
-
-/// The frontend passes only the path: the address and the token are the Rust
-/// side's business, and handing a credential to the webview to hand back would
-/// be a way for it to leak into a rendered string.
-#[tauri::command]
-async fn api_get(app: tauri::AppHandle, path: String) -> Result<Value, String> {
-    let s = settings::load(&app);
-    get_json(&s.server, &path, &s.token)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -115,9 +109,17 @@ async fn settings_set(
     token: String,
     panel_url: String,
     autostart: bool,
+    clear_token: Option<bool>,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
-    let mut next = settings::validate_candidate(&current, &server, &token, &panel_url).await?;
+    let mut next = settings::validate_candidate(
+        &current,
+        &server,
+        &token,
+        &panel_url,
+        clear_token.unwrap_or(false),
+    )
+    .await?;
     next.autostart = autostart;
     settings::save(&app, &next)?;
 
@@ -358,7 +360,6 @@ pub fn run() {
         .manage(tray::State::default())
         .manage(panel::State::default())
         .invoke_handler(tauri::generate_handler![
-            api_get,
             telemetry_get,
             settings_get,
             settings_set,

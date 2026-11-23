@@ -64,10 +64,10 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          case "$VERSION" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::invalid release tag: $VERSION" >&2; exit 1 ;;
-          esac
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::invalid release tag: $VERSION" >&2
+            exit 1
+          fi
 
       - name: Deploy release to Hub over SSH with health-check rollback
         if: steps.guard.outputs.configured == 'true'
@@ -161,7 +161,11 @@ jobs:
           for svc in $SERVICES; do
             if $SUDO systemctl is-active --quiet "$svc" || $SUDO systemctl is-enabled --quiet "$svc" 2>/dev/null; then
               echo "Restarting $svc"
-              $SUDO systemctl restart "$svc"
+              if ! $SUDO systemctl restart "$svc"; then
+                echo "::error::failed to restart $svc" >&2
+                rollback
+                exit 1
+              fi
             fi
           done
 
@@ -178,14 +182,18 @@ jobs:
             exit 1
           fi
 
-          INSTALLED="$("$BIN" version)"
+          if ! INSTALLED="$("$BIN" version)"; then
+            echo "::error::failed to query active binary version" >&2
+            rollback
+            exit 1
+          fi
           echo "Active binary: $INSTALLED"
-          case "$INSTALLED" in
-            *"$VERSION"*) ;;
-            *)
-              echo "::error::version mismatch after deploy: got $INSTALLED, want $VERSION" >&2
-              rollback
-              exit 1
-              ;;
-          esac
+          if [[ ! "$INSTALLED" =~ (^|[[:space:]])${VERSION}([[:space:]]|$) ]]; then
+            echo "::error::version mismatch after deploy: got $INSTALLED, want $VERSION" >&2
+            rollback
+            exit 1
+          fi
+
+          # Retain the 5 most recent rollback backups to prevent unbounded disk growth.
+          $SUDO bash -c 'ls -1t /var/backups/omnitoken/omnitoken-* 2>/dev/null | tail -n +6 | xargs -r rm -f'
           REMOTE

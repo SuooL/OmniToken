@@ -203,24 +203,64 @@ pub fn save(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let body = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))
+    let tmp = path.with_extension("json.tmp");
+    write_private_file(&tmp, &body)?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })
+}
+
+fn write_private_file(path: &std::path::Path, body: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    f.write_all(body)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.sync_all().map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(ua), Ok(ub)) => ua.origin() == ub.origin(),
+        _ => false,
+    }
 }
 
 /// Build and authenticate a replacement before the persisted settings change.
 ///
-/// A blank token means "keep the credential already stored", because the
-/// webview receives only `has_token` and can never pre-fill the secret itself.
+/// A blank token means "keep the credential already stored" ONLY when the
+/// server origin has not changed and `clear_token` is false — changing hosts
+/// must never replay the previous server's bearer token to a new origin.
 pub async fn validate_candidate(
     current: &Settings,
     server: &str,
     token: &str,
     panel_url: &str,
+    clear_token: bool,
 ) -> Result<Settings, String> {
     let mut candidate = current.clone();
     candidate.server = normalize(server)?;
     let token = token.trim();
-    if !token.is_empty() {
+    if clear_token {
+        candidate.token.clear();
+    } else if !token.is_empty() {
         candidate.token = token.to_string();
+    } else if !same_origin(&current.server, &candidate.server) {
+        candidate.token.clear();
     }
     // A blank panel URL is not a validation failure: it means "open the API
     // address in the browser", so it is stored as empty and `panel_target`
@@ -232,13 +272,9 @@ pub async fn validate_candidate(
         normalize(panel_url)?
     };
 
-    crate::get_json(
-        &candidate.server,
-        "/api/v1/overview?days=1",
-        &candidate.token,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    crate::get_json(&candidate.server, "/api/v1/live", &candidate.token)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(candidate)
 }
 
@@ -405,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_bearer_credential_passes_the_overview_probe() {
+    fn valid_bearer_credential_passes_the_live_probe() {
         let (server, request_rx, handle) = authenticated_server("valid-token");
 
         let candidate = tauri::async_runtime::block_on(validate_candidate(
@@ -413,12 +449,13 @@ mod tests {
             &server,
             "valid-token",
             "",
+            false,
         ))
         .unwrap();
 
         let request = request_rx.recv().unwrap();
         handle.join().unwrap();
-        assert!(request.starts_with("GET /api/v1/overview?days=1 HTTP/1.1\r\n"));
+        assert!(request.starts_with("GET /api/v1/live HTTP/1.1\r\n"));
         assert!(request.contains("\r\nauthorization: Bearer valid-token\r\n"));
         assert_eq!(candidate.server, server);
         assert_eq!(candidate.token, "valid-token");
@@ -433,6 +470,7 @@ mod tests {
             &server,
             "wrong-token",
             "",
+            false,
         ));
 
         let request = request_rx.recv().unwrap();
@@ -450,6 +488,7 @@ mod tests {
             &server,
             "",
             "",
+            false,
         ));
 
         let request = request_rx.recv().unwrap();
@@ -468,13 +507,49 @@ mod tests {
         };
 
         let candidate =
-            tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ", ""))
+            tauri::async_runtime::block_on(validate_candidate(&current, &server, "   ", "", false))
                 .unwrap();
 
         let request = request_rx.recv().unwrap();
         handle.join().unwrap();
         assert!(request.contains("\r\nauthorization: Bearer saved-token\r\n"));
         assert_eq!(candidate.token, "saved-token");
+    }
+
+    #[test]
+    fn changing_server_origin_drops_previous_token_when_blank() {
+        let (server, request_rx, handle) = authenticated_server("saved-token");
+        let current = Settings {
+            server: "https://previous-hub.example".into(),
+            token: "saved-token".into(),
+            ..Settings::default()
+        };
+
+        let result =
+            tauri::async_runtime::block_on(validate_candidate(&current, &server, "", "", false));
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(!request.to_ascii_lowercase().contains("\r\nauthorization:"));
+        assert!(result.unwrap_err().contains("401"));
+    }
+
+    #[test]
+    fn clear_token_drops_saved_credential_on_same_origin() {
+        let (server, request_rx, handle) = authenticated_server("saved-token");
+        let current = Settings {
+            server: server.clone(),
+            token: "saved-token".into(),
+            ..Settings::default()
+        };
+
+        let result =
+            tauri::async_runtime::block_on(validate_candidate(&current, &server, "", "", true));
+
+        let request = request_rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(!request.to_ascii_lowercase().contains("\r\nauthorization:"));
+        assert!(result.unwrap_err().contains("401"));
     }
 
     #[test]
@@ -531,6 +606,7 @@ mod tests {
             &server,
             "valid-token",
             "   ",
+            false,
         ))
         .unwrap();
 
@@ -554,6 +630,7 @@ mod tests {
             &server,
             "valid-token",
             "  omni.example.net/dash/  ",
+            false,
         ))
         .unwrap();
 
@@ -561,7 +638,7 @@ mod tests {
         handle.join().unwrap();
         // Scheme filled in, trailing slash trimmed — same rules as `server`.
         assert_eq!(candidate.panel_url, "http://omni.example.net/dash");
-        // The one probe that happened was the overview call to `server`.
-        assert!(request.starts_with("GET /api/v1/overview?days=1 HTTP/1.1\r\n"));
+        // The one probe that happened was the live call to `server`.
+        assert!(request.starts_with("GET /api/v1/live HTTP/1.1\r\n"));
     }
 }

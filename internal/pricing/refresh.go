@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -34,8 +35,16 @@ func ParseCatalog(raw []byte) (map[string]Price, error) {
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return nil, fmt.Errorf("catalog JSON: %w", err)
 	}
+	keys := make([]string, 0, len(entries))
+	for name := range entries {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+
 	models := map[string]Price{}
-	for name, entry := range entries {
+	exactLower := map[string]bool{}
+	for _, name := range keys {
+		entry := entries[name]
 		if name == "sample_spec" {
 			continue
 		}
@@ -62,10 +71,26 @@ func ParseCatalog(raw []byte) (map[string]Price, error) {
 		if normalized == "" {
 			return nil, fmt.Errorf("empty model ID")
 		}
-		if _, exists := models[normalized]; exists {
-			return nil, fmt.Errorf("duplicate normalized model %q", normalized)
+		candidate := Price{
+			Input:        rates[costFields[0]],
+			Output:       rates[costFields[1]],
+			CacheRead:    rates[costFields[2]],
+			CacheWrite:   rates[costFields[3]],
+			CacheWrite1h: rates[costFields[4]],
 		}
-		models[normalized] = Price{Input: rates[costFields[0]], Output: rates[costFields[1]], CacheRead: rates[costFields[2]], CacheWrite: rates[costFields[3]], CacheWrite1h: rates[costFields[4]]}
+		if existing, exists := models[normalized]; exists {
+			// Upstream LiteLLM catalogs occasionally contain case-only duplicate
+			// entries (e.g. together_ai/baai/... vs together_ai/BAAI/...). Keep
+			// identical rates without failing the whole refresh; on mismatch,
+			// prefer the exact lowercase key deterministically.
+			if existing == candidate || exactLower[normalized] {
+				continue
+			}
+		}
+		models[normalized] = candidate
+		if name == normalized {
+			exactLower[normalized] = true
+		}
 	}
 	if err := validateCatalog(models); err != nil {
 		return nil, err

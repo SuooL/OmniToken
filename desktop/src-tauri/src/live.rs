@@ -1005,16 +1005,16 @@ async fn stream_once(app: &tauri::AppHandle, base: &str, token: &str) -> bool {
         // a credential in a URL lands in access logs (ADR-0016).
         req = req.bearer_auth(token);
     }
-    let res = match req
-        .header("Accept", "text/event-stream")
-        // No read timeout: an idle stream is the normal state of this endpoint —
-        // it sends a comment heartbeat every 30s and nothing else until usage
-        // changes. A timeout here would tear down a perfectly healthy connection.
-        .timeout(Duration::from_secs(60 * 60 * 24))
-        .send()
-        .await
+    // Bound only the initial HTTP handshake/headers; once established, the
+    // byte-level `IDLE_LIMIT` watchdog below guards liveness without tearing
+    // down healthy long-lived SSE streams.
+    let res = match tokio::time::timeout(
+        Duration::from_secs(15),
+        req.header("Accept", "text/event-stream").send(),
+    )
+    .await
     {
-        Ok(r) if r.status().is_success() => r,
+        Ok(Ok(r)) if r.status().is_success() => r,
         _ => return false,
     };
 

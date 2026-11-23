@@ -8,7 +8,6 @@ package pricing
 
 import (
 	_ "embed"
-	"encoding/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -45,12 +44,11 @@ type Table struct {
 }
 
 func Load(overrides map[string]Override) (*Table, error) {
-	t := &Table{prices: map[string]Price{}, cache: map[string]*Price{}}
-	if err := json.Unmarshal(rawPrices, &t.prices); err != nil {
+	catalog, err := ParseCatalog(rawPrices)
+	if err != nil {
 		return nil, err
 	}
-	applyOverrides(t, overrides)
-	return t, nil
+	return LoadCatalog(catalog, overrides)
 }
 
 func applyOverrides(t *Table, overrides map[string]Override) {
@@ -82,6 +80,7 @@ var codexFallbacks = []struct {
 
 var bedrockRegion = regexp.MustCompile(`^(us|eu|apac|jp|au|ca|sa|global)\.`)
 var bedrockVersion = regexp.MustCompile(`-v\d+(:\d+)?$`)
+var pinnedDateSuffix = regexp.MustCompile(`-(\d{8}|\d{4}-\d{2}-\d{2})$`)
 
 // Lookup resolves a model ID to a price via the normalization chain:
 // exact → provider-prefixed → Bedrock region/version stripping → Vertex form.
@@ -132,6 +131,27 @@ func (t *Table) lookupUncached(m string) (Price, bool) {
 	if strings.Contains(m, "@") {
 		candidates = append(candidates, "vertex_ai/"+m, strings.ReplaceAll(m, "@", "-"))
 	}
+	// Known first-party provider prefixes when bare keys exist in the catalog.
+	unprefixed := ""
+	for _, prefix := range []string{"anthropic/", "openai/", "google/", "gemini/", "vertex_ai/"} {
+		if strings.HasPrefix(m, prefix) {
+			unprefixed = strings.TrimPrefix(m, prefix)
+			if unprefixed != "" {
+				candidates = append(candidates, unprefixed)
+			}
+			break
+		}
+	}
+	// Strip pinned release date suffix (-YYYYMMDD / -YYYY-MM-DD) only after
+	// exact and provider-prefixed matches miss.
+	if undated := pinnedDateSuffix.ReplaceAllString(m, ""); undated != m {
+		candidates = append(candidates, undated, "anthropic/"+undated, "openai/"+undated, "gemini/"+undated)
+	}
+	if unprefixed != "" {
+		if undated := pinnedDateSuffix.ReplaceAllString(unprefixed, ""); undated != unprefixed {
+			candidates = append(candidates, undated, "anthropic/"+undated, "openai/"+undated, "gemini/"+undated)
+		}
+	}
 	for _, c := range candidates {
 		if p, ok := t.prices[c]; ok {
 			return p, true
@@ -172,7 +192,11 @@ func (t *Table) Cost(model string, ts time.Time, in, out, cacheRead, cacheCreati
 	}
 	cost := float64(in)*p.Input + float64(out)*p.Output + float64(cacheRead)*crRate
 	if p.CacheWrite1h > 0 && cache1h+cache5m > 0 {
-		cost += float64(cache1h)*p.CacheWrite1h + float64(cache5m)*p.CacheWrite
+		// Aggregates can combine split (1h/5m) events with unsplit events (e.g.
+		// proxy, dsh, antigravity, legacy logs). Bill any unsplit remainder at
+		// the standard cache-write rate rather than silently pricing it at $0.
+		unsplit := max(cacheCreation-cache1h-cache5m, 0)
+		cost += float64(cache1h)*p.CacheWrite1h + float64(cache5m+unsplit)*p.CacheWrite
 	} else {
 		cost += float64(cacheCreation) * p.CacheWrite
 	}
