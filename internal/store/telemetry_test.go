@@ -328,6 +328,8 @@ func TestTelemetryTodaySourcesKeepModelsAndYesterdayComparisonSeparate(t *testin
 		telemetryEvent("claude-alias", now, "claude-code", "claude-opus-4-8", 200),
 		telemetryEvent("codex-same-model", now, "codex", "claude-opus-4-8", 70),
 		telemetryEvent("deepseek", now.Add(-6*time.Hour), "dsh", "deepseek-v4", 400),
+		telemetryEvent("antigravity", now, "antigravity", "gemini-4-neon-high", 120),
+		telemetryEvent("gemini", now, "gemini", "gemini-2.5-pro", 80),
 		telemetryEvent("api", now, "proxy", "claude-opus-4-8", 50),
 		telemetryEvent("previous-at-noon", previous, "claude-code", "claude-opus-4-8", 150),
 		telemetryEvent("previous-after-noon", previous.Add(time.Millisecond), "claude-code", "claude-opus-4-8", 900),
@@ -354,7 +356,7 @@ func TestTelemetryTodaySourcesKeepModelsAndYesterdayComparisonSeparate(t *testin
 			t.Fatalf("source %s models=%d total=%d", row.Source, models, row.Tokens)
 		}
 	}
-	if total != got.Today.TotalTokens || total != 820 {
+	if total != got.Today.TotalTokens || total != 1020 {
 		t.Fatalf("sources=%d today=%d", total, got.Today.TotalTokens)
 	}
 	claude := bySource["claude-code"]
@@ -364,7 +366,7 @@ func TestTelemetryTodaySourcesKeepModelsAndYesterdayComparisonSeparate(t *testin
 	if len(claude.Models) != 1 || claude.Models[0].Model != "claude-opus-4-8" {
 		t.Fatalf("canonical models=%+v", claude.Models)
 	}
-	if bySource["codex"].Tokens != 70 || bySource["dsh"].Tokens != 400 || bySource["api"].Tokens != 50 {
+	if bySource["codex"].Tokens != 70 || bySource["dsh"].Tokens != 400 || bySource["antigravity"].Tokens != 120 || bySource["gemini"].Tokens != 80 || bySource["api"].Tokens != 50 {
 		t.Fatalf("source attribution=%+v", bySource)
 	}
 	if bySource["codex"].ChangePercent != nil {

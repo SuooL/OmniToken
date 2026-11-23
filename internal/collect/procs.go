@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/parser/antigravity"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
+	"github.com/suool/omnitoken/internal/parser/gemini"
 )
 
 // procInfo is what every platform implementation has to produce.
@@ -119,6 +121,10 @@ func toolFor(command string) string {
 		return claudecode.Source
 	case commandRuns(args, "codex"):
 		return codex.Source
+	case commandRuns(args, "gemini"):
+		return gemini.Source
+	case commandRuns(args, "agy"):
+		return antigravity.Source
 	}
 	return ""
 }

@@ -7,8 +7,10 @@ func TestBillingChannel(t *testing.T) {
 		// Positive evidence about how the machine pays.
 		ProviderAnthropicOAuth: ChannelSubscription,
 		ProviderOpenAIChatGPT:  ChannelSubscription,
+		ProviderGoogleOAuth:    ChannelSubscription,
 		ProviderAnthropicAPI:   ChannelAPI,
 		ProviderOpenAIAPI:      ChannelAPI,
+		ProviderGoogleAPI:      ChannelAPI,
 		// First-party managed hosting: pay-per-token, no subscription window.
 		ProviderBedrock: ChannelAPI,
 		ProviderVertex:  ChannelAPI,
@@ -17,6 +19,7 @@ func TestBillingChannel(t *testing.T) {
 		// First-party endpoint confirmed, payment method not established.
 		ProviderAnthropic: ChannelUnknown,
 		ProviderOpenAI:    ChannelUnknown,
+		ProviderGoogle:    ChannelUnknown,
 		ProviderUnknown:   ChannelUnknown,
 		"":                ChannelUnknown,
 		// A relay's own declared name is still just "not first-party".
@@ -75,6 +78,18 @@ func TestProviderRankOrdering(t *testing.T) {
 	}
 	if ProviderRank(ProviderAnthropicOAuth) != ProviderRank(ProviderAnthropicAPI) {
 		t.Error("two probe outcomes are the same strength; neither may overwrite the other")
+	}
+	if ProviderRank(ProviderGoogleOAuth) != ProviderRank(ProviderGoogleAPI) {
+		t.Error("google billing outcomes share the same strength")
+	}
+	if ProviderRank(ProviderGoogleAPI) <= ProviderRank(ProviderGoogle) {
+		t.Error("google billing evidence must outrank undetermined google endpoint")
+	}
+	if ProviderRank(ProviderGoogle) <= ProviderRank(ProviderUnknown) {
+		t.Error("first-party google endpoint must outrank unknown")
+	}
+	if ProviderRank(ProviderRelay) <= ProviderRank(ProviderGoogleOAuth) {
+		t.Error("event-level relay must outrank google billing")
 	}
 	// Model-name fingerprints carry no evidence at all (ADR-0018 §16 rationale):
 	// they must be overwritable by anything, including by "unknown".

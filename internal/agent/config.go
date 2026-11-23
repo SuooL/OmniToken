@@ -31,6 +31,8 @@ type FileConfig struct {
 	ClaudeDirs         []string `json:"claude_dirs,omitempty"`          // default: auto-detect
 	CodexDirs          []string `json:"codex_dirs,omitempty"`           // default: auto-detect
 	DshDirs            []string `json:"dsh_dirs,omitempty"`             // DeepSeek Harness sessions; default: auto-detect
+	AntigravityDirs    []string `json:"antigravity_dirs,omitempty"`     // Google Antigravity brain dirs; default: auto-detect
+	GeminiDirs         []string `json:"gemini_dirs,omitempty"`          // Gemini CLI session dirs; default: auto-detect
 	State              string   `json:"state,omitempty"`                // offset state file path
 	// StatuslineCachePath locates what `omnitoken statusline` leaves behind;
 	// Claude's quota is read from the rate-limits file beside it (ADR-0011).

@@ -222,6 +222,14 @@ func runAgent(args []string) {
 	if len(dshDirs) == 0 {
 		dshDirs = server.DefaultLocalDshDirs()
 	}
+	antigravityDirs := fc.AntigravityDirs
+	if len(antigravityDirs) == 0 {
+		antigravityDirs = server.DefaultLocalAntigravityDirs()
+	}
+	geminiDirs := fc.GeminiDirs
+	if len(geminiDirs) == 0 {
+		geminiDirs = server.DefaultLocalGeminiDirs()
+	}
 	intervalSec := *interval
 	if intervalSec <= 0 {
 		intervalSec = fc.IntervalSeconds
@@ -262,6 +270,8 @@ func runAgent(args []string) {
 		ClaudeDirs:          claudeDirs,
 		CodexDirs:           codexDirs,
 		DshDirs:             dshDirs,
+		AntigravityDirs:     antigravityDirs,
+		GeminiDirs:          geminiDirs,
 		StatePath:           statePath,
 		StatuslineCachePath: statuslineCachePath,
 		Interval:            time.Duration(intervalSec) * time.Second,

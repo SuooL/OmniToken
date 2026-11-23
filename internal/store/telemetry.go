@@ -252,10 +252,10 @@ func (s *Store) telemetryDailySources(todayStart, now time.Time) ([]TelemetryDai
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	order := []string{"claude-code", "codex", "dsh"}
+	order := []string{"claude-code", "codex", "dsh", "antigravity", "gemini"}
 	var extra []string
 	for source, row := range acc {
-		if source != "claude-code" && source != "codex" && source != "dsh" && (row.tokens > 0 || row.previous > 0) {
+		if source != "claude-code" && source != "codex" && source != "dsh" && source != "antigravity" && source != "gemini" && (row.tokens > 0 || row.previous > 0) {
 			extra = append(extra, source)
 		}
 	}

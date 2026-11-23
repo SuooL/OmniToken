@@ -111,7 +111,7 @@ func (t *Table) Lookup(model string) (Price, bool) {
 }
 
 func (t *Table) lookupUncached(m string) (Price, bool) {
-	candidates := []string{m, "anthropic/" + m, "openai/" + m}
+	candidates := []string{m, "anthropic/" + m, "openai/" + m, "gemini/" + m, "vertex_ai/" + m, "google/" + m}
 	// The first-party pricing table identifies deepseek-flash as V4.1 Flash.
 	// dsh reports its versioned display name. Never strip arbitrary providers:
 	// their exact prices (and manual overrides) must retain precedence.
