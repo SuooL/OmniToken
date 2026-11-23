@@ -445,3 +445,49 @@ enrollment。若只丢失 outbox，但源日志仍存在，可在明确 `since` 
 
 只有当 ack 的 protocol、device、batch 和 sequence 全部匹配时，agent 才能删除对应
 outbox 数据。任何不确定结果都应重试，而不是猜测成功。
+
+## 版本升级与 Hub 自动部署(ADR-0043)
+
+所有二进制升级均为**按需触发或发版事件驱动**，不做后台定时轮询拉取。
+
+### 1. Hub 与 Agent 单命令升级(`omnitoken self-update`)
+
+在任意已安装新版 `omnitoken` 的机器(Hub 或 Agent)上运行:
+
+```sh
+# 仅检查是否有新版本(不下载、不修改文件)
+omnitoken self-update -check
+
+# 升级到最新 Release 并自动重启活跃的 systemd / launchd 服务
+omnitoken self-update -restart
+
+# 指定版本或指定重启服务(如 Hub 机器)
+sudo omnitoken self-update -version v0.5.0 -restart-service omnitoken-server,omnitoken-agent
+```
+
+`self-update` 会下载目标版本的 `SHA256SUMS` 与对应平台二进制到同目录临时文件，严格校验
+SHA-256 后原子替换现役二进制；校验失败立即清理临时文件并报错，绝不触碰运行中的二进制。
+(旧版本首次升级到带 `self-update` 的版本前，仍可运行 `install.sh --no-enroll`。)
+
+### 2. GitHub Actions 发版后自动部署线上 Hub
+
+触发 `Release` 工作流发布新版本后，`.github/workflows/release.yml` 会自动调用
+`.github/workflows/deploy-hub.yml` 通过 SSH 部署线上 Hub(含内嵌 Web 面板):
+自动备份原二进制 → 调用 `self-update`(旧版自动回落到校验下载) → 重启 `omnitoken-server`
+与运行中的 `omnitoken-agent` → 轮询本机 `/api/v1/health` 与 `omnitoken version`，
+任一校验失败自动回滚到备份二进制。
+
+在仓库 `Settings → Secrets and variables → Actions` 配置以下 Secrets 即可启用(未配置时自动跳过):
+
+| Secret | 必填 | 默认值 / 说明 |
+|---|---|---|
+| `HUB_SSH_HOST` | 是 | Hub 公网 IP 或域名(如 `8.163.138.198`) |
+| `HUB_SSH_USER` | 是 | 具备 `sudo` 安装与重启服务权限的 SSH 用户 |
+| `HUB_SSH_KEY` | 是 | 专用部署 SSH 私钥(OpenSSH PEM) |
+| `HUB_SSH_PORT` | 否 | `22`(如 aliyun198 使用 `2222` 请配置) |
+| `HUB_SSH_KNOWN_HOSTS` | 建议 | `ssh-keyscan -p <port> <host>` 输出，启用严格主机指纹校验 |
+| `HUB_BINARY_PATH` | 否 | `/usr/local/bin/omnitoken` |
+| `HUB_SERVICES` | 否 | `omnitoken-server omnitoken-agent` |
+| `HUB_HEALTH_URL` | 否 | `http://127.0.0.1:8787/api/v1/health` |
+
+也可随时在 GitHub Actions 手动运行 `Deploy Hub` 工作流，指定任意历史 tag 执行重部署或回滚。
