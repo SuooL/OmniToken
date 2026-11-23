@@ -48,4 +48,4 @@ ADR 标注 supersedes,不改写历史。
 | [0041](0041-dsh-migration-duplicates.md) | dsh 格式迁移重复计数:产出 dedup_key;冲突并列时删 event_id 大的那条(补全 0020) | 已采纳 |
 | [0042](0042-antigravity-and-gemini-sources.md) | Google Antigravity、Gemini CLI 与 Gemini 本地代理接入 | 已采纳 |
 | [0043](0043-self-update-and-hub-deploy.md) | Hub 与 Agent 按需自更新(`omnitoken self-update`)与 GitHub Actions 自动部署 | 已采纳 |
-| [0044](0044-antigravity-quota-groups.md) | Antigravity 模型分组滚动配额与估算视图 | 已采纳 |
+| [0044](0044-antigravity-quota-groups.md) | Antigravity 模型分组滚动配额视图(无官方桌面端导出通道且不读凭据，暂不展示) | 已撤回 |

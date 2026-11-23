@@ -167,7 +167,3 @@ independent of elapsed time.
 ### Desktop release architecture
 
 The shared macOS updater archive must contain both ARM64 and x86_64 slices. Validate both architectures and the app resource signature before publishing either platform entry.
-
-### Antigravity quota groups (2026-11-22, ADR-0044)
-
-Web overview/live quota sections and the macOS menu-bar "配额与预估" section include an Antigravity rolling-window estimate entry alongside official Claude and Codex quotas. Because Antigravity does not persist official quota percentages on disk, the summary row reports rolling 5h and 7d (Week) token totals honestly labelled as rolling estimates (never fabricating official percentages or reset countdowns), and optionally computes estimated usage percentage and remaining tokens when per-group token budgets are configured in `config.json` or Hub settings. Clicking the Antigravity row opens the adjacent detail window (menu bar, extending F24) or detail drawer (Web) showing the three official Antigravity model pools (`Gemini Pro / 4`, `Gemini Flash`, `Claude / 第三方`) and per-model token breakdowns.
