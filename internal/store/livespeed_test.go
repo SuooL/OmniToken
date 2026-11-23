@@ -571,3 +571,37 @@ func TestProxyNeverWritesDurationOnSharedRow(t *testing.T) {
 		t.Errorf("gen_ms/ttft_ms = %d/%d, want the proxy's 3000/200", genMS, ttft)
 	}
 }
+
+func TestLiveSpeedPreservesCWDWhenRepoEmpty(t *testing.T) {
+	st := speedStore(t)
+	now := time.Now()
+
+	dshEv := gen("dsh-1", "sess-dsh", now.Add(-10*time.Second), 4_000, 800)
+	dshEv.Source = "dsh"
+	dshEv.Repo = ""
+	dshEv.CWD = `E:\project\GUIDE`
+
+	agEv := gen("ag-1", "sess-ag", now.Add(-5*time.Second), 2_000, 400)
+	agEv.Source = "antigravity"
+	agEv.Repo = "github.com/suool/omnitoken"
+	agEv.CWD = "/Users/suool/git/OmniToken"
+
+	if _, err := st.InsertEvents([]model.Event{dshEv, agEv}, now.UnixMilli()); err != nil {
+		t.Fatalf("InsertEvents: %v", err)
+	}
+
+	got, err := st.LiveSpeedSince(now.Add(-60*time.Second), now, "")
+	if err != nil {
+		t.Fatalf("LiveSpeedSince: %v", err)
+	}
+	bySess := map[string]SessionSpeed{}
+	for _, s := range got.Sessions {
+		bySess[s.SessionID] = s
+	}
+	if bySess["sess-dsh"].CWD != `E:\project\GUIDE` || bySess["sess-dsh"].Repo != "" {
+		t.Errorf("dsh session = %+v, want cwd E:\\project\\GUIDE and empty repo", bySess["sess-dsh"])
+	}
+	if bySess["sess-ag"].Repo != "github.com/suool/omnitoken" || bySess["sess-ag"].CWD != "/Users/suool/git/OmniToken" {
+		t.Errorf("antigravity session = %+v, want both repo and cwd", bySess["sess-ag"])
+	}
+}

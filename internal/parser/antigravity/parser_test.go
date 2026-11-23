@@ -218,6 +218,19 @@ func TestParsePathExtractsPureGenerationTimingFromConversationDB(t *testing.T) {
 	}
 	db.Close()
 
+	// Sibling conversation_summaries.db provides workspace_uris -> ev.CWD.
+	sumDB, err := sql.Open("sqlite", filepath.Join(root, "conversation_summaries.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sumDB.Exec(`CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sumDB.Exec(`INSERT INTO conversation_summaries (conversation_id, workspace_uris) VALUES (?, ?)`, convID, `["file:///Users/suool/git/OmniToken"]`); err != nil {
+		t.Fatal(err)
+	}
+	sumDB.Close()
+
 	transcriptPath := filepath.Join(logDir, "transcript.jsonl")
 	line := `{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-23T02:18:50Z","model":"gemini-4-neon-high","input_tokens":1000,"cache_read_tokens":500,"output_tokens":1400}` + "\n"
 	res := ParsePath(transcriptPath, strings.NewReader(line), "mac", 0)
@@ -231,8 +244,32 @@ func TestParsePathExtractsPureGenerationTimingFromConversationDB(t *testing.T) {
 	if ev.GenMS != 10500 {
 		t.Errorf("GenMS = %d, want 10500", ev.GenMS)
 	}
+	if ev.CWD != "/Users/suool/git/OmniToken" {
+		t.Errorf("CWD = %q, want /Users/suool/git/OmniToken", ev.CWD)
+	}
 	if ev.Provider != model.ProviderGoogleOAuth {
 		t.Errorf("Provider = %q, want %q", ev.Provider, model.ProviderGoogleOAuth)
+	}
+}
+
+func TestParseWorkspaceURIs(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`["file:///Users/suool/git/OmniToken"]`, "/Users/suool/git/OmniToken"},
+		{`["file:///Users/suool/Downloads/NEO%E7%BB%93%E6%9E%9C/"]`, "/Users/suool/Downloads/NEO结果"},
+		{`["file:///E:/project/GUIDE/"]`, "E:/project/GUIDE"},
+		{`["file://server/share/repo/"]`, "//server/share/repo"},
+		{`["/plain/path/"]`, "/plain/path"},
+		{`[]`, ""},
+		{`not-json`, ""},
+		{``, ""},
+	}
+	for _, tc := range cases {
+		if got := parseWorkspaceURIs(tc.raw); got != tc.want {
+			t.Errorf("parseWorkspaceURIs(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
 	}
 }
 

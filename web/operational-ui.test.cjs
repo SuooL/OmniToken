@@ -217,3 +217,14 @@ test("live source lanes show only tools with speed in this window", () => {
   assert.deepEqual(Array.from(chart.series, row => row.name), ["dsh"]);
   assert.equal(chart.series[0].data[0], 42);
 });
+
+test("speed contributor labels fall back from empty repo to cwd on Unix and Windows paths", () => {
+  const repoLabel = (r, c) => (r ? r.replace(/^local:/, "") : c || "(非 git 目录)");
+  const { run, node } = load("live.js", { repoLabel });
+  run('Live.renderLanes({window_start_ms:0,window_end_ms:10000,tps:40,active_ms:5000,spans:[[0,5000]],sessions:[{session_id:"abcdef1234",device:"win",cwd:"E:\\\\project\\\\GUIDE\\\\",tps:40,contribution_tps:40,spans:[[0,5000]]}]})');
+  assert.match(node("lanes").innerHTML, />GUIDE/);
+
+  const overview = load("overview.js", { repoLabel });
+  const labels = overview.run('Overview.sessionLabels([{session_id:"s1",device:"mac",cwd:"/Users/suool/git/MultiAgents"},{session_id:"s2",device:"win",cwd:"E:\\\\project\\\\GUIDE"}])');
+  assert.deepEqual(Array.from(labels), ["MultiAgents mac", "GUIDE win"]);
+});

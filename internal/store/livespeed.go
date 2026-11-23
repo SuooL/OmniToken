@@ -32,6 +32,7 @@ type SessionSpeed struct {
 	SessionID    string  `json:"session_id"`
 	Device       string  `json:"device"`
 	Repo         string  `json:"repo,omitempty"`
+	CWD          string  `json:"cwd,omitempty"`
 	Model        string  `json:"model,omitempty"`
 	Source       string  `json:"source"`
 	OutputTokens int64   `json:"output_tokens"`
@@ -101,7 +102,7 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 	// timing, not from the log line timestamps that made it unmeasurable before.
 	// The filter that matters is gen_ms > 0 — an unmeasured row is absent from
 	// the numerator and the denominator alike, never a zero in either.
-	q := `SELECT session_id, device, repo, model, source, output_tokens, gen_ms, ts
+	q := `SELECT session_id, device, repo, cwd, model, source, output_tokens, gen_ms, ts
 	      FROM events
 	      WHERE ts >= ? AND ts <= ? AND gen_ms > 0 AND output_tokens > 0`
 	args := []any{startMS, endMS}
@@ -127,10 +128,10 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 
 	for rows.Next() {
 		var (
-			sess, dev, repo, mdl, src string
-			outTok, genMS, ts         int64
+			sess, dev, repo, cwd, mdl, src string
+			outTok, genMS, ts              int64
 		)
-		if err := rows.Scan(&sess, &dev, &repo, &mdl, &src, &outTok, &genMS, &ts); err != nil {
+		if err := rows.Scan(&sess, &dev, &repo, &cwd, &mdl, &src, &outTok, &genMS, &ts); err != nil {
 			return out, err
 		}
 		eventStart, eventEnd := ts-genMS, ts
@@ -149,11 +150,19 @@ func (s *Store) LiveSpeedSince(since, now time.Time, device string) (LiveSpeed, 
 		key := dev + "\x00" + sess
 		a := bySession[key]
 		if a == nil {
-			a = &acc{SessionSpeed: SessionSpeed{SessionID: sess, Device: dev, Repo: repo, Source: src}}
+			a = &acc{SessionSpeed: SessionSpeed{SessionID: sess, Device: dev, Repo: repo, CWD: cwd, Source: src}}
 			bySession[key] = a
 		}
 		a.OutputTokens += allocatedTokens
 		a.spans = append(a.spans, span{start, end})
+		// Prefer non-empty repo/cwd and let the latest event win when a
+		// session changes directories or models mid-window.
+		if repo != "" && (a.Repo == "" || ts >= a.LastTS) {
+			a.Repo = repo
+		}
+		if cwd != "" && (a.CWD == "" || ts >= a.LastTS) {
+			a.CWD = cwd
+		}
 		// Last model wins: a session can switch models, and what it is running
 		// now is more useful on a live view than what it started with.
 		if ts >= a.LastTS {

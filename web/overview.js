@@ -342,7 +342,9 @@ const Overview = {
   // stays in the title either way.
   sessionLabels(rows) {
     const base = rows.map((row) => {
-      const repo = row.repo ? repoLabel(row.repo).split("/").pop() : "";
+      const repo = (row.repo || row.cwd)
+        ? repoLabel(row.repo, row.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop()
+        : "";
       return [repo, row.device].filter(Boolean).join(" ");
     });
     const collisions = new Set(base.filter((label, i) => base.indexOf(label) !== i));

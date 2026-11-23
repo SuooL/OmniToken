@@ -653,7 +653,19 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState) -> Popove
         .iter()
         .map(|session| SessionView {
             tool: source_label(session.get("source").and_then(Value::as_str).unwrap_or("")),
-            repository: short_repository(session.get("repo").and_then(Value::as_str).unwrap_or("")),
+            repository: short_repository(
+                session
+                    .get("repo")
+                    .and_then(Value::as_str)
+                    .filter(|repo| !repo.is_empty())
+                    .or_else(|| {
+                        session
+                            .get("cwd")
+                            .and_then(Value::as_str)
+                            .filter(|cwd| !cwd.is_empty())
+                    })
+                    .unwrap_or(""),
+            ),
             model: session
                 .get("model")
                 .and_then(Value::as_str)
@@ -2270,5 +2282,40 @@ mod tests {
         assert_eq!(ag.buckets[0].label, "Gemini");
         assert_eq!(ag.buckets[3].scope, "3p-5h");
         assert_eq!(ag.buckets[3].label, "Claude / 第三方");
+    }
+
+    #[test]
+    fn speed_sessions_fall_back_to_cwd_when_repo_is_empty() {
+        let payload = json!({
+            "generated_at": 1_700_000_000_000i64,
+            "speed": {
+                "tps": 90.0,
+                "sessions": [
+                    {
+                        "source": "dsh",
+                        "device": "win-pc",
+                        "model": "deepseek-chat",
+                        "repo": "",
+                        "cwd": "E:\\project\\GUIDE",
+                        "contribution_tps": 50.0,
+                        "tps": 50.0
+                    },
+                    {
+                        "source": "antigravity",
+                        "device": "mac",
+                        "model": "gemini-4-neon-high",
+                        "cwd": "/Users/suool/git/OmniToken/",
+                        "contribution_tps": 40.0,
+                        "tps": 40.0
+                    }
+                ]
+            }
+        });
+        let view = view_for(Some(&payload), ConnectionKind::Live);
+        assert_eq!(view.sessions.len(), 2);
+        assert_eq!(view.sessions[0].tool, "DeepSeek");
+        assert_eq!(view.sessions[0].repository, "GUIDE");
+        assert_eq!(view.sessions[1].tool, "Antigravity");
+        assert_eq!(view.sessions[1].repository, "OmniToken");
     }
 }
