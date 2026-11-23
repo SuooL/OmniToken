@@ -20,12 +20,17 @@ type deviceEntry struct {
 	DisplayName     string   `json:"display_name,omitempty"`
 	IdentityStatus  string   `json:"identity_status"`
 	ConnectionState string   `json:"connection_state"`
+	AgentVersion    string   `json:"agent_version,omitempty"`
 	LastSeenAt      int64    `json:"last_seen_at,omitempty"`
 	LastSeenAgeMS   *int64   `json:"last_seen_age_ms,omitempty"`
+	RevokedAt       int64    `json:"revoked_at,omitempty"`
 	Capabilities    []string `json:"capabilities,omitempty"`
 	QueuedBatches   int      `json:"queued_batches,omitempty"`
 	QueuedBytes     int64    `json:"queued_bytes,omitempty"`
 	OldestQueuedAt  int64    `json:"oldest_queued_at,omitempty"`
+	LastScanAt      int64    `json:"last_scan_at,omitempty"`
+	LastUploadAt    int64    `json:"last_upload_at,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 	Events          int64    `json:"events"`
 	TotalTokens     int64    `json:"total_tokens"`
 	InputTokens     int64    `json:"input_tokens"`
@@ -131,15 +136,22 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		entry.IdentityStatus = "registered"
 		entry.Capabilities = append([]string(nil), record.Capabilities...)
 		entry.LastSeenAt = record.LastSeenAt
+		entry.RevokedAt = record.RevokedAt
 		entry.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
 		if record.LastSeenAt > 0 {
 			age := max(now.UnixMilli()-record.LastSeenAt, 0)
 			entry.LastSeenAgeMS = &age
 		}
 		if heartbeat, ok := heartbeats[record.DeviceID]; ok {
+			entry.AgentVersion = heartbeat.AgentVersion
 			entry.QueuedBatches = heartbeat.QueuedBatches
 			entry.QueuedBytes = heartbeat.QueuedBytes
 			entry.OldestQueuedAt = heartbeat.OldestQueuedAt
+			entry.LastScanAt = heartbeat.LastScanAt
+			entry.LastUploadAt = heartbeat.LastUploadAt
+			if len(heartbeat.Warnings) > 0 {
+				entry.Warnings = append([]string(nil), heartbeat.Warnings...)
+			}
 		}
 	}
 
@@ -162,6 +174,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]any{
 		"days":         days,
+		"hub_version":  s.hubVersion(),
 		"summary":      out,
 		"daily":        daily,
 		"unpriced":     unpriced,

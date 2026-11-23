@@ -113,6 +113,9 @@ async function apiFetch(path, init = {}) {
   try {
     res = await fetch(Api.url(path), request);
   } catch (error) {
+    if (typeof document !== "undefined" && typeof CustomEvent !== "undefined") {
+      document.dispatchEvent(new CustomEvent("hub-health", { detail: { ok: false } }));
+    }
     if (error && error.name === "AbortError") {
       throw new APIError(path, 0, `请求超时(>${Math.round(timeoutMs / 1000)}s),服务无响应`);
     }
@@ -120,6 +123,9 @@ async function apiFetch(path, init = {}) {
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+  }
+  if (typeof document !== "undefined" && typeof CustomEvent !== "undefined") {
+    document.dispatchEvent(new CustomEvent("hub-health", { detail: { ok: true } }));
   }
   if (!res.ok) throw new APIError(path, res.status);
   return res;
@@ -157,6 +163,7 @@ const Api = {
   // credentials browser-local and leaves the server stateless.
   token: "",
   adminToken: "",
+  hubVersion: "",
   TOKEN_KEY: "omnitoken.token",
   ADMIN_TOKEN_KEY: "omnitoken.admin_token",
 

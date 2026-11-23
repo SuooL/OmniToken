@@ -30,6 +30,34 @@ const Reports = {
     this._loadGeneration += 1;
   },
 
+  applyRoute(params, shouldLoad = true) {
+    const before = this.routeHref();
+    const g = params.get("granularity");
+    this.granularity = REPORT_GRANULARITIES.some(([k]) => k === g) ? g : "daily";
+    const d = Number(params.get("days"));
+    this.days = REPORT_RANGES.includes(d) ? d : 30;
+    if (this._rendered) this.syncControls();
+    if (shouldLoad && this._rendered && before !== this.routeHref()) this.load();
+  },
+
+  routeHref(overrides = {}) {
+    const gran = overrides.granularity || this.granularity;
+    const days = overrides.days || this.days;
+    const params = new URLSearchParams();
+    if (gran !== "daily") params.set("granularity", gran);
+    if (days !== 30) params.set("days", String(days));
+    return "#reports" + (params.size ? "?" + params : "");
+  },
+
+  navigate(overrides) {
+    if (overrides.granularity) this.granularity = overrides.granularity;
+    if (overrides.days) this.days = overrides.days;
+    if (typeof location !== "undefined" && typeof history !== "undefined" && history.replaceState) {
+      history.replaceState(null, "", this.routeHref());
+    }
+    this.load();
+  },
+
   apiPath(format) {
     return `/api/v1/reports?granularity=${this.granularity}&days=${this.days}&format=${format}`;
   },
@@ -61,14 +89,12 @@ const Reports = {
     root.querySelector("#reports-gran").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-gran]");
       if (!btn) return;
-      this.granularity = btn.dataset.gran;
-      this.load();
+      this.navigate({ granularity: btn.dataset.gran });
     });
     root.querySelector("#reports-range").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-days]");
       if (!btn) return;
-      this.days = +btn.dataset.days;
-      this.load();
+      this.navigate({ days: +btn.dataset.days });
     });
     root.querySelector("#reports-export").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-format]");
@@ -173,10 +199,10 @@ const Reports = {
         const started = new Date(r.first_ts).toLocaleString("zh-CN", { hour12: false });
         return `<tr>
           <td title="${esc(sid)}">${r.session_id ? `<a class="session-link" href="#details?session=${encodeURIComponent(r.session_id)}&amp;days=${this.days}">${esc(sid.slice(0, 8))}</a>` : esc(sid)}</td>
-          <td>${esc(r.device)}</td>
+          <td title="${esc(r.device || "")}">${esc(r.device_display_name || r.device || "—")}</td>
           <td>${SourceUI.brand(r.source)}</td>
-          <td title="${esc(repoLabel(r.repo))}">${esc(repoLabel(r.repo))}</td>
-          <td>${esc(r.model)}</td>
+          <td title="${esc(repoLabel(r.repo))}">${r.repo ? `<a class="inline-link" href="#details?repo=${encodeURIComponent(r.repo)}&amp;days=${this.days}">${esc(repoLabel(r.repo))}</a>` : esc(repoLabel(r.repo))}</td>
+          <td>${esc(r.model || "日志未记录模型")}</td>
           <td title="${esc(started)} 开始">${relTime(r.last_ts)}</td>
           <td>${full(r.total_tokens)}</td>
           <td>${full(r.events)}</td>
@@ -191,11 +217,13 @@ const Reports = {
   // by billing channel lives on the overview (ADR-0005), not in a report row.
   renderUnpriced(models) {
     const note = document.getElementById("reports-unpriced");
-    if (!models.length) {
+    const list = (models || []).filter(Boolean);
+    if (!list.length) {
       note.hidden = true;
       return;
     }
-    note.textContent = `以下模型无定价,其用量已计入 token 列但未计入成本:${models.join("、")}`;
+    note.innerHTML = `以下模型无定价（已计入 token、未计入成本，点击去配置）：` +
+      list.map((m) => `<a class="unpriced-link" href="#settings?group=pricing&amp;prefill=${encodeURIComponent(m)}">${esc(m)}</a>`).join("、");
     note.hidden = false;
   },
 

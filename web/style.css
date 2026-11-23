@@ -375,7 +375,7 @@ a.ghost-btn { text-decoration: none; }
   height: 100%;
   min-width: 2px;
   border-radius: 9px;
-  background: linear-gradient(90deg, var(--status-healthy), var(--source-codex));
+  background: linear-gradient(90deg, var(--status-healthy), var(--accent));
 }
 .bars .empty { color: var(--text-muted); font-size: 12px; }
 
@@ -565,6 +565,7 @@ a.ghost-btn { text-decoration: none; }
   font-family: var(--font-display); font-size: 10px; color: var(--text-muted);
   padding-top: 6px;
   margin-left: calc(min(200px, max(120px, 16vw)) + 12px);
+  margin-right: 104px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -574,7 +575,7 @@ a.ghost-btn { text-decoration: none; }
 @media (max-width: 700px) {
   .lane { grid-template-columns: minmax(0, 1fr) 78px; }
   .lane .track { grid-column: 1 / -1; grid-row: 2; }
-  .axis { margin-left: 0; }
+  .axis { margin-left: 0; margin-right: 0; }
 }
 
 /* ── Icons ───────────────────────────────────────────────────────────────
@@ -746,11 +747,15 @@ button:focus-visible {
    to a control — it is punctuation, not an action. */
 .infotip-wrap { position: relative; display: inline-flex; vertical-align: middle; }
 .infotip-btn {
+  position: relative;
   width: 16px; height: 16px; padding: 0; border-radius: 50%;
   border: 1px solid var(--border-strong); background: transparent;
   color: var(--text-muted); font-size: 10px; line-height: 1;
   font-family: var(--font-display); font-style: italic; font-weight: 600;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+@media (pointer: coarse) {
+  .infotip-btn::after { content: ""; position: absolute; inset: -6px; }
 }
 .infotip-btn:hover, .infotip-btn[aria-expanded="true"] {
   color: var(--text-primary); border-color: var(--accent);

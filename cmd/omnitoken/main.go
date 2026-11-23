@@ -194,6 +194,7 @@ func runServe(args []string) {
 		log.Printf("timezone: %s —— 日/周/月的切分以它为准(ADR-0021)", zone)
 	}
 	logDeviceIdentity(cfg.ResolveDeviceName(*name))
+	cfg.Version = version
 	srv, err := server.New(cfg)
 	if err != nil {
 		log.Fatalf("init: %v", err)

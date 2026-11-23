@@ -406,3 +406,13 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 | 纯生成速度与 TTFT（F15） | ✅ 完成 | 只读解析同级 `conversations/<id>.db` 的 `steps.metadata` 四时间戳，产出 `ttft_ms` 与纯生成 `gen_ms`，Web 标「Antigravity · 纯生成」 |
 | 官方 `statusLine` 配额捕获与包装安装 | ✅ 完成 | `omnitoken statusline` 识别 `product:"antigravity"` 的 `quota` 桶并落盘 `antigravity-rate-limits.json`；`-setup -target antigravity` 无损包装 `agy-powerline` |
 | Web 与 macOS 菜单栏官方配额与分桶详情 | ✅ 完成 | 纳入 `antigravity` 官方 5h/Week 配额、时间刻度与 ADR-0025/0034 容量学习；点击可展开全部官方配额桶（Gemini / Argon / Claude 第三方） |
+
+## M17 — 全面质量加固、配额分池校准与产品体验升级（v0.7.0 · 2026-11-23）
+
+基于 `v0.6.1` 全仓库安全、存储、采集、CI 与 UI/UX 审查分三波落地：
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| Wave 1 · P0 安全与关键缺陷修复 | ✅ 完成 | LiteLLM 价表大小写重复键修复与 431 大写模型归一化、未拆分缓存写入计费、`site_auth` 回环写鉴权 fail-closed 与 CSRF 校验、v2 Agent 代理 `DeviceID` 归属、代理禁重定向与内存上限、`LC_ALL=C` 进程检测、`deploy-hub` 自动回滚 trap、macOS `quota:*` 详情窗放行与 Web `DetailDrawer` 样式修复 |
+| Wave 2 · 配额分池校准、DB 瘦身与队列韧性 | ✅ 完成 | `quota_latest` 物化表、`ApplyIngestV2` 实时容量校准与 Antigravity 多池（`gemini` / `gemini-argon` / `3p`）隔离、小时级窗口分桶与 `ObservedAt` 截断、`quota_snapshots`(35d)/`ingest_receipts`(14d) 分批保留清理、热路径复合索引与 `ReadOnly` 事务、ISO-8601 `%G-W%V` 周报、v2 Outbox 永久 4xx 死信队列与零冗余编解码、解析器流式化与子进程超时、`selfupdate` 冒烟与失败回滚 |
+| Wave 3 · Web / Desktop UI/UX 与 CI/CD 升级 | ✅ 完成 | 5 来源动态高度速度泳道、总览周期成本（实付/等效）与按项目工时表、车队 `agent_version` 落后提示与一键复制升级命令、无定价一键跳转预填与 LiteLLM 同步状态条、7/30/90 天范围切换、模型均价与缓存命中率、明细全芯片清除与筛选导出 CSV/JSON、采集与接入诊断面板、设备身份吊销 UI、macOS 菜单栏设置收口与 80%/90% 预警对齐、Playwright Web 迁至 `ubuntu-latest` 与 `--draft` 原子发版 |

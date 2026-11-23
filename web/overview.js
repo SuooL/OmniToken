@@ -9,6 +9,7 @@ const Overview = {
   lastData: null,
   _loadGeneration: 0,
   _rendered: false,
+  _deviceNames: {},
 
   invalidate() {
     this._loadGeneration += 1;
@@ -66,10 +67,12 @@ const Overview = {
         <div class="data-table-shell"><table><thead><tr><th>来源</th><th>今日 tokens</th><th>昨日同时段</th><th>变化</th></tr></thead><tbody id="overview-source-rows"></tbody></table></div>
       </section>
       <section class="tool-section"><h2>官方配额</h2><div id="overview-quotas"></div></section>
+      <section class="tool-section" aria-label="周期用量与成本"><div class="card-head"><h2>周期用量与成本</h2><span class="subtle">真实花费 · 订阅等效花费</span></div><div id="overview-periods" class="period-strip"></div><p class="subtle" id="overview-unpriced" hidden></p></section>
       <section class="tool-section" aria-labelledby="overview-trend-title"><div class="card-head"><h2 id="overview-trend-title">历史用量趋势</h2><span class="subtle">近 30 天 · 每日 tokens</span></div><div id="overview-token-trend" class="chart"></div></section>
       <section class="tool-section" data-role="fleet-coverage"><a href="#devices">设备与采集状态</a><span id="overview-fleet" class="subtle"></span></section>
-      ${ToolUI.analysis("overview-usage-analysis", "用量分析 · 通道、模型与历史活动", `
+      ${ToolUI.analysis("overview-usage-analysis", "用量分析 · 通道、项目工时、模型与历史活动", `
         <div id="overview-channels"></div>
+        <div id="overview-repos"></div>
         <section class="chart-card"><h2 id="today-model-title">今日模型构成</h2><div id="overview-model-composition" class="chart model-composition" data-chart="today-model-composition"></div></section>
         <section class="chart-card" aria-labelledby="overview-heatmap-title"><h2 id="overview-heatmap-title">每日用量热力图 · 最近 365 天</h2><div id="overview-heatmap" class="chart heatmap-shell"></div></section>
         <section class="instrument-card" data-role="device-throughput"><h2>设备用量 · 近 30 天</h2><div id="overview-devices" class="bars"></div></section>`)}
@@ -114,21 +117,90 @@ const Overview = {
       DetailDrawer.update?.(`quota-source:${source}`, QuotaUI.renderSourceDetail?.(source, this._liveQuotas) || "");
     }
     const devices = live && live.devices || [];
+    this._deviceNames = {};
+    for (const dev of devices) {
+      if (dev && dev.device && dev.display_name) this._deviceNames[dev.device] = dev.display_name;
+    }
+    for (const dev of summary.by_device || []) {
+      if (dev && dev.key && dev.display_name && !this._deviceNames[dev.key]) {
+        this._deviceNames[dev.key] = dev.display_name;
+      }
+    }
     const backlog = devices.reduce((sum, row) => sum + (row.queued_batches || 0), 0);
     document.getElementById("overview-fleet").textContent = !live ? " · 实时状态不可用" : ` · ${payload.liveStale ? "上次成功状态 · " : ""}${devices.length} 台设备 · ${backlog ? `${full(backlog)} 个待上报批次` : "无上报积压"}`;
+    const periodsEl = document.getElementById("overview-periods");
+    if (periodsEl) ToolUI.updateHTML(periodsEl, this.periodStrip(summary));
+    const unpricedEl = document.getElementById("overview-unpriced");
+    if (unpricedEl) {
+      const missing = (summary.unpriced_models || []).filter(Boolean);
+      unpricedEl.hidden = !missing.length;
+      if (missing.length) {
+        unpricedEl.innerHTML = `近 30 天有 ${missing.length} 个模型无定价（已计入 token、未计入成本）：` +
+          missing.slice(0, 8).map((m) => `<a class="unpriced-link" href="#settings?group=pricing&amp;prefill=${encodeURIComponent(m)}">${esc(m)}</a>`).join(" · ") +
+          (missing.length > 8 ? ` 等 ${missing.length} 个` : "");
+      }
+    }
     this.renderTrend(summary.daily || []);
     ToolUI.updateHTML(document.getElementById("overview-channels"), this.channelSection(summary.by_channel || []));
+    const reposEl = document.getElementById("overview-repos");
+    if (reposEl) ToolUI.updateHTML(reposEl, this.repoWorkSection(summary.by_repo || [], summary.work_by_repo || {}));
     this.renderSpeed(telemetry, liveSpeed);
     this.renderModels(today.models || []);
     this.renderContributors(liveSpeed.sessions || []);
-    this.renderBars("overview-devices", summary.by_device || [], (row) => row.display_name || row.key || row.device, "total_tokens");
+    this.renderBars("overview-devices", summary.by_device || [], (row) => row.display_name || row.key || row.device, "total_tokens", (row) => row.key ? `#details?device=${encodeURIComponent(row.key)}&days=30` : "");
     this.renderBars("overview-model-throughput", liveSpeed.models || [], speedSourceKey, "contribution_tps");
+  },
+
+  periodStrip(summary) {
+    const costs = summary.costs || {};
+    const fmtCost = (c) => {
+      if (!c) return "成本暂无";
+      const real = Number(c.real_usd || 0);
+      const equiv = Number(c.equiv_usd || 0);
+      if (!real && !equiv) return "无定价或暂无";
+      const parts = [];
+      if (real > 0) parts.push(`实付 ${usd(real)}`);
+      if (equiv > 0) parts.push(`等效 ${usd(equiv)}`);
+      return parts.join(" · ");
+    };
+    const items = [
+      ["今日", summary.today, costs.today],
+      ["本周", summary.week, costs.week],
+      ["本月", summary.month, costs.month],
+      ["累计", summary.all_time, costs.all_time],
+    ];
+    return items.map(([label, totals, cost]) => {
+      const tok = totals && totals.total_tokens != null ? compact(totals.total_tokens) : "—";
+      const ev = totals && totals.events ? `${full(totals.events)} 请求` : "0 请求";
+      return `<div class="period-cell"><div class="label">${label} · ${ev}</div><div class="val">${tok}</div><div class="cost-line">${fmtCost(cost)}</div></div>`;
+    }).join("");
+  },
+
+  repoWorkSection(repos, workByRepo) {
+    const rows = (repos || []).filter((r) => r.key && r.total_tokens > 0).slice(0, 12);
+    if (!rows.length) return "";
+    const fmtDur = (ms) => typeof formatWorkMS === "function" ? formatWorkMS(ms) : (ms > 0 ? `${Math.round(ms / 60000)}m` : "—");
+    return `<section class="chart-card" aria-labelledby="overview-repo-work-title">
+      <div class="card-head">
+        <h2 id="overview-repo-work-title">按项目投入与用量<span class="eyebrow">近 30 天 · 投入并集时长 vs 代理运转时长</span></h2>
+      </div>
+      <div class="data-table-shell"><table><thead><tr><th>项目</th><th>tokens</th><th>请求</th><th>投入时长(并集)</th><th>代理运转(累加)</th></tr></thead><tbody>` +
+      rows.map((r) => {
+        const w = workByRepo[r.key] || {};
+        return `<tr>
+          <td><a class="inline-link" href="#details?repo=${encodeURIComponent(r.key)}&amp;days=30" title="${esc(r.key)}">${esc(repoLabel(r.key))}</a></td>
+          <td>${compact(r.total_tokens || 0)}</td>
+          <td>${full(r.events || 0)}</td>
+          <td>${fmtDur(w.active_ms || 0)}</td>
+          <td>${fmtDur(w.agent_ms || 0)}</td>
+        </tr>`;
+      }).join("") + `</tbody></table></div></section>`;
   },
 
   sourceDetail(row) {
     const models = row.models || [];
-    return `<p>${SourceUI.brand(row.source)} · 今日 ${full(row.tokens ?? 0)} tokens</p>` +
-      (models.length ? `<div class="data-table-shell"><table><thead><tr><th>模型</th><th>tokens</th><th>来源内占比</th></tr></thead><tbody>${models.map((model) => `<tr><td>${esc(model.model)}</td><td>${full(model.tokens)}</td><td>${row.tokens > 0 ? (100 * model.tokens / row.tokens).toFixed(1) + "%" : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">今天暂无模型用量。</p>`);
+    return `<p>${SourceUI.brand(row.source)} · 今日 ${full(row.tokens ?? 0)} tokens · <a class="inline-link" href="#details?source=${encodeURIComponent(row.source)}&amp;days=7">查看明细 →</a></p>` +
+      (models.length ? `<div class="data-table-shell"><table><thead><tr><th>模型</th><th>tokens</th><th>来源内占比</th></tr></thead><tbody>${models.map((model) => `<tr><td><a class="inline-link" href="#details?source=${encodeURIComponent(row.source)}&amp;model=${encodeURIComponent(model.model)}&amp;days=7">${esc(model.model)}</a></td><td>${full(model.tokens)}</td><td>${row.tokens > 0 ? (100 * model.tokens / row.tokens).toFixed(1) + "%" : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">今天暂无模型用量。</p>`);
   },
 
   renderTrend(rows) {
@@ -238,11 +310,12 @@ const Overview = {
       `可见贡献合计 ${visibleSum.toFixed(1)} tok/s`;
     document.getElementById("overview-unmeasured").innerHTML =
       (speed.unmeasured_sources || []).map((source) =>
-        `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度 unavailable · 用量仍计入今日总数</div>`
+        `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测 · 用量仍计入今日总数</div>`
       ).join("");
 
     const el = document.getElementById("overview-source-lanes");
     if (!buckets.length || !sourceKeys.length) {
+      if (el.style) el.style.height = "";
       ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">成功查询，但此范围暂无可测生成区间。</p>`;
       ChartRegistry.renderFallback?.(el, {caption: "来源速度逐桶数据 · 暂无可测区间", columns: [], rows: []});
@@ -250,9 +323,13 @@ const Overview = {
     }
     el.querySelectorAll?.(".empty").forEach((node) => node.remove());
     const times = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", timeZone: snapshot.timezone && snapshot.timezone !== "Local" ? snapshot.timezone : undefined}));
+    const laneH = 54, laneGap = 24, topPad = 16, bottomPad = 26;
+    const totalH = Math.max(240, topPad + sourceKeys.length * laneH + Math.max(0, sourceKeys.length - 1) * laneGap + bottomPad);
+    if (el.style) el.style.height = `${totalH}px`;
     const grids = sourceKeys.map((_, index) => ({
-      left: 58, right: 18, top: 16 + index * (220 / sourceKeys.length),
-      height: Math.max(38, 170 / sourceKeys.length),
+      left: 58, right: 18,
+      top: topPad + index * (laneH + laneGap),
+      height: laneH,
     }));
     ChartRegistry.set(el, {
       titleText: "当日来源速度贡献",
@@ -341,11 +418,13 @@ const Overview = {
   // those rows — and only those — get eight characters appended. The full id
   // stays in the title either way.
   sessionLabels(rows) {
+    const names = this._deviceNames || {};
     const base = rows.map((row) => {
       const repo = (row.repo || row.cwd)
         ? repoLabel(row.repo, row.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop()
         : "";
-      return [repo, row.device].filter(Boolean).join(" ");
+      const dev = (row.device && names[row.device]) || row.device || "";
+      return [repo, dev].filter(Boolean).join(" ");
     });
     const collisions = new Set(base.filter((label, i) => base.indexOf(label) !== i));
     return base.map((label, i) => {
@@ -363,12 +442,18 @@ const Overview = {
     }
     const labels = this.sessionLabels(rows);
     el.innerHTML = `<table><thead><tr><th>会话</th><th>模型</th><th>贡献 tok/s</th></tr></thead><tbody>` +
-      rows.map((row, i) => `<tr><td title="${esc(row.session_id || row.key || "")}">${esc(labels[i])}</td>` +
-        `<td>${esc(row.model || "—")}</td><td>${Number(row.contribution_tps || 0).toFixed(1)}</td></tr>`).join("") +
+      rows.map((row, i) => {
+        const sid = row.session_id || "";
+        const cell = sid
+          ? `<a class="inline-link" href="#details?session=${encodeURIComponent(sid)}">${esc(labels[i])}</a>`
+          : esc(labels[i]);
+        return `<tr><td title="${esc(sid || row.key || "")}">${cell}</td>` +
+          `<td>${esc(row.model || "—")}</td><td>${Number(row.contribution_tps || 0).toFixed(1)}</td></tr>`;
+      }).join("") +
       `</tbody></table>`;
   },
 
-  renderBars(id, rows, label, valueKey) {
+  renderBars(id, rows, label, valueKey, hrefFn = null) {
     const el = document.getElementById(id);
     rows = (rows || []).filter((row) => Number(row[valueKey]) > 0).slice(0, 10);
     if (!rows.length) {
@@ -376,9 +461,13 @@ const Overview = {
       return;
     }
     const max = Math.max(...rows.map((row) => Number(row[valueKey])));
-    el.innerHTML = rows.map((row) => `<div class="row"><div class="row-head">` +
-      `<span class="key">${esc(typeof label === "function" ? label(row) : row[label])}</span>` +
-      `<span class="val">${compact(row[valueKey])}</span></div>` +
-      `<div class="track"><div class="fill" style="width:${100 * row[valueKey] / max}%"></div></div></div>`).join("");
+    el.innerHTML = rows.map((row) => {
+      const text = esc(typeof label === "function" ? label(row) : row[label]);
+      const href = typeof hrefFn === "function" ? hrefFn(row) : "";
+      const keyHTML = href ? `<a class="inline-link key" href="${esc(href)}">${text}</a>` : `<span class="key">${text}</span>`;
+      return `<div class="row"><div class="row-head">` +
+        `${keyHTML}<span class="val">${compact(row[valueKey])}</span></div>` +
+        `<div class="track"><div class="fill" style="width:${100 * row[valueKey] / max}%"></div></div></div>`;
+    }).join("");
   },
 };

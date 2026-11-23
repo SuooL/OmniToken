@@ -183,7 +183,12 @@ func (s *Server) routes() http.Handler {
 	// Health stays open on purpose: it carries no usage data, and it is what a
 	// client probes to tell "wrong address" from "wrong token".
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "auth_required": s.siteAuth != nil || !s.loopbackOnly(), "site_auth_enabled": s.siteAuth != nil})
+		writeJSON(w, map[string]any{
+			"status":            "ok",
+			"hub_version":       s.hubVersion(),
+			"auth_required":     s.siteAuth != nil || !s.loopbackOnly(),
+			"site_auth_enabled": s.siteAuth != nil,
+		})
 	})
 	// Legacy installs serve a public shell and authenticate each API request.
 	// Site-login installs also gate the shell and use a host-only browser cookie.
@@ -214,6 +219,13 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+}
+
+func (s *Server) hubVersion() string {
+	if s.cfg != nil && strings.TrimSpace(s.cfg.Version) != "" {
+		return strings.TrimSpace(s.cfg.Version)
+	}
+	return "dev"
 }
 
 func (s *Server) currentTime() time.Time {

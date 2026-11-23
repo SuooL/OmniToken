@@ -20,6 +20,8 @@ let detailGeneration = 0;
 let detailUpdatePending = false;
 let lastDetailHeight = 0;
 let lastSourceHTML = "";
+let lastQuotaHTML = "";
+let pendingRender = false;
 
 let SERVER = "";
 let HAS_TOKEN = false;
@@ -27,6 +29,9 @@ let HAS_TOKEN = false;
 let PANEL_URL = "";
 // Whether the app registers itself to launch at login (LaunchAgent).
 let AUTOSTART = false;
+let TRAY_TITLE = "off";
+let NOTIFY = true;
+let HOTKEY = false;
 let latestLive = null;
 let latestTelemetry = null;
 let telemetryError = "";
@@ -337,11 +342,9 @@ function quotaElapsed(percent, reset, minutes) {
 function renderQuotas() {
   const quotas = latestLive && latestLive.quotas;
   const root = $("quota-grid");
-  if (!quotas || !quotas.length) {
-    root.innerHTML = '<div class="empty">官方配额不可用</div>';
-    return;
-  }
-  root.innerHTML = quotas
+  const markup = !quotas || !quotas.length
+    ? '<div class="empty">官方配额不可用</div>'
+    : quotas
     .map((quota) => {
       const hasBuckets = Array.isArray(quota.buckets) && quota.buckets.length > 0;
       const detailKey = `quota:${quota.source}`;
@@ -384,6 +387,18 @@ function renderQuotas() {
         ).join("")}</section>`;
     })
     .join("");
+  if (markup !== lastQuotaHTML) {
+    const focused =
+      document.activeElement &&
+      document.activeElement.dataset &&
+      document.activeElement.dataset.detail;
+    root.innerHTML = markup;
+    lastQuotaHTML = markup;
+    if (focused && focused.startsWith("quota:"))
+      document
+        .querySelector(`[data-detail="${CSS.escape(focused)}"]`)
+        ?.focus({ preventScroll: true });
+  }
 }
 
 function sourceRows(bucket) {
@@ -606,6 +621,11 @@ function renderDevices() {
 }
 
 function renderAll() {
+  if (typeof document !== "undefined" && document.hidden && !DETAIL_WINDOW) {
+    pendingRender = true;
+    return;
+  }
+  pendingRender = false;
   renderFreshness();
   renderHero();
   renderDailyUsage();
@@ -744,7 +764,8 @@ function renderSelectedDetail() {
               elapsed == null
                 ? ""
                 : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
-            return `<div class="quota-bucket-row" data-risk="${risk}"><div class="quota-bucket-head"><strong>${esc(b.label || b.scope)} · ${winLabel}</strong><span class="quota-bucket-val"><strong class="fig" data-severity="${severity}">${percentLabel(pct)}</strong>${hint ? `<small>${hint}</small>` : ""}</span></div><div class="quota-meter" role="progressbar" aria-label="${esc(b.label || b.scope)} ${winLabel} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}" aria-valuetext="${percentLabel(pct)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"><div class="quota-meter-fill" style="width:${Math.min(pct, 100)}%"></div>${marker}</div><div class="secondary quota-bucket-reset">距重置 ${quotaResetLabel(b.resets_at_ms)}</div></div>`;
+            const obsText = finite(b.observed_at_ms) && b.observed_at_ms > 0 ? ` · 观测于 ${relTime(b.observed_at_ms)}` : "";
+            return `<div class="quota-bucket-row" data-risk="${risk}"><div class="quota-bucket-head"><strong>${esc(b.label || b.scope)} · ${winLabel}</strong><span class="quota-bucket-val"><strong class="fig" data-severity="${severity}">${percentLabel(pct)}</strong>${hint ? `<small>${hint}</small>` : ""}</span></div><div class="quota-meter" role="progressbar" aria-label="${esc(b.label || b.scope)} ${winLabel} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}" aria-valuetext="${percentLabel(pct)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"><div class="quota-meter-fill" style="width:${Math.min(pct, 100)}%"></div>${marker}</div><div class="secondary quota-bucket-reset">距重置 ${quotaResetLabel(b.resets_at_ms)}${obsText}</div></div>`;
           })
           .join("")}<section class="detail-note">来自官方 statusLine 实时上报；蓝色刻度为窗口已过去时间比例。</section>`
       : '<div class="empty">暂无官方配额分桶读数</div>';
@@ -808,6 +829,7 @@ async function openDetail(kind) {
   renderDailyUsage();
   renderQuotas();
   fitWindow();
+  if (inlineDetail) $("detail-close")?.focus({ preventScroll: true });
 }
 function closeDetail() {
   ++detailGeneration;
@@ -870,6 +892,9 @@ const settingsEls = {
   clearTokenWrap: $("clear-token-wrap"),
   clearToken: $("clear-token-input"),
   panel: $("panel-input"),
+  trayTitle: $("tray-title-input"),
+  notify: $("notify-input"),
+  hotkey: $("hotkey-input"),
   autostart: $("autostart-input"),
   message: $("settings-msg"),
   save: $("settings-save"),
@@ -920,6 +945,9 @@ function openSettings() {
   if (settingsEls.clearToken) settingsEls.clearToken.checked = false;
   if (settingsEls.clearTokenWrap) settingsEls.clearTokenWrap.hidden = !HAS_TOKEN;
   settingsEls.panel.value = PANEL_URL;
+  if (settingsEls.trayTitle) settingsEls.trayTitle.value = TRAY_TITLE;
+  if (settingsEls.notify) settingsEls.notify.checked = NOTIFY;
+  if (settingsEls.hotkey) settingsEls.hotkey.checked = HOTKEY;
   settingsEls.autostart.checked = AUTOSTART;
   settingsEls.checkUpdate.disabled = false;
   settingsEls.updateVersion.textContent = "";
@@ -950,11 +978,17 @@ async function saveSettings() {
       panelUrl: settingsEls.panel.value,
       autostart: settingsEls.autostart.checked,
       clearToken: !!(settingsEls.clearToken && settingsEls.clearToken.checked),
+      trayTitle: settingsEls.trayTitle ? settingsEls.trayTitle.value : TRAY_TITLE,
+      notify: settingsEls.notify ? settingsEls.notify.checked : NOTIFY,
+      hotkey: settingsEls.hotkey ? settingsEls.hotkey.checked : HOTKEY,
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
     PANEL_URL = stored.panel_url;
     AUTOSTART = !!stored.autostart;
+    if (stored.tray_title != null) TRAY_TITLE = stored.tray_title;
+    if (stored.notify != null) NOTIFY = !!stored.notify;
+    if (stored.hotkey != null) HOTKEY = !!stored.hotkey;
     latestTelemetry = null;
     closeSettings();
   } catch (error) {
@@ -1013,6 +1047,12 @@ async function boot() {
   HAS_TOKEN = !!stored.has_token;
   PANEL_URL = stored.panel_url || "";
   AUTOSTART = !!stored.autostart;
+  if (stored.tray_title != null) TRAY_TITLE = stored.tray_title;
+  if (stored.notify != null) NOTIFY = !!stored.notify;
+  if (stored.hotkey != null) HOTKEY = !!stored.hotkey;
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && pendingRender) renderAll();
+  });
   await listen("live", (event) => onLive(event.payload));
   await listen("open-settings", openSettings);
   await pullTelemetry();

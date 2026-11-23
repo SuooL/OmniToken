@@ -183,12 +183,26 @@
           「完整面板」按钮在浏览器打开的网址。走反代/域名认证时填这里（如
           https://omni.example.net），留空则打开上面的服务端地址。
         </div>
+        <label class="eyebrow" for="tray-title-input">菜单栏数字</label>
+        <select id="tray-title-input">
+          <option value="off">关闭（仅图标）</option>
+          <option value="quota">配额百分比</option>
+          <option value="speed">当前生成速度</option>
+        </select>
+        <label class="toggle" for="notify-input">
+          <input id="notify-input" type="checkbox" />
+          <span>配额预警（80% / 90%）</span>
+        </label>
+        <label class="toggle" for="hotkey-input">
+          <input id="hotkey-input" type="checkbox" />
+          <span>全局快捷键 ⌥⌘O</span>
+        </label>
         <label class="toggle" for="autostart-input">
           <input id="autostart-input" type="checkbox" />
           <span>开机自动启动</span>
         </label>
         <div class="hint">
-          登录时在后台自动启动 OmniToken 菜单栏。改动在点「保存」后生效。
+          上述菜单栏选项与右键菜单保持同步，点击「保存」后生效。
         </div>
         <label class="eyebrow">软件更新</label>
         <div class="update-row">

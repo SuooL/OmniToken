@@ -95,6 +95,8 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		DisplayName     string `json:"display_name,omitempty"`
 		IdentityStatus  string `json:"identity_status"`
 		ConnectionState string `json:"connection_state"`
+		AgentVersion    string `json:"agent_version,omitempty"`
+		QueuedBatches   int    `json:"queued_batches,omitempty"`
 		LastSeenAt      int64  `json:"last_seen_at,omitempty"`
 		LastSeenAgeMS   *int64 `json:"last_seen_age_ms,omitempty"`
 		// Running is meaningless unless HasProcs is true: a device with no
@@ -127,6 +129,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	heartbeats, err := s.store.ListLatestHeartbeats()
+	if err != nil {
+		return nil, err
+	}
 	for _, record := range registered {
 		index, exists := viewByDevice[record.DeviceID]
 		if !exists {
@@ -143,6 +149,10 @@ func (s *Server) livePayload(now time.Time) (map[string]any, error) {
 		view.IdentityStatus = "registered"
 		view.ConnectionState = heartbeatState(now, record.LastSeenAt, record.RevokedAt)
 		view.LastSeenAt = record.LastSeenAt
+		if hb, ok := heartbeats[record.DeviceID]; ok {
+			view.AgentVersion = hb.AgentVersion
+			view.QueuedBatches = hb.QueuedBatches
+		}
 		if record.LastSeenAt > 0 {
 			age := max(now.UnixMilli()-record.LastSeenAt, 0)
 			view.LastSeenAgeMS = &age

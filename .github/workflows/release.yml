@@ -38,7 +38,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.next }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0 # need full history + tags for version + changelog
@@ -108,7 +108,7 @@ jobs:
       # A failed build here leaves the repo untouched: main is still only
       # merged locally and no tag exists yet. Building after the tag push
       # would strand a tag with no downloadable release.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -131,12 +131,14 @@ jobs:
           # avoids a merged-but-untagged main if the tag push half fails.
           git push --atomic origin main "${{ steps.version.outputs.next }}"
 
-      # --- Create GitHub Release ----------------------------------------------
-      # --notes-file (not --notes) so changelog content is never re-parsed as
-      # shell syntax.
-      - name: Create GitHub Release
+      # --- Create Draft GitHub Release ----------------------------------------
+      # Created as --draft so /releases/latest/download/latest.json never serves
+      # a 404 while the macOS universal bundle is still building. The publish
+      # job flips draft=false once latest.json is uploaded.
+      - name: Create Draft GitHub Release
         run: |
           gh release create "${{ steps.version.outputs.next }}" \
+            --draft \
             --target main \
             --title "${{ steps.version.outputs.next }}" \
             --notes-file release-notes.md \
@@ -145,8 +147,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # The menubar app ships from the same tag, on a macOS runner because a .app
-  # bundle cannot be cross-compiled. It runs after the release exists so the
-  # artifacts can be attached to it rather than creating a second one.
+  # bundle cannot be cross-compiled. It runs after the draft release exists so
+  # the artifacts can be attached before the release goes public.
   #
   # `latest.json` is what the in-app updater reads (ADR-0035). It is published as
   # a release asset so the check resolves through
@@ -159,7 +161,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.version }}
 
@@ -173,16 +175,15 @@ jobs:
           VERSION="${{ needs.release.outputs.version }}"
           VERSION="${VERSION#v}"
           python3 - "$VERSION" <<'PY'
-          import json, re, sys
+          import json, pathlib, re, sys
           version = sys.argv[1]
-          p = "desktop/src-tauri/tauri.conf.json"
-          conf = json.load(open(p))
+          p = pathlib.Path("desktop/src-tauri/tauri.conf.json")
+          conf = json.loads(p.read_text(encoding="utf-8"))
           conf["version"] = version
-          json.dump(conf, open(p, "w"), indent=2, ensure_ascii=False)
-          open(p, "a").write("\n")
-          c = "desktop/src-tauri/Cargo.toml"
-          src = open(c).read()
-          open(c, "w").write(re.sub(r'^version = "[^"]+"', f'version = "{version}"', src, count=1, flags=re.M))
+          p.write_text(json.dumps(conf, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          c = pathlib.Path("desktop/src-tauri/Cargo.toml")
+          src = c.read_text(encoding="utf-8")
+          c.write_text(re.sub(r'^version = "[^"]+"', f'version = "{version}"', src, count=1, flags=re.M), encoding="utf-8")
           PY
           echo "stamped $VERSION"
 
@@ -193,8 +194,9 @@ jobs:
         with:
           workspaces: desktop/src-tauri
 
+      - uses: taiki-e/install-action@cargo-binstall
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo binstall -y --locked tauri-cli --version "^2" || cargo install tauri-cli --version "^2" --locked
 
       # Signed here, verified in the app against the public key compiled into
       # the bundle. The private half exists only as this secret — losing it
@@ -240,7 +242,7 @@ jobs:
           PY
           cat latest.json
 
-      - name: Attach to the release
+      - name: Attach to the draft release
         run: |
           gh release upload "${{ needs.release.outputs.version }}" \
             desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniToken.app.tar.gz \
@@ -249,11 +251,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Publish the draft release atomically once Go binaries + macOS updater
+  # bundle + latest.json are all attached.
+  publish:
+    name: publish-release
+    needs: [release, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub Release
+        run: gh release edit "${{ needs.release.outputs.version }}" -R "${{ github.repository }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Event-driven Hub + embedded Web deployment after release assets are live
   # (ADR-0043). Safely skips when HUB_SSH_* secrets are not configured.
   deploy-hub:
     name: deploy-hub
-    needs: release
+    needs: [release, publish]
     uses: ./.github/workflows/deploy-hub.yml
     with:
       version: ${{ needs.release.outputs.version }}

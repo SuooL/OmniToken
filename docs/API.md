@@ -240,10 +240,10 @@ native_tps(group) = measured_output_tokens(group)
 
 ### GET /api/v1/devices?days=30
 
-用量汇总与设备 registry 的合并视图。注册设备即使尚无 token 用量也会出现,包含
+用量汇总与设备 registry 的合并视图。顶层同时返回 `hub_version` 供前端比对客户端是否落后。注册设备即使尚无 token 用量也会出现,包含
 `device_id`、`display_name`、`identity_status`、`connection_state`、
-`last_seen_at`、`last_seen_age_ms`、`capabilities`、`queued_batches`、
-`queued_bytes`、`oldest_queued_at`。
+`agent_version`、`last_seen_at`、`last_seen_age_ms`、`revoked_at`、`capabilities`、`queued_batches`、
+`queued_bytes`、`oldest_queued_at`、`last_scan_at`、`last_upload_at`、`warnings`。
 `connection_state` 为 `online | stale | offline`。`identity_status` 三取一:
 
 | 值 | 含义 |
@@ -255,9 +255,13 @@ native_tps(group) = measured_output_tokens(group)
 `local` 与 `legacy_unbound` 的 `connection_state` 均为 `unknown` —— 两者都没有心跳可言,
 但原因不同:前者不需要,后者是还没有。
 
+### GET /api/v1/events?days=7&limit=100&offset=0
+
+事件级下钻列表,支持 `device`/`source`/`provider`/`model`/`repo`/`session`/`days` 过滤。每条事件附带 `device_display_name` 与查询时折算的 `cost_usd`(无定价省略)。可选参数 `format=csv|json` 按当前筛选条件直接导出最多 10,000 条匹配事件(`Content-Disposition: attachment`)。
+
 ### GET /api/v1/health
 
-`{"status":"ok","auth_required":<bool>}`,中继节点返回 `{"status":"relay"}`。
+`{"status":"ok","hub_version":"v0.7.0","auth_required":<bool>,"site_auth_enabled":<bool>}`,中继节点返回 `{"status":"relay"}`。
 
 免鉴权,且不携带任何用量数据 —— 它是客户端用来区分「地址错了」与「令牌错了」的
 唯一手段。`auth_required` 即上表的判定结果:面板启动时探一次,服务端要 token 而本

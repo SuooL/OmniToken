@@ -95,7 +95,7 @@ pub fn menu(app: &tauri::AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, I
     let notify = CheckMenuItem::with_id(
         app,
         "notify",
-        "配额预警(75% / 90%)",
+        "配额预警(80% / 90%)",
         true,
         s.notify,
         None::<&str>,

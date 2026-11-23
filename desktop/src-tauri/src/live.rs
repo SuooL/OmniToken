@@ -226,6 +226,7 @@ struct QuotaBucketView {
     window_minutes: i64,
     used_percent: f64,
     resets_at_ms: Option<i64>,
+    observed_at_ms: Option<i64>,
 }
 
 /// Independent official percentages and estimated token remainders for each
@@ -471,6 +472,10 @@ fn quota_buckets_for(quotas: &[Value], source: &str) -> Vec<QuotaBucketView> {
             .get("resets_at")
             .and_then(Value::as_i64)
             .filter(|n| *n > 0);
+        let observed_at_ms = quota
+            .get("observed_at")
+            .and_then(Value::as_i64)
+            .filter(|n| *n > 0);
         let key = (window_minutes, scope.clone());
         let replace = by_key
             .get(&key)
@@ -484,6 +489,7 @@ fn quota_buckets_for(quotas: &[Value], source: &str) -> Vec<QuotaBucketView> {
                     window_minutes,
                     used_percent,
                     resets_at_ms,
+                    observed_at_ms,
                 },
             );
         }
@@ -866,10 +872,10 @@ fn stale_after_ms() -> i64 {
 
 // ── alerts ────────────────────────────────────────────────────────────────
 
-/// Where to warn. Two steps, not a curve: the point is "you are close" and
-/// "you are nearly out", and a notification per percent would be noise that
-/// trains the user to dismiss it.
-pub const THRESHOLDS: [u8; 2] = [75, 90];
+/// Where to warn. Two steps aligned with the UI's serious (80%) and critical
+/// (90%) states: the point is "you are close" and "you are nearly out", and a
+/// notification per percent would be noise that trains the user to dismiss it.
+pub const THRESHOLDS: [u8; 2] = [80, 90];
 
 /// One quota window, at one threshold. `resets_at` is bucketed at hour
 /// resolution (matching server `LatestQuotas` / `quota_capacity`) so derived
@@ -1344,22 +1350,22 @@ mod tests {
     #[test]
     fn warns_once_per_threshold() {
         let mut a = Alerts::default();
-        assert_eq!(a.crossings(&[quota(60.0, 1000)]).len(), 0);
+        assert_eq!(a.crossings(&[quota(79.0, 1000)]).len(), 0);
 
-        let first = a.crossings(&[quota(76.0, 1000)]);
+        let first = a.crossings(&[quota(81.0, 1000)]);
         assert_eq!(first.len(), 1);
         assert!(first[0].title.contains("claude · 5 小时窗口"));
-        assert!(first[0].body.contains("75%"));
+        assert!(first[0].body.contains("80%"));
 
         // Still above, already said so.
-        assert_eq!(a.crossings(&[quota(80.0, 1000)]).len(), 0);
+        assert_eq!(a.crossings(&[quota(85.0, 1000)]).len(), 0);
 
         // Next step up is a new thing to say.
         assert_eq!(a.crossings(&[quota(91.0, 1000)]).len(), 1);
         assert_eq!(a.crossings(&[quota(99.0, 1000)]).len(), 0);
     }
 
-    // Opening the app at 92% should say "90%" once, not fire 75 and 90 together.
+    // Opening the app at 92% should say "90%" once, not fire 80 and 90 together.
     #[test]
     fn reports_only_the_highest_step_crossed_at_once() {
         let mut a = Alerts::default();
@@ -1367,7 +1373,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].body.contains("90%"));
         // And the step it skipped is considered said, so it cannot fire later.
-        assert_eq!(a.crossings(&[quota(78.0, 1000)]).len(), 0);
+        assert_eq!(a.crossings(&[quota(83.0, 1000)]).len(), 0);
     }
 
     // A rolled-over window reports a new reset instant (at least 5h later),

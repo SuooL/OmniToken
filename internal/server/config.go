@@ -62,6 +62,10 @@ type Config struct {
 	// Anthropic, so this is the only knob the quota channel needs.
 	StatuslineCachePath string `json:"statusline_cache_path,omitempty"`
 
+	// Version is stamped by cmd/omnitoken from build ldflags and exposed on
+	// /api/v1/health and /api/v1/devices so the UI can flag outdated agents.
+	Version string `json:"-"`
+
 	Collect struct {
 		IntervalSeconds int               `json:"interval_seconds"`
 		Local           *bool             `json:"local"`                // scan this machine's own logs; default true
