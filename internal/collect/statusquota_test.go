@@ -109,6 +109,48 @@ func TestStatusQuotaReaderToleratesMissingAndMalformed(t *testing.T) {
 	}
 }
 
+func TestStatusQuotaReaderCollectsClaudeAndAntigravityIndependently(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	cache := writeCapture(t, dir, `{"source":"claude-code","observed_at":`+itoa(now.UnixMilli())+
+		`,"windows":{"five_hour":{"used_percent":20,"resets_at":1795435200}}}`)
+	agBody := `{"source":"antigravity","observed_at":` + itoa(now.UnixMilli()) + `,
+		"windows":{
+			"gemini-5h":{"used_percent":35,"resets_at":1795435200},
+			"gemini-weekly":{"used_percent":12,"resets_at":1796000000},
+			"gemini-argon-wtu-weekly":{"used_percent":55,"resets_at":1796000000},
+			"3p-5h":{"used_percent":80,"resets_at":1795435200},
+			"3p-weekly":{"used_percent":40,"resets_at":1796000000}
+		}}`
+	if err := os.WriteFile(filepath.Join(dir, "antigravity-rate-limits.json"), []byte(agBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewStatusQuotaReader("mac", cache)
+	got := r.Collect(now)
+	if len(got) != 6 {
+		t.Fatalf("got %d snapshots, want 6 (1 claude + 5 antigravity)", len(got))
+	}
+	byScope := map[string]int{}
+	for _, q := range got {
+		if q.Source == "antigravity" {
+			byScope[q.Scope] = q.WindowMinutes
+			if q.LimitID != antigravityQuotaLimitID {
+				t.Errorf("limit_id = %q, want %q", q.LimitID, antigravityQuotaLimitID)
+			}
+		}
+	}
+	if byScope["gemini-5h"] != 300 || byScope["3p-5h"] != 300 {
+		t.Errorf("5h windows = %+v", byScope)
+	}
+	if byScope["gemini-weekly"] != 10080 || byScope["gemini-argon-wtu-weekly"] != 10080 || byScope["3p-weekly"] != 10080 {
+		t.Errorf("weekly windows = %+v", byScope)
+	}
+	// Second read without change returns 0.
+	if n := len(r.Collect(now)); n != 0 {
+		t.Fatalf("unchanged second read = %d, want 0", n)
+	}
+}
+
 func itoa(v int64) string {
 	const digits = "0123456789"
 	if v == 0 {

@@ -319,6 +319,55 @@ input {
   padding: 6px 0 2px;
   color: var(--source);
 }
+.quota-source-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border-radius: 5px;
+  padding: 5px 4px 3px;
+}
+.quota-source-btn:hover {
+  background: var(--hover);
+}
+.quota-bucket-hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--secondary);
+}
+.quota-bucket-row {
+  --risk: var(--healthy);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.quota-bucket-row[data-risk="warn"] {
+  --risk: var(--warn);
+}
+.quota-bucket-row[data-risk="serious"] {
+  --risk: var(--serious);
+}
+.quota-bucket-row[data-risk="critical"] {
+  --risk: var(--critical);
+}
+.quota-bucket-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.quota-bucket-val strong,
+.quota-bucket-val small {
+  color: var(--risk);
+}
+.quota-bucket-val small {
+  margin-left: 4px;
+  font-size: 11px;
+}
+.quota-bucket-reset {
+  margin-top: 4px;
+  font-size: 11px;
+}
 .quota-window {
   --risk: var(--healthy);
   padding: 4px 0;

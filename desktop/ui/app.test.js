@@ -644,3 +644,35 @@ test("quota time ticks share the usage track for both official windows", () => {
   assert.match(future,/left:0%/);
  } finally {Date.now=oldNow;}
 });
+
+test("Antigravity official multi-bucket quotas expose trigger and render bucket detail panel", () => {
+  const quota = {
+    source: "antigravity",
+    label: "Antigravity",
+    five_hour_percent: 82,
+    weekly_percent: 45,
+    five_hour_resets_at_ms: Date.now() + 180 * 60000,
+    weekly_resets_at_ms: Date.now() + 5040 * 60000,
+    five_hour_remaining_tokens: 12_000_000,
+    weekly_remaining_tokens: 90_000_000,
+    buckets: [
+      { scope: "gemini-5h", label: "Gemini", window_minutes: 300, used_percent: 25, resets_at_ms: Date.now() + 180 * 60000 },
+      { scope: "3p-5h", label: "Claude / 第三方", window_minutes: 300, used_percent: 82, resets_at_ms: Date.now() + 180 * 60000 },
+      { scope: "gemini-argon-wtu-weekly", label: "Gemini 4 Argon", window_minutes: 10080, used_percent: 45, resets_at_ms: Date.now() + 5040 * 60000 },
+    ],
+  };
+  const html = showQuotas([quota]);
+  assert.match(html, /data-detail="quota:antigravity"/);
+  assert.match(html, /82%/);
+  assert.match(html, /45%/);
+
+  receiveDetail({
+    kind: "quota:antigravity",
+    live: { connection: { kind: "live", generated_at_ms: Date.now() }, quotas: [quota] },
+    telemetry: null,
+  });
+  const detailHTML = document.getElementById("quota-detail").innerHTML;
+  assert.match(detailHTML, /Gemini · 5h/);
+  assert.match(detailHTML, /Claude \/ 第三方 · 5h/);
+  assert.match(detailHTML, /Gemini 4 Argon · Week/);
+});

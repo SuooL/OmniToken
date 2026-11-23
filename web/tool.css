@@ -457,6 +457,33 @@ body.tool-app {
   padding-top: 13px;
   padding-bottom: 5px;
 }
+.tool-ui .quota-source-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+}
+.tool-ui .quota-group-more {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tool-ui .quota-source-trigger:hover .quota-group-more {
+  color: var(--text-primary);
+}
+.detail-drawer .quota-track {
+  position: relative;
+  height: 5px;
+  background: #a4afbe20;
+  border-radius: 3px;
+  margin-top: 5px;
+}
+.detail-drawer .quota-track > div {
+  height: 100%;
+  background: var(--risk, var(--tool-healthy));
+  border-radius: inherit;
+}
 .tool-ui .quota-data {
   --risk: var(--tool-healthy);
 }

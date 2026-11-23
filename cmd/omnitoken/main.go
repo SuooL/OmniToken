@@ -70,9 +70,9 @@ func usage() {
   omnitoken auth-code [-config ~/.omnitoken/config.json] [-ttl 30m] # one-time browser login
   omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http]
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
-  omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
+  omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code / Antigravity CLI statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
-  omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook
+  omnitoken statusline -setup [-setup-undo] [-target claude|antigravity] # install/remove the hook
   omnitoken self-update [-check] [-version vX.Y.Z] [-restart] [-restart-service NAME]`)
 }
 
@@ -432,8 +432,9 @@ func runStatusline(args []string) {
 	captureOnly := fs.Bool("capture-only", false,
 		"capture quota from the payload and print nothing (keep your own status line)")
 	setup := fs.Bool("setup", false,
-		"install the Claude Code hook, wrapping any status line you already use")
+		"install the statusLine hook, wrapping any status line you already use")
 	setupUndo := fs.Bool("setup-undo", false, "restore the status line -setup replaced")
+	target := fs.String("target", statusline.TargetClaude, "hook target for -setup/-setup-undo: claude or antigravity")
 	fs.Parse(args)
 
 	cfg, err := statusline.LoadConfig(*configPath)
@@ -454,7 +455,7 @@ func runStatusline(args []string) {
 		cfg.NoColor = true
 	}
 	if *setup || *setupUndo {
-		runStatuslineSetup(*setupUndo)
+		runStatuslineSetup(*target, *setupUndo)
 		return
 	}
 	if *captureOnly {
@@ -468,15 +469,31 @@ func runStatusline(args []string) {
 // Unlike the render path this one talks to the user and exits non-zero on
 // failure: it is an explicit administrative action, not something riding along
 // with a status bar.
-func runStatuslineSetup(undo bool) {
-	settingsPath, err := statusline.ClaudeSettingsPath()
+func runStatuslineSetup(target string, undo bool) {
+	var (
+		settingsPath string
+		err          error
+		productLabel string
+	)
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", statusline.TargetClaude:
+		target = statusline.TargetClaude
+		productLabel = "Claude Code"
+		settingsPath, err = statusline.ClaudeSettingsPath()
+	case statusline.TargetAntigravity:
+		target = statusline.TargetAntigravity
+		productLabel = "Antigravity CLI (agy)"
+		settingsPath, err = statusline.AntigravitySettingsPath()
+	default:
+		log.Fatalf("statusline setup: unsupported -target %q (want claude or antigravity)", target)
+	}
 	if err != nil {
 		log.Fatalf("statusline setup: %v", err)
 	}
 	dataDir := server.DataDir()
 
 	if undo {
-		restored, err := statusline.Undo(settingsPath, dataDir, time.Now())
+		restored, err := statusline.UndoTarget(target, settingsPath, dataDir, time.Now())
 		if err != nil {
 			log.Fatalf("statusline setup-undo: %v", err)
 		}
@@ -488,7 +505,7 @@ func runStatuslineSetup(undo bool) {
 		return
 	}
 
-	res, err := statusline.Setup(settingsPath, dataDir, selfPath(), time.Now())
+	res, err := statusline.SetupTarget(target, settingsPath, dataDir, selfPath(), time.Now())
 	if err != nil {
 		log.Fatalf("statusline setup: %v", err)
 	}
@@ -505,8 +522,12 @@ func runStatuslineSetup(undo bool) {
 	if res.BackupPath != "" {
 		fmt.Printf("  backup:   %s\n", res.BackupPath)
 	}
-	fmt.Println("Restart Claude Code (or wait for the next status-line refresh) to start collecting quota.")
-	fmt.Println("Undo with: omnitoken statusline -setup-undo")
+	fmt.Printf("Restart %s (or wait for the next status-line refresh) to start collecting quota.\n", productLabel)
+	if target == statusline.TargetClaude {
+		fmt.Println("Undo with: omnitoken statusline -setup-undo")
+	} else {
+		fmt.Printf("Undo with: omnitoken statusline -setup-undo -target %s\n", target)
+	}
 }
 
 // selfPath resolves this binary absolutely so the generated script does not

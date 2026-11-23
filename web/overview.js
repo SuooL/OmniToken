@@ -88,6 +88,7 @@ const Overview = {
       DetailDrawer.open({key: `overview-source:${row.source}`, title: SourceUI.label(row.source),
         subtitle: "今日模型用量 · 按事件来源归属", html: this.sourceDetail(row), trigger});
     });
+    QuotaUI.bindSourceDetail?.(root.querySelector("#overview-quotas"), () => this._liveQuotas || []);
     Heatmap.load(document.getElementById("overview-heatmap"), 365);
   },
 
@@ -107,7 +108,11 @@ const Overview = {
       <td><button type="button" class="tool-row-action" data-focus-key="overview-source:${esc(row.source)}" data-source-detail="${esc(row.source)}" aria-label="查看 ${esc(SourceUI.label(row.source))} 今日模型">${SourceUI.brand(row.source)}</button></td>
       <td>${compact(row.tokens ?? 0)}</td><td>${compact(row.previous_tokens ?? 0)}</td><td>${row.change_percent == null ? "—" : `${row.change_percent > 0 ? "+" : ""}${row.change_percent.toFixed(1)}%`}</td></tr>`).join(""));
     this.sourceRows.forEach((row) => DetailDrawer.update(`overview-source:${row.source}`, this.sourceDetail(row)));
-    ToolUI.updateHTML(document.getElementById("overview-quotas"), live ? `${payload.liveStale ? '<p class="subtle">配额更新失败 · 显示上次成功读数</p>' : ""}${QuotaUI.render(live.windows || [], live.quotas || [])}` : `<p class="subtle">实时配额不可用</p>`);
+    this._liveQuotas = (live && live.quotas) || [];
+    ToolUI.updateHTML(document.getElementById("overview-quotas"), live ? `${payload.liveStale ? '<p class="subtle">配额更新失败 · 显示上次成功读数</p>' : ""}${QuotaUI.render(live.windows || [], this._liveQuotas)}` : `<p class="subtle">实时配额不可用</p>`);
+    for (const source of new Set(this._liveQuotas.map((q) => q.source).filter(Boolean))) {
+      DetailDrawer.update?.(`quota-source:${source}`, QuotaUI.renderSourceDetail?.(source, this._liveQuotas) || "");
+    }
     const devices = live && live.devices || [];
     const backlog = devices.reduce((sum, row) => sum + (row.queued_batches || 0), 0);
     document.getElementById("overview-fleet").textContent = !live ? " · 实时状态不可用" : ` · ${payload.liveStale ? "上次成功状态 · " : ""}${devices.length} 台设备 · ${backlog ? `${full(backlog)} 个待上报批次` : "无上报积压"}`;

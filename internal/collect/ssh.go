@@ -63,7 +63,7 @@ var remotePullSets = []struct {
 	{"claude", []string{".claude/projects", ".config/claude/projects"}, nil},
 	{"codex", []string{".codex/sessions", ".codex/archived_sessions"}, nil},
 	{"dsh", []string{".dsh/sessions"}, nil},
-	{"antigravity", []string{".gemini/antigravity/brain"}, []string{"--exclude=chunks/", "--include=*/", "--include=transcript.jsonl", "--exclude=*"}},
+	{"antigravity", []string{".gemini/antigravity/brain", ".gemini/antigravity-cli/brain", ".gemini/antigravity-ide/brain"}, []string{"--exclude=chunks/", "--include=*/", "--include=transcript.jsonl", "--exclude=*"}},
 	{"gemini", []string{".gemini/tmp"}, []string{"--include=*/", "--include=*.json", "--include=*.jsonl", "--exclude=*"}},
 }
 
@@ -116,7 +116,11 @@ func MirrorSpecs(mirrorDest string) []SourceSpec {
 	claude := []string{filepath.Join(mirrorDest, "claude-0"), filepath.Join(mirrorDest, "claude-1")}
 	cx := []string{filepath.Join(mirrorDest, "codex-0"), filepath.Join(mirrorDest, "codex-1")}
 	dshDir := []string{filepath.Join(mirrorDest, "dsh-0")}
-	agyDir := []string{filepath.Join(mirrorDest, "antigravity-0")}
+	agyDir := []string{
+		filepath.Join(mirrorDest, "antigravity-0"),
+		filepath.Join(mirrorDest, "antigravity-1"),
+		filepath.Join(mirrorDest, "antigravity-2"),
+	}
 	gemDir := []string{filepath.Join(mirrorDest, "gemini-0")}
 	return []SourceSpec{
 		{Dirs: claude, Parse: claudecode.Parse},

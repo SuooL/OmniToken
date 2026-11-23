@@ -170,3 +170,27 @@ test("unknown or expired quota bounds do not fabricate time markers", () => {
   const html = vm.runInContext('QuotaUI.render([], [{source:"codex",window_minutes:300,used_percent:0,resets_at:2000000000+300*60000*2}])', c);
   assert.match(html, /left:0%/);
 });
+test("Antigravity official quota buckets render tightest rows and expose per-bucket detail", () => {
+  const c = load();
+  vm.runInContext('Date = class extends Date { static now() { return 2000000000; } }', c);
+  c._quotas = [
+    { source: "antigravity", scope: "gemini-5h", window_minutes: 300, used_percent: 25, resets_at: 2000000000 + 180 * 60000 },
+    { source: "antigravity", scope: "3p-5h", window_minutes: 300, used_percent: 82, resets_at: 2000000000 + 180 * 60000 },
+    { source: "antigravity", scope: "gemini-weekly", window_minutes: 10080, used_percent: 12, resets_at: 2000000000 + 5040 * 60000 },
+    { source: "antigravity", scope: "gemini-argon-wtu-weekly", window_minutes: 10080, used_percent: 45, resets_at: 2000000000 + 5040 * 60000 },
+  ];
+  const html = vm.runInContext("QuotaUI.render([], _quotas)", c);
+  assert.match(html, /Antigravity/);
+  assert.match(html, /data-quota-source-detail="antigravity"/);
+  assert.match(html, /82%/);
+  assert.match(html, /Claude \/ 第三方/);
+  assert.match(html, /45%/);
+  assert.match(html, /Gemini 4 Argon/);
+
+  const detail = vm.runInContext('QuotaUI.renderSourceDetail("antigravity", _quotas)', c);
+  assert.match(detail, /Gemini · 5h/);
+  assert.match(detail, /Gemini · Week/);
+  assert.match(detail, /Gemini 4 Argon · Week/);
+  assert.match(detail, /Claude \/ 第三方 · 5h/);
+  assert.match(detail, /class="quota-time-marker"/);
+});
