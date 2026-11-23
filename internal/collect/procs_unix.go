@@ -3,6 +3,7 @@
 package collect
 
 import (
+	"os"
 	"os/exec"
 	"time"
 )
@@ -17,7 +18,11 @@ import (
 // absolute instant — a start time stays correct in a payload that may sit in a
 // retry buffer, while "running for 3h" silently ages.
 func listProcs() ([]procInfo, error) {
-	out, err := exec.Command("ps", "-axo", "pid,lstart,command").Output()
+	cmd := exec.Command("ps", "-axo", "pid,lstart,command")
+	// Force C locale so ps prints English weekday/month names matching parsePS
+	// regardless of the host's LANG/LC_TIME setting.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}

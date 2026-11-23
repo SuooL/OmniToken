@@ -1,10 +1,13 @@
 package collect
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 func writeCapture(t *testing.T, dir, body string) string {
@@ -148,6 +151,48 @@ func TestStatusQuotaReaderCollectsClaudeAndAntigravityIndependently(t *testing.T
 	// Second read without change returns 0.
 	if n := len(r.Collect(now)); n != 0 {
 		t.Fatalf("unchanged second read = %d, want 0", n)
+	}
+}
+
+func TestStatusQuotaReaderCollectAndDeliverRetriesOnSinkFailure(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	cache := writeCapture(t, dir, `{"source":"claude-code","observed_at":`+itoa(now.UnixMilli())+
+		`,"windows":{"five_hour":{"used_percent":33,"resets_at":1795435200}}}`)
+
+	r := NewStatusQuotaReader("mac", cache)
+	calls := 0
+	err := r.CollectAndDeliver(now, func(qs []model.QuotaSnapshot) error {
+		calls++
+		if len(qs) != 1 {
+			t.Fatalf("got %d snapshots, want 1", len(qs))
+		}
+		return errors.New("temporary hub outage")
+	})
+	if err == nil {
+		t.Fatal("expected error from failing sink")
+	}
+	// Watermark must not have advanced, so a retry delivers the same capture.
+	var delivered []model.QuotaSnapshot
+	if err := r.CollectAndDeliver(now, func(qs []model.QuotaSnapshot) error {
+		calls++
+		delivered = qs
+		return nil
+	}); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if calls != 2 || len(delivered) != 1 {
+		t.Fatalf("calls=%d delivered=%d, want 2 and 1", calls, len(delivered))
+	}
+	// Once committed, another tick with unchanged file does not call sink.
+	if err := r.CollectAndDeliver(now, func([]model.QuotaSnapshot) error {
+		calls++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d after commit, want 2", calls)
 	}
 }
 

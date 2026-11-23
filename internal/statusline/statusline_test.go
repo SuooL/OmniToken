@@ -169,3 +169,37 @@ func TestFreshCacheSkipsNetwork(t *testing.T) {
 		t.Errorf("fresh cache must skip the network: %d extra hits", hits-before)
 	}
 }
+
+func TestQuotaUsesWindowMinutesAndIncludesAntigravity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/overview") {
+			json.NewEncoder(w).Encode(map[string]any{"today": map[string]any{"total_tokens": 100}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"quotas": []map[string]any{
+			// Codex where primary=300m (5h) and secondary=10080m (weekly): window_minutes must win.
+			{"source": "codex", "scope": "primary", "window_minutes": 300, "used_percent": 22,
+				"resets_at": time.Now().Add(time.Hour).UnixMilli(), "expired": false},
+			{"source": "codex", "scope": "secondary", "window_minutes": 10080, "used_percent": 44,
+				"resets_at": time.Now().Add(48 * time.Hour).UnixMilli(), "expired": false},
+			// Antigravity multiple buckets: tightest 5h and tightest weekly should surface.
+			{"source": "antigravity", "scope": "gemini-5h", "window_minutes": 300, "used_percent": 15,
+				"resets_at": time.Now().Add(time.Hour).UnixMilli(), "expired": false},
+			{"source": "antigravity", "scope": "3p-5h", "window_minutes": 300, "used_percent": 65,
+				"resets_at": time.Now().Add(time.Hour).UnixMilli(), "expired": false},
+			{"source": "antigravity", "scope": "gemini-weekly", "window_minutes": 10080, "used_percent": 30,
+				"resets_at": time.Now().Add(48 * time.Hour).UnixMilli(), "expired": false},
+		}})
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, CachePath: filepath.Join(t.TempDir(), "c.json"), NoColor: true}
+	line := runLine(t, cfg, sessionJSON)
+	for _, want := range []string{"cx5h 22%", "cx周 44%", "ag5h 65%", "ag周 30%"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("line missing %q: %s", want, line)
+		}
+	}
+	if strings.Contains(line, "15%") {
+		t.Errorf("expected only tightest antigravity 5h bucket (65%%), got: %s", line)
+	}
+}

@@ -552,7 +552,7 @@ function renderDevices() {
             return `<div class="device-row">
       <span class="device-dot" data-state="${esc(device.state)}"></span>
       <span class="device-name" title="${esc(device.name)}">${esc(device.name)}</span>
-      <span class="device-state" data-state="${esc(device.state)}">${state}</span><small>${processState}</small>
+      <span class="device-state" data-state="${esc(device.state)}">${esc(state)}</span><small>${processState}</small>
     </div>`;
           })
           .join("")
@@ -832,6 +832,8 @@ const settingsEls = {
   settings: $("settings"),
   input: $("server-input"),
   token: $("token-input"),
+  clearTokenWrap: $("clear-token-wrap"),
+  clearToken: $("clear-token-input"),
   panel: $("panel-input"),
   autostart: $("autostart-input"),
   message: $("settings-msg"),
@@ -880,6 +882,8 @@ function openSettings() {
   settingsEls.token.placeholder = HAS_TOKEN
     ? "已保存访问令牌；留空保持不变"
     : "服务端只监听本机时留空";
+  if (settingsEls.clearToken) settingsEls.clearToken.checked = false;
+  if (settingsEls.clearTokenWrap) settingsEls.clearTokenWrap.hidden = !HAS_TOKEN;
   settingsEls.panel.value = PANEL_URL;
   settingsEls.autostart.checked = AUTOSTART;
   settingsEls.checkUpdate.disabled = false;
@@ -910,6 +914,7 @@ async function saveSettings() {
       token: settingsEls.token.value,
       panelUrl: settingsEls.panel.value,
       autostart: settingsEls.autostart.checked,
+      clearToken: !!(settingsEls.clearToken && settingsEls.clearToken.checked),
     });
     SERVER = stored.server;
     HAS_TOKEN = stored.has_token;
@@ -966,6 +971,7 @@ async function boot() {
     inlineDetail = false;
     renderSelectedDetail();
     renderDailyUsage();
+    renderQuotas();
   });
   const stored = await invoke("settings_get");
   SERVER = stored.server;

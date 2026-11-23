@@ -228,11 +228,12 @@ func fetch(cfg Config) (*serverData, error) {
 	}
 	var quota struct {
 		Quotas []struct {
-			Source      string  `json:"source"`
-			Scope       string  `json:"scope"`
-			UsedPercent float64 `json:"used_percent"`
-			ResetsAt    int64   `json:"resets_at"`
-			Expired     bool    `json:"expired"`
+			Source        string  `json:"source"`
+			Scope         string  `json:"scope"`
+			WindowMinutes int     `json:"window_minutes"`
+			UsedPercent   float64 `json:"used_percent"`
+			ResetsAt      int64   `json:"resets_at"`
+			Expired       bool    `json:"expired"`
 		} `json:"quotas"`
 	}
 	_ = get("/api/v1/quota", &quota) // quota is optional; keep the rest of the line
@@ -249,29 +250,67 @@ func fetch(cfg Config) (*serverData, error) {
 		d.TodayCost = c.RealUSD + c.EquivalentUSD + c.UnknownUSD
 	}
 	now := time.Now().UnixMilli()
+	var agTight5h, agTightWk *quotaLine
 	for _, q := range quota.Quotas {
 		// Only authoritative primary windows belong on a status line; an
 		// expired snapshot is stale state, not a current number.
 		if q.Expired || q.ResetsAt == 0 {
 			continue
 		}
-		label := ""
-		switch q.Scope {
-		case "five_hour", "secondary":
-			label = "5h"
-		case "seven_day", "primary":
-			label = "周"
-		default:
+		if q.Source == "claude-code" && q.Scope != "five_hour" && q.Scope != "seven_day" {
+			// Per-model Claude windows (seven_day_opus/sonnet) stay off the
+			// compact one-line status bar.
 			continue
 		}
+		winLabel := ""
+		switch q.WindowMinutes {
+		case 300:
+			winLabel = "5h"
+		case 10080:
+			winLabel = "周"
+		default:
+			switch q.Scope {
+			case "five_hour", "secondary":
+				winLabel = "5h"
+			case "seven_day", "primary":
+				winLabel = "周"
+			default:
+				continue
+			}
+		}
+		remainMin := int(max(q.ResetsAt-now, 0) / 60000)
+		if q.Source == "antigravity" {
+			cand := quotaLine{
+				Label:       "ag" + winLabel,
+				UsedPercent: q.UsedPercent,
+				RemainMin:   remainMin,
+			}
+			if winLabel == "5h" {
+				if agTight5h == nil || cand.UsedPercent > agTight5h.UsedPercent {
+					c := cand
+					agTight5h = &c
+				}
+			} else if agTightWk == nil || cand.UsedPercent > agTightWk.UsedPercent {
+				c := cand
+				agTightWk = &c
+			}
+			continue
+		}
+		label := winLabel
 		if q.Source == "codex" {
 			label = "cx" + label
 		}
 		d.Quotas = append(d.Quotas, quotaLine{
 			Label:       label,
 			UsedPercent: q.UsedPercent,
-			RemainMin:   int(max(q.ResetsAt-now, 0) / 60000),
+			RemainMin:   remainMin,
 		})
+	}
+	if agTight5h != nil {
+		d.Quotas = append(d.Quotas, *agTight5h)
+	}
+	if agTightWk != nil {
+		d.Quotas = append(d.Quotas, *agTightWk)
 	}
 	return d, nil
 }

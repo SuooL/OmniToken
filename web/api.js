@@ -251,11 +251,13 @@ const Api = {
     });
   },
 
+  siteAuthEnabled: false,
+
   // EventSource cannot carry a header, so the token rides as a query parameter
-  // when there is one. Same credential, only channel the API allows — and the
-  // server accepts it on this endpoint alone.
+  // when there is one — except under site auth where the HttpOnly session
+  // cookie authenticates the stream and avoids leaking read_token into logs.
   stream(path) {
-    const url = this.token
+    const url = this.token && !this.siteAuthEnabled
       ? this.url(path) + (path.includes("?") ? "&" : "?") + "access_token=" + encodeURIComponent(this.token)
       : this.url(path);
     return new EventSource(url);

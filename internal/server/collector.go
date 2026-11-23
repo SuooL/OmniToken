@@ -112,10 +112,8 @@ func (s *Server) runCollectors() {
 	for {
 		if s.cfg.LocalEnabled() {
 			procSink()
-			if qs := quotaReader.Collect(time.Now()); len(qs) > 0 {
-				if err := quotaSink(qs); err != nil {
-					log.Printf("quota[claude]: store: %v", err)
-				}
+			if err := quotaReader.CollectAndDeliver(time.Now(), quotaSink); err != nil {
+				log.Printf("quota[statusline]: store: %v", err)
 			}
 		}
 		if s.cfg.LocalEnabled() {

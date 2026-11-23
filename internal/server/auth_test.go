@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/suool/omnitoken/internal/model"
@@ -367,5 +368,76 @@ func TestV2BearerParserIsStrictAndSchemeIsCaseInsensitive(t *testing.T) {
 				t.Fatalf("authentication = %v, want %v for %q", ok, tc.ok, tc.header)
 			}
 		})
+	}
+}
+
+func TestCSRFRejectsCrossSiteMutationsAndSecurityHeadersPresent(t *testing.T) {
+	s := scopedSrv("127.0.0.1:8787", "ingest-tok", "read-tok", "admin-tok")
+	hit := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
+
+	// Cross-site Sec-Fetch-Site must be blocked even on loopback.
+	req := httptest.NewRequest("POST", "http://127.0.0.1:8787/api/v1/settings", nil)
+	req.Header.Set("Authorization", "Bearer admin-tok")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	w := httptest.NewRecorder()
+	s.adminAuth(hit)(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-site admin mutation status = %d, want 403", w.Code)
+	}
+
+	// Cross-origin Origin header must be blocked on v1 ingest too.
+	req = httptest.NewRequest("POST", "http://127.0.0.1:8787/api/v1/ingest", nil)
+	req.Header.Set("Authorization", "Bearer ingest-tok")
+	req.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	s.auth(hit)(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin ingest status = %d, want 403", w.Code)
+	}
+
+	// Same-origin Origin header succeeds.
+	req = httptest.NewRequest("POST", "http://127.0.0.1:8787/api/v1/settings", nil)
+	req.Header.Set("Authorization", "Bearer admin-tok")
+	req.Header.Set("Origin", "http://127.0.0.1:8787")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w = httptest.NewRecorder()
+	s.adminAuth(hit)(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("same-origin admin mutation status = %d, want 204", w.Code)
+	}
+
+	// Security headers wrapper sets nosniff / no-referrer / DENY.
+	w = httptest.NewRecorder()
+	withSecurityHeaders(http.HandlerFunc(hit)).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		w.Header().Get("Referrer-Policy") != "no-referrer" ||
+		w.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("missing security headers: %+v", w.Header())
+	}
+}
+
+func TestV2IngestAndHeartbeatRejectMissingAuthBeforeReadingBody(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "preauth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s := &Server{store: st}
+
+	// Oversized or malformed body with missing Authorization must return 401
+	// immediately rather than 413/400 from decoding the body first.
+	for _, tc := range []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"/api/v2/ingest", s.handleIngestV2},
+		{"/api/v2/heartbeat", s.handleHeartbeatV2},
+	} {
+		req := httptest.NewRequest("POST", tc.path, strings.NewReader("{bad-json"))
+		w := httptest.NewRecorder()
+		tc.handler(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without auth returned %d, want 401", tc.path, w.Code)
+		}
 	}
 }

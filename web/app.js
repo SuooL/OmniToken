@@ -137,6 +137,7 @@ async function refreshAuthState() {
   const health = document.getElementById("hub-health");
   try {
     const h = await (await fetch(Api.url("/api/v1/health"))).json();
+    Api.siteAuthEnabled = Boolean(h.site_auth_enabled);
     if (h.site_auth_enabled && !document.getElementById("site-account")) {
       const account = document.createElement("a");
       account.id = "site-account";

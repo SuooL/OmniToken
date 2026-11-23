@@ -22,10 +22,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -39,8 +41,10 @@ import (
 const Source = "proxy"
 
 const (
-	proxyRingCap    = 1000    // events buffered across sink failures
-	proxyCaptureMax = 4 << 20 // non-stream response bytes kept for usage parsing
+	proxyRingCap        = 1000     // events buffered across sink failures
+	proxyCaptureMax     = 4 << 20  // non-stream response bytes kept for usage parsing
+	proxyRequestBodyMax = 32 << 20 // upper bound on buffered proxy request bodies
+	proxySSELineMax     = 4 << 20  // upper bound on a single SSE line held in memory
 )
 
 // defaultUpstreams are always available; Config.Upstreams overrides/extends.
@@ -95,8 +99,14 @@ func newProxyHandler(cfg Config, sink func([]model.Event) error) *proxyHandler {
 		upstreams: ups,
 		// Timeout stays 0: an overall deadline would kill long streams. The
 		// client's own disconnect cancels r.Context() and aborts the upstream
-		// call, so nothing leaks.
-		client:  &http.Client{Timeout: 0},
+		// call, so nothing leaks. Never auto-follow redirects so caller auth
+		// headers (x-api-key, Authorization) cannot be replayed to another host.
+		client: &http.Client{
+			Timeout: 0,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		emitter: &proxyEmitter{sink: sink},
 	}
 }
@@ -106,14 +116,31 @@ func newProxyHandler(cfg Config, sink func([]model.Event) error) *proxyHandler {
 // keeping the teed bytes parseable; the client receives identity-encoded
 // content with unchanged semantics.
 var proxyHopHeaders = map[string]bool{
-	"Connection":        true,
-	"Proxy-Connection":  true,
-	"Keep-Alive":        true,
-	"Te":                true,
-	"Trailer":           true,
-	"Transfer-Encoding": true,
-	"Upgrade":           true,
-	"Accept-Encoding":   true,
+	"Connection":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Keep-Alive":          true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Accept-Encoding":     true,
+}
+
+func connectionHopHeaders(h http.Header) map[string]bool {
+	var extra map[string]bool
+	for _, v := range h.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			if name := textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(tok)); name != "" {
+				if extra == nil {
+					extra = make(map[string]bool)
+				}
+				extra[name] = true
+			}
+		}
+	}
+	return extra
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -130,10 +157,16 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read the body fully so the model field can be extracted, then replay it
-	// verbatim to the upstream.
-	body, err := io.ReadAll(r.Body)
+	// verbatim to the upstream. Cap body size so a rogue local caller cannot
+	// exhaust memory.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proxyRequestBodyMax))
 	if err != nil {
-		writeProxyErr(w, http.StatusBadGateway, "read request body: "+err.Error())
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeProxyErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeProxyErr(w, http.StatusBadRequest, "read request body: "+err.Error())
 		return
 	}
 	reqModel := extractProxyModel(body)
@@ -150,8 +183,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProxyErr(w, http.StatusBadGateway, "build upstream request: "+err.Error())
 		return
 	}
+	reqExtraHop := connectionHopHeaders(r.Header)
 	for k, vv := range r.Header {
-		if proxyHopHeaders[k] {
+		if proxyHopHeaders[k] || reqExtraHop[k] {
 			continue
 		}
 		out.Header[k] = vv
@@ -166,8 +200,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	respExtraHop := connectionHopHeaders(resp.Header)
 	for k, vv := range resp.Header {
-		if proxyHopHeaders[k] {
+		if proxyHopHeaders[k] || respExtraHop[k] {
 			continue
 		}
 		w.Header()[k] = vv
@@ -202,6 +237,12 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 
 	u, obsModel, msgID := obs.result()
+	if resp.StatusCode >= http.StatusBadRequest &&
+		u.input == 0 && u.output == 0 && u.cacheRead == 0 && u.cacheCreate == 0 {
+		// Do not pollute events/speed metrics with zero-token upstream error
+		// responses (401/429/5xx).
+		return
+	}
 	m := reqModel
 	if m == "" {
 		m = obsModel
@@ -450,12 +491,13 @@ type proxyTokens struct {
 // long stream needs O(line) memory); non-stream responses are captured up to
 // proxyCaptureMax and parsed once at the end.
 type usageObserver struct {
-	sse   bool
-	raw   bytes.Buffer // non-SSE capture
-	line  bytes.Buffer // SSE partial-line assembly
-	acc   proxyTokens
-	model string
-	msgID string // Anthropic message id, half of the shared event_id (ADR-0013)
+	sse          bool
+	raw          bytes.Buffer // non-SSE capture
+	line         bytes.Buffer // SSE partial-line assembly
+	lineOverflow bool         // currently skipping an oversized SSE line until '\n'
+	acc          proxyTokens
+	model        string
+	msgID        string // Anthropic message id, half of the shared event_id (ADR-0013)
 }
 
 func newUsageObserver(sse bool) *usageObserver {
@@ -465,20 +507,44 @@ func newUsageObserver(sse bool) *usageObserver {
 func (o *usageObserver) feed(b []byte) {
 	if !o.sse {
 		if o.raw.Len() < proxyCaptureMax {
+			rem := proxyCaptureMax - o.raw.Len()
+			if len(b) > rem {
+				b = b[:rem]
+			}
 			o.raw.Write(b)
 		}
 		return
 	}
-	o.line.Write(b)
-	for {
-		data := o.line.Bytes()
-		i := bytes.IndexByte(data, '\n')
+	for len(b) > 0 {
+		if o.lineOverflow {
+			i := bytes.IndexByte(b, '\n')
+			if i < 0 {
+				return
+			}
+			o.lineOverflow = false
+			b = b[i+1:]
+			continue
+		}
+		i := bytes.IndexByte(b, '\n')
 		if i < 0 {
+			if o.line.Len()+len(b) > proxySSELineMax {
+				o.line.Reset()
+				o.lineOverflow = true
+				return
+			}
+			o.line.Write(b)
 			return
 		}
-		line := string(data[:i])
-		o.line.Next(i + 1)
+		if o.line.Len()+i > proxySSELineMax {
+			o.line.Reset()
+			b = b[i+1:]
+			continue
+		}
+		o.line.Write(b[:i])
+		line := o.line.String()
+		o.line.Reset()
 		o.sseLine(strings.TrimRight(line, "\r"))
+		b = b[i+1:]
 	}
 }
 
@@ -573,6 +639,11 @@ func (o *usageObserver) merge(u *proxyWireUsage) {
 // result returns the accumulated usage, the model, and the Anthropic message id
 // when one was seen (ADR-0013).
 func (o *usageObserver) result() (proxyTokens, string, string) {
+	if o.sse && !o.lineOverflow && o.line.Len() > 0 {
+		// Flush a final SSE data line that terminated with EOF instead of '\n'.
+		o.sseLine(strings.TrimRight(o.line.String(), "\r"))
+		o.line.Reset()
+	}
 	if !o.sse && o.raw.Len() > 0 {
 		var v struct {
 			ID            string           `json:"id"`

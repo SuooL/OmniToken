@@ -67,9 +67,33 @@ func (r *StatusQuotaReader) Path() string {
 }
 
 // Collect returns snapshots for captures not seen before across Claude Code
-// and Antigravity CLI. Missing files are normal until the hook is wired up.
+// and Antigravity CLI, immediately advancing each file's high-water mark.
+// Prefer CollectAndDeliver when delivery can fail so unacknowledged captures
+// are retried on the next tick.
 func (r *StatusQuotaReader) Collect(now time.Time) []model.QuotaSnapshot {
+	out, pending := r.peek(now)
+	r.commit(pending)
+	return out
+}
+
+// CollectAndDeliver reads unseen captures, invokes sink, and only advances each
+// file's lastObserved watermark after sink returns nil. Missing files are
+// normal until the hook is wired up.
+func (r *StatusQuotaReader) CollectAndDeliver(now time.Time, sink func([]model.QuotaSnapshot) error) error {
+	out, pending := r.peek(now)
+	if len(out) == 0 {
+		return nil
+	}
+	if err := sink(out); err != nil {
+		return err
+	}
+	r.commit(pending)
+	return nil
+}
+
+func (r *StatusQuotaReader) peek(now time.Time) ([]model.QuotaSnapshot, []int64) {
 	var out []model.QuotaSnapshot
+	pending := make([]int64, len(r.files))
 	for i := range r.files {
 		src := &r.files[i]
 		raw, err := os.ReadFile(src.path)
@@ -110,10 +134,18 @@ func (r *StatusQuotaReader) Collect(now time.Time) []model.QuotaSnapshot {
 			added++
 		}
 		if added > 0 {
-			src.lastObserved = f.ObservedAt
+			pending[i] = f.ObservedAt
 		}
 	}
-	return out
+	return out, pending
+}
+
+func (r *StatusQuotaReader) commit(pending []int64) {
+	for i, ts := range pending {
+		if ts > 0 && i < len(r.files) {
+			r.files[i].lastObserved = ts
+		}
+	}
 }
 
 // windowMinutesFor maps a scope to its window length. Both Claude Code and

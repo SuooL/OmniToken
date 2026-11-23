@@ -186,6 +186,36 @@ func TestRelayUsesDifferentCredentialForNextHop(t *testing.T) {
 	}
 }
 
+func TestRelayRewritesHostHeaderToUpstream(t *testing.T) {
+	var gotHost string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	agent := &Agent{cfg: Config{
+		ServerURL:  upstream.URL,
+		RelayToken: "relay-secret",
+	}}
+	server, err := agent.relayServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://relay-listener.local:8788/api/v2/ingest", strings.NewReader(`{}`))
+	request.Host = "relay-listener.local:8788"
+	request.Header.Set(relayTokenHeader, "relay-secret")
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	wantHost := strings.TrimPrefix(upstream.URL, "http://")
+	if gotHost != wantHost {
+		t.Fatalf("upstream Host=%q, want %q", gotHost, wantHost)
+	}
+}
+
 func TestRelayAllowsOnlyExplicitPostRoutesAndOpenHealth(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

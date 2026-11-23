@@ -650,3 +650,84 @@ func TestProxyGeminiNonStreamAndSSE(t *testing.T) {
 		}
 	})
 }
+
+func TestProxySecurityHardening(t *testing.T) {
+	t.Run("does not follow redirects or leak auth headers", func(t *testing.T) {
+		var redirectHit bool
+		evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			redirectHit = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer evil.Close()
+
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("X-Custom-Hop") != "" {
+				t.Errorf("hop-by-hop header leaked upstream: %+v", r.Header)
+			}
+			http.Redirect(w, r, evil.URL+"/steal", http.StatusFound)
+		}))
+		defer up.Close()
+
+		trap := &eventTrap{}
+		px := newTestProxy(t, map[string]string{"anthropic": up.URL}, trap.sink)
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		req, _ := http.NewRequest("POST", px.URL+"/anthropic/v1/messages", strings.NewReader(`{}`))
+		req.Header.Set("x-api-key", "sk-ant-secret")
+		req.Header.Set("Proxy-Authorization", "Basic secret")
+		req.Header.Set("Connection", "X-Custom-Hop")
+		req.Header.Set("X-Custom-Hop", "drop-me")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("status = %d, want 302", resp.StatusCode)
+		}
+		if redirectHit {
+			t.Fatal("proxy followed redirect and leaked caller credentials")
+		}
+	})
+
+	t.Run("skips emitting zero-token upstream 4xx/5xx error events", func(t *testing.T) {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+		}))
+		defer up.Close()
+
+		trap := &eventTrap{}
+		px := newTestProxy(t, map[string]string{"anthropic": up.URL}, trap.sink)
+		resp, err := http.Post(px.URL+"/anthropic/v1/messages", "application/json", strings.NewReader(`{"model":"claude-opus-4-8"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", resp.StatusCode)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if trap.callCount() != 0 {
+			t.Fatalf("expected 0 events for zero-token 429 error, got %d", trap.callCount())
+		}
+	})
+
+	t.Run("flushes trailing unterminated SSE line and survives oversized SSE line", func(t *testing.T) {
+		obs := newUsageObserver(true)
+		// First feed an oversized line exceeding proxySSELineMax without breaking subsequent lines.
+		big := make([]byte, proxySSELineMax+128)
+		for i := range big {
+			big[i] = 'a'
+		}
+		obs.feed(big)
+		obs.feed([]byte("\n"))
+		// Now feed a final valid SSE data line WITHOUT trailing newline.
+		obs.feed([]byte(`data: {"model":"gpt-4o","usage":{"prompt_tokens":50,"completion_tokens":12}}`))
+		u, modelName, _ := obs.result()
+		if modelName != "gpt-4o" || u.input != 50 || u.output != 12 {
+			t.Fatalf("got model=%q tokens=%+v, want gpt-4o 50/12", modelName, u)
+		}
+	})
+}

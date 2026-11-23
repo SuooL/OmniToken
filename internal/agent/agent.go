@@ -261,11 +261,7 @@ func (a *Agent) collectStatusQuota(now time.Time) error {
 	if a.quotaReader == nil {
 		return nil
 	}
-	qs := a.quotaReader.Collect(now)
-	if len(qs) == 0 {
-		return nil
-	}
-	return a.pushQuotas(qs)
+	return a.quotaReader.CollectAndDeliver(now, a.pushQuotas)
 }
 
 func (a *Agent) Close() error {
@@ -351,7 +347,7 @@ func (a *Agent) Run() error {
 		go func() {
 			err := proxy.Run(proxy.Config{
 				Listen:    a.cfg.ProxyListen,
-				Device:    a.cfg.DeviceName,
+				Device:    a.scanDevice(),
 				Upstreams: a.cfg.ProxyUpstreams,
 			}, a.push)
 			log.Printf("proxy: %v", err)
@@ -783,6 +779,16 @@ func (a *Agent) relayServer() (*http.Server, error) {
 		return nil, errors.New("relay token is required")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		// Reverse-proxying to an HTTPS or virtual-hosted Hub requires the Host
+		// header to match the upstream target rather than the relay listener.
+		req.Host = upstream.Host
+	}
+	if a.client != nil && a.client.Transport != nil {
+		proxy.Transport = a.client.Transport
+	}
 	mux := http.NewServeMux()
 	for path, maxBytes := range map[string]int64{
 		"/api/v1/ingest":    relayV1IngestBodyMax,

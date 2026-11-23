@@ -38,6 +38,23 @@ func TestParseCatalogValidatesEntireCandidate(t *testing.T) {
 			t.Fatalf("accepted invalid catalog: %.100s", raw)
 		}
 	}
+	if err := ParseCatalogEmbeddedTestHelper(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func ParseCatalogEmbeddedTestHelper() error {
+	models, err := ParseCatalog(rawPrices)
+	if err != nil {
+		return fmt.Errorf("ParseCatalog(embedded rawPrices): %w", err)
+	}
+	if _, ok := models["together_ai/baai/bge-base-en-v1.5"]; !ok {
+		return fmt.Errorf("expected normalized case-duplicate key to be retained")
+	}
+	if _, ok := models["azure_ai/deepseek-v4-flash-0731"]; !ok {
+		return fmt.Errorf("expected upper-cased embedded key to be normalized and reachable")
+	}
+	return nil
 }
 
 func TestFetchCatalogBoundsAndHTTPFailure(t *testing.T) {

@@ -484,30 +484,38 @@ body.tool-app {
   background: var(--risk, var(--tool-healthy));
   border-radius: inherit;
 }
-.tool-ui .quota-data {
+.tool-ui .quota-data,
+.detail-drawer .quota-data {
   --risk: var(--tool-healthy);
 }
-.tool-ui .quota-data[data-risk="warn"] {
+.tool-ui .quota-data[data-risk="warn"],
+.detail-drawer .quota-data[data-risk="warn"] {
   --risk: var(--tool-warn);
 }
-.tool-ui .quota-data[data-risk="serious"] {
+.tool-ui .quota-data[data-risk="serious"],
+.detail-drawer .quota-data[data-risk="serious"] {
   --risk: var(--tool-serious);
 }
-.tool-ui .quota-data[data-risk="critical"] {
+.tool-ui .quota-data[data-risk="critical"],
+.detail-drawer .quota-data[data-risk="critical"] {
   --risk: var(--tool-critical);
   background: #ff7e8509;
 }
-.tool-ui .quota-data[data-risk="missing"] {
+.tool-ui .quota-data[data-risk="missing"],
+.detail-drawer .quota-data[data-risk="missing"] {
   --risk: var(--text-secondary);
 }
-.tool-ui .quota-used {
+.tool-ui .quota-used,
+.detail-drawer .quota-used {
   color: var(--risk);
 }
-.tool-ui .quota-used small {
+.tool-ui .quota-used small,
+.detail-drawer .quota-used small {
   font-size: 12px;
   white-space: nowrap;
 }
-.tool-ui .quota-percent {
+.tool-ui .quota-percent,
+.detail-drawer .quota-percent {
   font-weight: 600;
 }
 .tool-ui .quota-track {
@@ -522,7 +530,8 @@ body.tool-app {
   background: var(--risk);
   border-radius: inherit;
 }
-.tool-ui .quota-unknown {
+.tool-ui .quota-unknown,
+.detail-drawer .quota-unknown {
   background: repeating-linear-gradient(
     100deg,
     #a4afbe20,
@@ -531,13 +540,15 @@ body.tool-app {
     #a4afbe0b 6px
   );
 }
-.tool-ui .quota-observed {
+.tool-ui .quota-observed,
+.detail-drawer .quota-observed {
   display: block;
   color: var(--text-secondary);
   font-size: 11px;
   margin-top: 2px;
 }
-.tool-ui .quota-note {
+.tool-ui .quota-note,
+.detail-drawer .quota-note {
   font-size: 11px;
 }
 .tool-ui .tool-kv,
@@ -621,6 +632,20 @@ body.drawer-open {
   --text-primary: #e6eaf0;
   --text-secondary: #a4afbe;
   --border: #303742;
+  --tool-surface: #171b22;
+  --tool-line: #303742;
+  --tool-ink: #e6eaf0;
+  --tool-secondary: #a4afbe;
+  --tool-hover: #232c37;
+  --tool-healthy: #70d3ad;
+  --tool-warn: #edba66;
+  --tool-serious: #f39b61;
+  --tool-critical: #ff7e85;
+  --tool-claude: #e9ac88;
+  --tool-codex: #e4e9ee;
+  --tool-dsh: #7596ff;
+  --tool-antigravity: #c49bff;
+  --tool-gemini: #67e4b9;
   --font-body:
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   color-scheme: dark;
@@ -916,7 +941,8 @@ body.drawer-open {
 }
 
 /* A time tick shares the usage scale without adding another label or bar. */
-.tool-ui .quota-time-marker {
+.tool-ui .quota-time-marker,
+.detail-drawer .quota-time-marker {
   position: absolute;
   top: -3px;
   bottom: -3px;
@@ -925,7 +951,8 @@ body.drawer-open {
   box-shadow: 0 0 0 1px var(--tool-surface);
   transform: translateX(-1px);
 }
-.tool-ui .quota-time-marker:focus-visible {
+.tool-ui .quota-time-marker:focus-visible,
+.detail-drawer .quota-time-marker:focus-visible {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
 }
