@@ -49,3 +49,4 @@ ADR 标注 supersedes,不改写历史。
 | [0042](0042-antigravity-and-gemini-sources.md) | Google Antigravity、Gemini CLI 与 Gemini 本地代理接入 | 已采纳 |
 | [0043](0043-self-update-and-hub-deploy.md) | Hub 与 Agent 按需自更新(`omnitoken self-update`)与 GitHub Actions 自动部署 | 已采纳 |
 | [0044](0044-antigravity-quota-groups.md) | Antigravity 模型分组滚动配额视图(无官方桌面端导出通道且不读凭据，暂不展示) | 已撤回 |
+| [0045](0045-antigravity-cli-quota-and-speed.md) | Antigravity CLI (`agy`) 官方 statusLine 配额采集、纯生成速度与多目录接入 | 已采纳 |

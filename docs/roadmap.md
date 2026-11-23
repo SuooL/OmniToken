@@ -395,3 +395,14 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 |---|---|---|
 | `omnitoken self-update` 子命令(F30) | ✅ 完成 | 纯 Go 标准库，静态重定向解析最新 tag、强制 `SHA256SUMS` 校验、同目录原子替换、`-check`/`-version`/`-restart`/`-restart-service` |
 | GitHub Actions 线上 Hub 自动部署(F30) | ✅ 完成 | `.github/workflows/deploy-hub.yml` + `release.yml` 发版后自动触发，带备份、旧版引导回落、`/api/v1/health` 校验与失败自动回滚；未配 secrets 时安全跳过 |
+
+## M16 — Antigravity CLI (`agy`) 官方配额、纯生成速度与分桶详情(2026-11-23)
+
+决策见 [ADR-0045](adr/0045-antigravity-cli-quota-and-speed.md)。严格遵循 ADR-0011（不读凭据、不探私有进程），通过 `agy` CLI 官方公开的 `statusLine` JSON 通道与只读步骤计时元数据补齐完整用量、纯生成速度与权威配额。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 多目录采集与订阅通道升级 | ✅ 完成 | 同步扫描 `~/.gemini/antigravity/brain`、`antigravity-cli/brain`、`antigravity-ide/brain`；标记 `google-oauth` 订阅通道 |
+| 纯生成速度与 TTFT（F15） | ✅ 完成 | 只读解析同级 `conversations/<id>.db` 的 `steps.metadata` 四时间戳，产出 `ttft_ms` 与纯生成 `gen_ms`，Web 标「Antigravity · 纯生成」 |
+| 官方 `statusLine` 配额捕获与包装安装 | ✅ 完成 | `omnitoken statusline` 识别 `product:"antigravity"` 的 `quota` 桶并落盘 `antigravity-rate-limits.json`；`-setup -target antigravity` 无损包装 `agy-powerline` |
+| Web 与 macOS 菜单栏官方配额与分桶详情 | ✅ 完成 | 纳入 `antigravity` 官方 5h/Week 配额、时间刻度与 ADR-0025/0034 容量学习；点击可展开全部官方配额桶（Gemini / Argon / Claude 第三方） |

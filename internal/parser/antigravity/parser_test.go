@@ -1,11 +1,14 @@
 package antigravity
 
 import (
+	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/suool/omnitoken/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 // Sample based on real ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl.
@@ -22,7 +25,7 @@ not valid json
 `
 
 func TestParsePathExtractsPlannerUsage(t *testing.T) {
-	path := filepath.Join("/Users/suool/.gemini/antigravity/brain", "b8be3c72-36ad-4500-8bf9-5a456459748d", ".system_generated", "logs", "transcript.jsonl")
+	path := filepath.Join(t.TempDir(), "brain", "b8be3c72-36ad-4500-8bf9-5a456459748d", ".system_generated", "logs", "transcript.jsonl")
 	res := ParsePath(path, strings.NewReader(sampleTranscript), "macbook", 0)
 	if res.Consumed != int64(len(sampleTranscript)) {
 		t.Fatalf("consumed = %d, want %d", res.Consumed, len(sampleTranscript))
@@ -44,8 +47,8 @@ func TestParsePathExtractsPlannerUsage(t *testing.T) {
 	if e0.Model != "gemini-4-neon-high" {
 		t.Errorf("model = %q", e0.Model)
 	}
-	if e0.Provider != model.ProviderGoogle {
-		t.Errorf("provider = %q, want %q", e0.Provider, model.ProviderGoogle)
+	if e0.Provider != model.ProviderGoogleOAuth {
+		t.Errorf("provider = %q, want %q", e0.Provider, model.ProviderGoogleOAuth)
 	}
 	if e0.InputTokens != 20789 || e0.OutputTokens != 322 || e0.CacheReadTokens != 0 || e0.CacheCreationTokens != 0 {
 		t.Errorf("e0 tokens = %+v", e0)
@@ -154,5 +157,132 @@ func TestParseDirectAndEdgeCases(t *testing.T) {
 	res2 := Parse(strings.NewReader(bad), "dev", 0)
 	if len(res2.Events) != 0 {
 		t.Fatalf("expected 0 events for bad/pending rows, got %d", len(res2.Events))
+	}
+}
+
+func appendVarint(b []byte, v uint64) []byte {
+	for v >= 0x80 {
+		b = append(b, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(b, byte(v))
+}
+
+func encodeTimestamp(sec, nanos int64) []byte {
+	var b []byte
+	b = appendVarint(b, (1<<3)|0)
+	b = appendVarint(b, uint64(sec))
+	if nanos > 0 {
+		b = appendVarint(b, (2<<3)|0)
+		b = appendVarint(b, uint64(nanos))
+	}
+	return b
+}
+
+func encodeStepMetadata(t1Sec, t1Ns, t6Sec, t6Ns, t7Sec, t7Ns int64) []byte {
+	var b []byte
+	add := func(field uint64, sub []byte) {
+		b = appendVarint(b, (field<<3)|2)
+		b = appendVarint(b, uint64(len(sub)))
+		b = append(b, sub...)
+	}
+	add(1, encodeTimestamp(t1Sec, t1Ns))
+	add(6, encodeTimestamp(t6Sec, t6Ns))
+	add(7, encodeTimestamp(t7Sec, t7Ns))
+	return b
+}
+
+func TestParsePathExtractsPureGenerationTimingFromConversationDB(t *testing.T) {
+	root := t.TempDir()
+	convID := "e2d31b75-b707-4a63-9135-635097356345"
+	dbDir := filepath.Join(root, "conversations")
+	logDir := filepath.Join(root, "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dbDir, convID+".db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, metadata BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	// step 1: TTFT = 5.250s, pure gen = 10.500s
+	meta := encodeStepMetadata(1795423758, 0, 1795423763, 250_000_000, 1795423773, 750_000_000)
+	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, metadata) VALUES (1, 15, ?)`, meta); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	transcriptPath := filepath.Join(logDir, "transcript.jsonl")
+	line := `{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-23T02:18:50Z","model":"gemini-4-neon-high","input_tokens":1000,"cache_read_tokens":500,"output_tokens":1400}` + "\n"
+	res := ParsePath(transcriptPath, strings.NewReader(line), "mac", 0)
+	if len(res.Events) != 1 {
+		t.Fatalf("got %d events, want 1", len(res.Events))
+	}
+	ev := res.Events[0]
+	if ev.TTFTMS != 5250 {
+		t.Errorf("TTFTMS = %d, want 5250", ev.TTFTMS)
+	}
+	if ev.GenMS != 10500 {
+		t.Errorf("GenMS = %d, want 10500", ev.GenMS)
+	}
+	if ev.Provider != model.ProviderGoogleOAuth {
+		t.Errorf("Provider = %q, want %q", ev.Provider, model.ProviderGoogleOAuth)
+	}
+}
+
+func TestDecodeStepMetadataTimingEdgeCases(t *testing.T) {
+	// Include varint (wire 0), fixed64 (wire 1), fixed32 (wire 5), and f8 fallback (no f7).
+	var b []byte
+	b = appendVarint(b, (3<<3)|0) // varint field 3
+	b = appendVarint(b, 2)
+	b = appendVarint(b, (4<<3)|1) // fixed64
+	b = append(b, 1, 2, 3, 4, 5, 6, 7, 8)
+	b = appendVarint(b, (5<<3)|5) // fixed32
+	b = append(b, 1, 2, 3, 4)
+	addSub := func(field uint64, sub []byte) {
+		b = appendVarint(b, (field<<3)|2)
+		b = appendVarint(b, uint64(len(sub)))
+		b = append(b, sub...)
+	}
+	addSub(1, encodeTimestamp(1795423700, 0))
+	addSub(6, encodeTimestamp(1795423702, 500_000_000))
+	addSub(8, encodeTimestamp(1795423710, 0))
+
+	got, ok := decodeStepMetadataTiming(b)
+	if !ok || got.TTFTMS != 2500 || got.GenMS != 7500 {
+		t.Fatalf("got = (%+v, %v), want TTFT=2500 Gen=7500", got, ok)
+	}
+
+	// Malformed / truncated inputs return ok=false cleanly.
+	for _, bad := range [][]byte{
+		{0x80},                   // truncated varint key
+		{(3 << 3) | 0, 0x80},     // truncated varint value
+		{(4 << 3) | 1, 1, 2},     // truncated fixed64
+		{(5 << 3) | 5, 1, 2},     // truncated fixed32
+		{(2 << 3) | 2, 10, 1, 2}, // truncated length-delimited
+		{(2 << 3) | 3},           // unsupported wire type 3
+		{0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80}, // oversized varint
+	} {
+		if _, ok := decodeStepMetadataTiming(bad); ok {
+			t.Errorf("expected ok=false for malformed bytes %x", bad)
+		}
+	}
+	if ts := decodeTimestampMS([]byte{(1 << 3) | 2, 0}); ts != 0 {
+		t.Errorf("non-varint timestamp field = %d, want 0", ts)
+	}
+	if ts := decodeTimestampMS([]byte{(1 << 3) | 0, 0}); ts != 0 {
+		t.Errorf("zero timestamp = %d, want 0", ts)
+	}
+	if p := conversationDBPath("/tmp/not-brain/conv/.system_generated/logs/transcript.jsonl", "conv"); p != "" {
+		t.Errorf("non-brain path = %q, want empty", p)
+	}
+	if m := loadConversationTimings("", ""); m != nil {
+		t.Errorf("empty path timings = %v, want nil", m)
 	}
 }

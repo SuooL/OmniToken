@@ -200,16 +200,21 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 	var cards []windowCard
 	for _, kind := range windowKinds {
 		quota := tightestQuota(quotas, now, kind.minutes)
-		for _, src := range []struct{ source, label string }{
-			{"claude-code", "Claude Code 订阅"},
-			{"codex", "Codex 订阅"},
+		for _, src := range []struct {
+			source      string
+			label       string
+			placeholder bool
+		}{
+			{"claude-code", "Claude Code 订阅", true},
+			{"codex", "Codex 订阅", true},
+			{"antigravity", "Antigravity 订阅", false},
 		} {
 			source := src.source
 			w, authoritative := quota[source]
 			// A weekly card with no weekly quota would be a rolling 7-day
 			// look-back nobody asked for; the 5-hour one keeps its placeholder
-			// because the page is built around that window.
-			if !authoritative && kind.minutes != 300 {
+			// only for sources that always occupy the quota card.
+			if !authoritative && (kind.minutes != 300 || !src.placeholder) {
 				continue
 			}
 			keep := func(u store.ProviderUsage) bool {

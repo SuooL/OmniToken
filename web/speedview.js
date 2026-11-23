@@ -399,6 +399,11 @@ const SpeedView = {
         ? `<span class="chip badge approx" title="dsh 逐 chunk 打点:最终一次尝试的首个流式 chunk → 消息写入,不含首 token 等待、失败重试与工具执行">DeepSeek · 纯生成</span>`
         : `<span class="chip badge approx" title="同名模型来自多个来源,区间口径不同:DeepSeek 不含首 token 等待,Claude Code 的日志推算含">混合口径</span>`;
     }
+    if (sources.includes("antigravity")) {
+      return sources.every((s) => s === "antigravity")
+        ? `<span class="chip badge approx" title="Antigravity 步骤元数据打点:首 token 到达 → 生成结束,不含首 token 等待与工具执行">Antigravity · 纯生成</span>`
+        : `<span class="chip badge approx" title="同名模型来自多个来源,区间口径不同">混合口径</span>`;
+    }
     return `<span class="chip badge approx">日志推算</span>`;
   },
 

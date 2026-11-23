@@ -167,3 +167,7 @@ independent of elapsed time.
 ### Desktop release architecture
 
 The shared macOS updater archive must contain both ARM64 and x86_64 slices. Validate both architectures and the app resource signature before publishing either platform entry.
+
+### Antigravity CLI official quota and generation speed (2026-11-23, ADR-0045)
+
+Antigravity collection scans `antigravity/brain`, `antigravity-cli/brain`, and `antigravity-ide/brain`, classifies Antigravity events under `google-oauth` (subscription), and derives pure-generation `gen_ms` and `ttft_ms` from read-only sibling `conversations/<id>.db` step timestamp metadata (never reading conversation content). `omnitoken statusline` captures official Antigravity CLI `quota` buckets (`gemini-5h`, `gemini-weekly`, `gemini-argon-wtu-weekly`, `3p-5h`, `3p-weekly`) via the documented `statusLine` hook (`-setup -target antigravity`, wrapping existing status lines such as `agy-powerline`), feeding authoritative `quota_snapshots` and ADR-0025/0034 capacity learning. Web and macOS menu-bar quota views display Antigravity alongside Claude and Codex once authoritative readings exist, and allow drilling into per-bucket official quotas in the detail drawer / adjacent detail window.

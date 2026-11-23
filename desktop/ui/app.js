@@ -309,9 +309,13 @@ function renderQuotas() {
     return;
   }
   root.innerHTML = quotas
-    .map(
-      (quota) =>
-        `<section class="quota-group" data-source="${esc(quota.source)}"><div class="quota-source">${brand(quota.source)}</div>${QUOTA_WINDOWS.map(
+    .map((quota) => {
+      const hasBuckets = Array.isArray(quota.buckets) && quota.buckets.length > 0;
+      const detailKey = `quota:${quota.source}`;
+      const header = hasBuckets
+        ? `<button type="button" class="quota-source quota-source-btn" data-detail="${esc(detailKey)}" aria-controls="detail-panel" aria-expanded="${selectedDetail === detailKey}">${brand(quota.source)}<span class="quota-bucket-hint">分组</span><span class="chevron" aria-hidden="true">›</span></button>`
+        : `<div class="quota-source">${brand(quota.source)}</div>`;
+      return `<section class="quota-group" data-source="${esc(quota.source)}">${header}${QUOTA_WINDOWS.map(
           (window) => {
             const percent = quota[`${window.key}_percent`];
             const severity = quotaSeverity(percent);
@@ -342,8 +346,8 @@ function renderQuotas() {
       <span class="quota-remainder" title="预估剩余额度（tokens）">${finite(remaining) ? compact(remaining) : "暂无估算"}</span>
       <span class="quota-reset">${quotaResetLabel(quota[`${window.key}_resets_at_ms`])}</span></div><!--quota-window-->`;
           },
-        ).join("")}</section>`,
-    )
+        ).join("")}</section>`;
+    })
     .join("");
 }
 
@@ -620,6 +624,7 @@ function renderSelectedDetail() {
     $("panel-footer").hidden = !!inlineDetail;
   }
   $("source-detail").hidden = !selectedDetail?.startsWith("source:");
+  $("quota-detail").hidden = !selectedDetail?.startsWith("quota:");
   $("speed-detail").hidden = selectedDetail !== "speed";
   $("devices-detail").hidden = selectedDetail !== "devices";
   if (document.querySelectorAll)
@@ -666,6 +671,48 @@ function renderSelectedDetail() {
               .join("")
           : `<div class="empty">${known ? "今日暂无模型用量" : "来源明细不可用"}</div>`
       }</section><section class="detail-note">包含输入、输出与缓存 tokens；与官方配额计量口径不同。</section>`;
+  } else if (selectedDetail.startsWith("quota:")) {
+    const source = selectedDetail.slice(6);
+    panel.dataset.source = source;
+    const quota = ((latestLive && latestLive.quotas) || []).find(
+      (item) => item && item.source === source,
+    );
+    const buckets = (quota && Array.isArray(quota.buckets) && quota.buckets) || [];
+    $("detail-title").innerHTML =
+      `<span class="detail-title-brand">${brand(source)} · 官方配额分组</span>`;
+    $("detail-subtitle").textContent = "各模型池官方已用百分比与重置倒计时";
+    $("quota-detail").innerHTML = buckets.length
+      ? `${buckets
+          .map((b) => {
+            const pct = b.used_percent;
+            const severity = quotaSeverity(pct);
+            const risk = severity || "normal";
+            const hint =
+              pct >= 100
+                ? "已满"
+                : pct >= 90
+                  ? "紧张"
+                  : pct >= 80
+                    ? "较高"
+                    : pct >= 70
+                      ? "留意"
+                      : "";
+            const winLabel =
+              b.window_minutes === 300
+                ? "5h"
+                : b.window_minutes === 10080
+                  ? "Week"
+                  : `${b.window_minutes || "?"}m`;
+            const elapsed = quotaElapsed(pct, b.resets_at_ms, b.window_minutes);
+            const timeText = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
+            const marker =
+              elapsed == null
+                ? ""
+                : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
+            return `<div class="quota-bucket-row" data-risk="${risk}"><div class="quota-bucket-head"><strong>${esc(b.label || b.scope)} · ${winLabel}</strong><span class="quota-bucket-val"><strong class="fig" data-severity="${severity}">${percentLabel(pct)}</strong>${hint ? `<small>${hint}</small>` : ""}</span></div><div class="quota-meter" role="progressbar" aria-label="${esc(b.label || b.scope)} ${winLabel} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}" aria-valuetext="${percentLabel(pct)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"><div class="quota-meter-fill" style="width:${Math.min(pct, 100)}%"></div>${marker}</div><div class="secondary quota-bucket-reset">距重置 ${quotaResetLabel(b.resets_at_ms)}</div></div>`;
+          })
+          .join("")}<section class="detail-note">来自官方 statusLine 实时上报；蓝色刻度为窗口已过去时间比例。</section>`
+      : '<div class="empty">暂无官方配额分桶读数</div>';
   } else {
     delete panel.dataset.source;
     $("detail-title").textContent =
@@ -724,6 +771,7 @@ async function openDetail(kind) {
   if (generation !== detailGeneration) return;
   renderSelectedDetail();
   renderDailyUsage();
+  renderQuotas();
   fitWindow();
 }
 function closeDetail() {
@@ -735,6 +783,7 @@ function closeDetail() {
   renderSelectedDetail();
   if (!DETAIL_WINDOW) {
     renderDailyUsage();
+    renderQuotas();
     fitWindow();
     if (previous && document.querySelectorAll)
       [...document.querySelectorAll("[data-detail]")]
@@ -760,9 +809,11 @@ function resizeDetail() {
   const content = $(
     selectedDetail.startsWith("source:")
       ? "source-detail"
-      : selectedDetail === "speed"
-        ? "speed-detail"
-        : "devices-detail",
+      : selectedDetail.startsWith("quota:")
+        ? "quota-detail"
+        : selectedDetail === "speed"
+          ? "speed-detail"
+          : "devices-detail",
   );
   const height = Math.ceil(
     content.scrollHeight +

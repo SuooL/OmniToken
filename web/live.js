@@ -247,7 +247,13 @@ const Live = {
   },
 
   renderQuotas(quotas, windows) {
-    ToolUI.updateHTML(document.getElementById("quota-row"), (this.connectionStale ? '<p class="subtle">连接中断 · 显示上次成功读数</p>' : "") + QuotaUI.render(windows || [], quotas || []));
+    this._liveQuotas = quotas || [];
+    const el = document.getElementById("quota-row");
+    QuotaUI.bindSourceDetail?.(el, () => this._liveQuotas || []);
+    ToolUI.updateHTML(el, (this.connectionStale ? '<p class="subtle">连接中断 · 显示上次成功读数</p>' : "") + QuotaUI.render(windows || [], this._liveQuotas));
+    for (const source of new Set(this._liveQuotas.map((q) => q.source).filter(Boolean))) {
+      DetailDrawer.update?.(`quota-source:${source}`, QuotaUI.renderSourceDetail?.(source, this._liveQuotas) || "");
+    }
   },
 
   // Ground truth from the machines' own process tables (ADR-0012), as opposed
