@@ -82,7 +82,12 @@ function repoLabel(key, cwd) {
 
 // Display name for a collection source. The stored value stays `claude-code`;
 // this only makes it read as one word beside `codex`.
-const SOURCE_LABELS = { "claude-code": "claude", dsh: "deepseek" };
+const SOURCE_LABELS = {
+  "claude-code": "claude",
+  dsh: "deepseek",
+  antigravity: "antigravity",
+  gemini: "gemini",
+};
 function sourceLabel(s) {
   return SOURCE_LABELS[s] || s;
 }

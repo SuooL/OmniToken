@@ -38,6 +38,13 @@ const (
 	// ProviderOpenAI: the first-party OpenAI endpoint with the payment method
 	// undetermined — the Codex counterpart of ProviderAnthropic.
 	ProviderOpenAI = "openai"
+	// ProviderGoogleOAuth: first-party Google endpoint authenticated via OAuth.
+	ProviderGoogleOAuth = "google-oauth"
+	// ProviderGoogleAPI: first-party Google Gemini API billed per token via API key.
+	ProviderGoogleAPI = "google-api"
+	// ProviderGoogle: first-party Google endpoint (Antigravity / Gemini CLI) with
+	// payment method undetermined (ADR-0042).
+	ProviderGoogle = "google"
 	// ProviderBedrock / ProviderVertex: first-party managed hosting. Nothing
 	// currently produces these labels; they remain in the taxonomy because the
 	// database still holds rows carrying them and because ADR-0018 §4 records
@@ -74,13 +81,16 @@ const (
 var providerChannel = map[string]string{
 	ProviderAnthropicOAuth: ChannelSubscription,
 	ProviderOpenAIChatGPT:  ChannelSubscription,
+	ProviderGoogleOAuth:    ChannelSubscription,
 	ProviderAnthropicAPI:   ChannelAPI,
 	ProviderOpenAIAPI:      ChannelAPI,
+	ProviderGoogleAPI:      ChannelAPI,
 	ProviderBedrock:        ChannelAPI,
 	ProviderVertex:         ChannelAPI,
 	ProviderRelay:          ChannelRelay,
 	ProviderAnthropic:      ChannelUnknown,
 	ProviderOpenAI:         ChannelUnknown,
+	ProviderGoogle:         ChannelUnknown,
 	ProviderUnknown:        ChannelUnknown,
 	"":                     ChannelUnknown,
 }
@@ -157,9 +167,10 @@ func RankedProviders() []string {
 	return []string{
 		ProviderBedrock, ProviderVertex,
 		ProviderUnknown, "",
-		ProviderAnthropic, ProviderOpenAI,
+		ProviderAnthropic, ProviderOpenAI, ProviderGoogle,
 		ProviderAnthropicOAuth, ProviderAnthropicAPI,
 		ProviderOpenAIChatGPT, ProviderOpenAIAPI,
+		ProviderGoogleOAuth, ProviderGoogleAPI,
 		ProviderRelay,
 	}
 }
@@ -173,9 +184,9 @@ func ProviderRank(provider string) int {
 	switch provider {
 	case ProviderRelay:
 		return rankNotFirstParty
-	case ProviderAnthropicOAuth, ProviderAnthropicAPI, ProviderOpenAIChatGPT, ProviderOpenAIAPI:
+	case ProviderAnthropicOAuth, ProviderAnthropicAPI, ProviderOpenAIChatGPT, ProviderOpenAIAPI, ProviderGoogleOAuth, ProviderGoogleAPI:
 		return rankBilling
-	case ProviderAnthropic, ProviderOpenAI:
+	case ProviderAnthropic, ProviderOpenAI, ProviderGoogle:
 		return rankEndpoint
 	case ProviderBedrock, ProviderVertex:
 		return rankFingerprint

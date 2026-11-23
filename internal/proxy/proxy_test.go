@@ -372,9 +372,15 @@ func TestProxyProviderFollowsCredentialShape(t *testing.T) {
 		// (model.BillingChannel reads any unknown prefix as relay).
 		{"custom prefix", "myrelay",
 			hdr("Authorization", "Bearer sk-whatever"), "myrelay"},
+		{"google api key header", "google",
+			hdr("x-goog-api-key", "AIzaSyTest"), "google-api"},
+		{"gemini oauth bearer", "gemini",
+			hdr("Authorization", "Bearer ya29.test"), "google-oauth"},
+		{"unrecognised shape google", "google",
+			hdr("Authorization", "Bearer opaque-token"), "google"},
 	}
 	for _, c := range cases {
-		if got := proxyProvider(c.prefix, c.h); got != c.want {
+		if got := proxyProvider(c.prefix, c.h, nil); got != c.want {
 			t.Errorf("%s: provider = %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -547,4 +553,100 @@ func TestProxyWithholdsDurationOnSharedRows(t *testing.T) {
 	if ev.GenMS <= 0 || ev.TTFTMS <= 0 {
 		t.Errorf("gen_ms/ttft_ms = %d/%d, want the measured span in both", ev.GenMS, ev.TTFTMS)
 	}
+}
+
+func TestProxyGeminiNonStreamAndSSE(t *testing.T) {
+	t.Run("non-stream x-goog-api-key", func(t *testing.T) {
+		const respBody = `{"modelVersion":"gemini-2.5-pro","usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":600,"candidatesTokenCount":120,"thoughtsTokenCount":80,"toolUsePromptTokenCount":25,"totalTokenCount":1225}}`
+		var gotPath string
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			time.Sleep(5 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, respBody)
+		}))
+		defer up.Close()
+
+		trap := &eventTrap{}
+		px := newTestProxy(t, map[string]string{"google": up.URL}, trap.sink)
+		req, _ := http.NewRequest("POST", px.URL+"/google/v1beta/models/gemini-2.5-pro:generateContent", strings.NewReader(`{"contents":[]}`))
+		req.Header.Set("x-goog-api-key", "AIzaSyTestKey123")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if gotPath != "/v1beta/models/gemini-2.5-pro:generateContent" {
+			t.Fatalf("upstream path = %q", gotPath)
+		}
+		waitCalls(t, trap, 1)
+		ev := trap.call(0)[0]
+		if ev.Model != "gemini-2.5-pro" {
+			t.Errorf("model = %q", ev.Model)
+		}
+		if ev.Provider != model.ProviderGoogleAPI {
+			t.Errorf("provider = %q, want %q", ev.Provider, model.ProviderGoogleAPI)
+		}
+		sum := sha256.Sum256([]byte("AIzaSyTestKey123"))
+		if wantLabel := hex.EncodeToString(sum[:])[:12]; ev.AccountLabel != wantLabel {
+			t.Errorf("account_label = %q, want %q", ev.AccountLabel, wantLabel)
+		}
+		// input = (1000-600)+25 = 425, cacheRead = 600, output = 120+80 = 200
+		if ev.InputTokens != 425 || ev.CacheReadTokens != 600 || ev.OutputTokens != 200 {
+			t.Errorf("tokens = in:%d cr:%d out:%d, want 425/600/200", ev.InputTokens, ev.CacheReadTokens, ev.OutputTokens)
+		}
+		if ev.GenMS <= 0 || ev.TTFTMS <= 0 {
+			t.Errorf("expected positive timing, got gen=%d ttft=%d", ev.GenMS, ev.TTFTMS)
+		}
+	})
+
+	t.Run("sse query key and modelVersion fallback", func(t *testing.T) {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			io.WriteString(w, "data: {\"modelVersion\":\"gemini-2.5-flash\",\"usageMetadata\":{\"promptTokenCount\":200,\"candidatesTokenCount\":10}}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(5 * time.Millisecond)
+			io.WriteString(w, "data: {\"modelVersion\":\"gemini-2.5-flash\",\"usageMetadata\":{\"promptTokenCount\":200,\"cachedContentTokenCount\":50,\"candidatesTokenCount\":40,\"thoughtsTokenCount\":15}}\n\n")
+		}))
+		defer up.Close()
+
+		trap := &eventTrap{}
+		px := newTestProxy(t, map[string]string{"gemini": up.URL}, trap.sink)
+		req, _ := http.NewRequest("POST", px.URL+"/gemini/v1beta/generate?alt=sse&key=AIzaQueryKey", strings.NewReader(`{}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		waitCalls(t, trap, 1)
+		ev := trap.call(0)[0]
+		if ev.Model != "gemini-2.5-flash" {
+			t.Errorf("model = %q, want modelVersion fallback", ev.Model)
+		}
+		if ev.Provider != model.ProviderGoogleAPI {
+			t.Errorf("provider = %q, want google-api", ev.Provider)
+		}
+		if ev.InputTokens != 150 || ev.CacheReadTokens != 50 || ev.OutputTokens != 55 {
+			t.Errorf("tokens = in:%d cr:%d out:%d, want 150/50/55", ev.InputTokens, ev.CacheReadTokens, ev.OutputTokens)
+		}
+	})
+
+	t.Run("oauth and undetermined google provider", func(t *testing.T) {
+		if got := proxyProvider("google", http.Header{"Authorization": {"Bearer ya29.test"}}, nil); got != model.ProviderGoogleOAuth {
+			t.Errorf("ya29 oauth = %q", got)
+		}
+		if got := proxyProvider("gemini", http.Header{}, nil); got != model.ProviderGoogle {
+			t.Errorf("no cred google = %q", got)
+		}
+		if got := extractProxyModelFromPath("/v1beta/models/gemini-3-flash/extra"); got != "gemini-3-flash" {
+			t.Errorf("path model with slash = %q", got)
+		}
+	})
 }

@@ -22,6 +22,8 @@ func TestLookupNormalization(t *testing.T) {
 		"us.anthropic.claude-sonnet-4-20250514-v1:0", // full bedrock form
 		"gpt-5.6-sol",
 		"gpt-5.5",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
 	}
 	for _, m := range cases {
 		if _, ok := tb.Lookup(m); !ok {
@@ -113,5 +115,23 @@ func TestDeepSeekFlashReportedNames(t *testing.T) {
 	p, _ = tb.Lookup("DeepSeek-V4.1-Flash")
 	if p.Input != 2e-7 {
 		t.Fatal("exact override lost")
+	}
+}
+
+func TestGeminiProviderPrefixes(t *testing.T) {
+	tb := &Table{prices: map[string]Price{
+		"gemini/gemini-prefixed":    {Input: 1e-6, Output: 4e-6},
+		"vertex_ai/gemini-vertex":   {Input: 2e-6, Output: 8e-6},
+		"google/gemini-google-only": {Input: 3e-6, Output: 9e-6},
+	}, cache: map[string]*Price{}}
+	for model, wantOut := range map[string]float64{
+		"gemini-prefixed":    4e-6,
+		"gemini-vertex":      8e-6,
+		"gemini-google-only": 9e-6,
+	} {
+		p, ok := tb.Lookup(model)
+		if !ok || p.Output != wantOut {
+			t.Errorf("Lookup(%q) = %+v ok=%v, want out=%g", model, p, ok, wantOut)
+		}
 	}
 }

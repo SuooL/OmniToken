@@ -393,3 +393,57 @@ func TestSSHHostSinceTime(t *testing.T) {
 		t.Error("a malformed since was accepted; it must be rejected")
 	}
 }
+
+func TestLocalSpecsScanAntigravityAndGemini(t *testing.T) {
+	root := t.TempDir()
+	agyRoot := filepath.Join(root, "brain")
+	agyLogs := filepath.Join(agyRoot, "conv-uuid-1", ".system_generated", "logs")
+	if err := os.MkdirAll(filepath.Join(agyLogs, "chunks", "transcript"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agyLine := `{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-23T02:18:50Z","model":"gemini-4-neon-high","input_tokens":500,"cache_read_tokens":100,"output_tokens":50}` + "\n"
+	if err := os.WriteFile(filepath.Join(agyLogs, "transcript.jsonl"), []byte(agyLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate copies that MatchFile must exclude.
+	if err := os.WriteFile(filepath.Join(agyLogs, "transcript_full.jsonl"), []byte(agyLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agyLogs, "chunks", "transcript", "c0.jsonl"), []byte(agyLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gemRoot := filepath.Join(root, "gemini-tmp")
+	gemChats := filepath.Join(gemRoot, "proj-1", "chats")
+	if err := os.MkdirAll(gemChats, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gemSession := `{"sessionId":"gem-sess-1","startTime":"2026-11-23T02:20:00Z","messages":[{"id":"m1","timestamp":"2026-11-23T02:20:05Z","type":"gemini","model":"gemini-2.5-pro","tokens":{"input":300,"output":40,"cached":100,"thoughts":10,"total":350}}]}`
+	if err := os.WriteFile(filepath.Join(gemChats, "session-1.json"), []byte(gemSession), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	specs := LocalSpecs(nil, nil, nil, []string{agyRoot}, []string{gemRoot}, nil)
+	st := loadScanState(t, filepath.Join(root, "state.json"))
+	var got []model.Event
+	n, err := ScanSources(specs, "mac", st, nil, func(evs []model.Event) error {
+		got = append(got, evs...)
+		return nil
+	}, nil, time.Time{})
+	if err != nil {
+		t.Fatalf("ScanSources: %v", err)
+	}
+	if n != 2 || len(got) != 2 {
+		t.Fatalf("got %d events (%+v), want 2 (1 antigravity + 1 gemini)", len(got), got)
+	}
+	bySource := map[string]model.Event{}
+	for _, ev := range got {
+		bySource[ev.Source] = ev
+	}
+	if agy := bySource["antigravity"]; agy.SessionID != "conv-uuid-1" || agy.InputTokens != 500 || agy.CacheReadTokens != 100 {
+		t.Errorf("antigravity event = %+v", agy)
+	}
+	if gem := bySource["gemini"]; gem.SessionID != "gem-sess-1" || gem.InputTokens != 200 || gem.CacheReadTokens != 100 || gem.OutputTokens != 50 {
+		t.Errorf("gemini event = %+v", gem)
+	}
+}

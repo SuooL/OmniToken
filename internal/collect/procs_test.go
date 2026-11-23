@@ -124,6 +124,9 @@ func TestToolForRejectsLookalikes(t *testing.T) {
 		"/Users/x/.local/share/claude/versions/2.1.121": "claude-code",
 		"node /usr/lib/node_modules/codex/bin/codex.js": "codex",
 		"/opt/homebrew/bin/codex exec":                  "codex",
+		"node /opt/homebrew/bin/gemini":                 "gemini",
+		"/usr/local/bin/gemini --model gemini-2.5-pro":  "gemini",
+		"/usr/local/bin/agy chat":                       "antigravity",
 	} {
 		if tool := toolFor(cmd); tool != want {
 			t.Errorf("toolFor(%q) = %q, want %q", cmd, tool, want)

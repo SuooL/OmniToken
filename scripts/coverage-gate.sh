@@ -30,6 +30,8 @@ CRITICAL=(
   "internal/parser/codex:90"
   "internal/parser/claudecode:80"
   "internal/parser/dsh:85"
+  "internal/parser/antigravity:85"
+  "internal/parser/gemini:85"
   "internal/proxy:88"
 )
 

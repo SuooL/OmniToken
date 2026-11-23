@@ -62,6 +62,8 @@ LLM 编码工具(Claude Code、Codex 等)及直接 API 调用。现有工具的�
 | F26 | 访问控制:默认 `listen` 为 `127.0.0.1:8787`;监听非 loopback 地址时读接口与写接口共用同一个 bearer token,未配 token 则启动即拒绝;判定由监听地址推导而非开关。`/api/v1/health` 与面板外壳保持免鉴权,`?access_token=` 仅 `/api/v1/stream` 接受(ADR-0016) | **P0** | ✅ 多设备汇集(F3)的前置条件 |
 | F27 | DeepSeek Harness(dsh)日志解析:被动读 `~/.dsh/sessions/**/session.jsonl.zstd`(zstd 压缩 JSONL),不侵入 dsh 配置、不走代理。每条 `assistant/message` 出一个事件,token 四分量取 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`(`reasoningTokens` 是 output 子集,不另计);模型与 provider 取同 turn/step 的 `request/context`;`event_id = f(session_id, seq)` 保证重扫幂等;dsh 迁移日志格式时会复制旧会话且可能重编 `seq`,故另产出 `dedup_key = f(session_id, time, 四分量)`,同一次生成只计一次(ADR-0041);source=`dsh`。dsh 里 provider 是用户自取的 ID(如 `deepseek-official`/`openai-codex`),均经用户配置的 API key 调用,故计费通道一律记为非订阅(官方 API / 第三方中转),绝不记订阅(ADR-0029)。生成速度与 TTFT 见 F15(ADR-0040) | P2 | ✅ |
 | F28 | 站点独立认证:单用户、短时一次性登录码、Mac 平台 Passkey 注册及登录、独立安全会话、退出撤销;CLI 生成恢复码,不依赖 auth.suool.net,不提供公开注册;设备和桌面端 bearer 凭据保持独立(ADR-0036) | P1 | M13 |
+| F29 | Google Antigravity 与 Gemini 统计:拆分为 `antigravity`(被动增量读 `~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl`)与 `gemini`(读 `~/.gemini/tmp` 会话 JSON/JSONL,语义对齐 ccusage)两个一等来源;本地 API 代理新增 `/google`、`/gemini` 上游路由解析 `usageMetadata` 与精确 TTFT/耗时;定价表支持 `gemini/`、`vertex_ai/`、`google/` 前缀;Web 九页与 macOS 菜单栏全栈展示独立图标与配色(ADR-0042) | P1 | M14 ✅ |
+| F30 | Hub / Agent 按需自更新与 CI 自动部署:`omnitoken self-update` 子命令支持检查版本、SHA-256 校验、原子替换二进制与可选 systemd/launchd 重启;发版工作流完成后由 GitHub Actions 自动经 SSH 部署线上 Hub(含内嵌 Web)并带健康检查自动回滚;不做后台定时轮询(ADR-0043) | P1 | M15 ✅ |
 
 F24 菜单栏主面板使用纵向来源行，不再使用来源卡片网格。今日使用按服务端配置时区
 的零点至今统计；Claude / Codex / DeepSeek 和其他有用量来源展示各自总量，只有有效的
@@ -161,3 +163,7 @@ in the selected window, in the same source order as Web. Official quota tracks u
 marker as Web, including 5h/week and hover/focus percentage only; missing or
 expired reset bounds have no marker. Existing risk colors and quota values stay
 independent of elapsed time.
+
+### Desktop release architecture
+
+The shared macOS updater archive must contain both ARM64 and x86_64 slices. Validate both architectures and the app resource signature before publishing either platform entry.

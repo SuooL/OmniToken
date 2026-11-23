@@ -47,6 +47,8 @@ const (
 var defaultUpstreams = map[string]string{
 	"anthropic": "https://api.anthropic.com",
 	"openai":    "https://api.openai.com",
+	"google":    "https://generativelanguage.googleapis.com",
+	"gemini":    "https://generativelanguage.googleapis.com",
 }
 
 // Config configures the local forwarding proxy.
@@ -135,6 +137,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqModel := extractProxyModel(body)
+	if reqModel == "" {
+		reqModel = extractProxyModelFromPath(rest)
+	}
 
 	target := *baseURL
 	target.Path = strings.TrimSuffix(baseURL.Path, "/") + rest
@@ -206,8 +211,8 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Device:              p.device,
 		Source:              Source,
 		Model:               m,
-		Provider:            proxyProvider(prefix, r.Header),
-		AccountLabel:        proxyAccountLabel(r.Header),
+		Provider:            proxyProvider(prefix, r.Header, r.URL.Query()),
+		AccountLabel:        proxyAccountLabel(r.Header, r.URL.Query()),
 		InputTokens:         u.input,
 		OutputTokens:        u.output,
 		CacheReadTokens:     u.cacheRead,
@@ -256,10 +261,10 @@ func splitProxyPrefix(path string) (prefix, rest string) {
 // the undetermined first-party one — which ADR-0005 counts as equivalent value.
 // Guessing "API key" costs real money on the report; guessing "subscription"
 // only understates a figure that is already labelled an estimate.
-func proxyProvider(prefix string, h http.Header) string {
+func proxyProvider(prefix string, h http.Header, query url.Values) string {
 	switch prefix {
 	case "anthropic":
-		switch credentialKind(h) {
+		switch credentialKind(h, query) {
 		case credAPIKey:
 			return "anthropic-api"
 		case credOAuth:
@@ -267,13 +272,21 @@ func proxyProvider(prefix string, h http.Header) string {
 		}
 		return "anthropic"
 	case "openai":
-		switch credentialKind(h) {
+		switch credentialKind(h, query) {
 		case credAPIKey:
 			return "openai-api"
 		case credOAuth:
 			return model.ProviderOpenAIChatGPT // Codex on a ChatGPT plan
 		}
 		return "openai"
+	case "google", "gemini":
+		switch credentialKind(h, query) {
+		case credAPIKey:
+			return model.ProviderGoogleAPI
+		case credOAuth:
+			return model.ProviderGoogleOAuth
+		}
+		return model.ProviderGoogle
 	default:
 		return prefix
 	}
@@ -299,9 +312,9 @@ const (
 //
 // An unrecognised shape returns "" so the caller stays undetermined instead of
 // inventing a billing channel.
-func credentialKind(h http.Header) string {
-	if h.Get("x-api-key") != "" {
-		return credAPIKey // Anthropic's API-key header; OAuth never uses it
+func credentialKind(h http.Header, query url.Values) string {
+	if h.Get("x-api-key") != "" || h.Get("x-goog-api-key") != "" || query.Get("key") != "" {
+		return credAPIKey // API-key header or Gemini ?key= query param; OAuth never uses these
 	}
 	tok := strings.TrimSpace(strings.TrimPrefix(h.Get("Authorization"), "Bearer "))
 	switch {
@@ -309,22 +322,30 @@ func credentialKind(h http.Header) string {
 		return ""
 	case strings.HasPrefix(tok, "sk-ant-oat"):
 		return credOAuth
-	case strings.HasPrefix(tok, "eyJ"): // JWT — how ChatGPT plans authenticate
+	case strings.HasPrefix(tok, "ya29."): // Google OAuth2 access token
 		return credOAuth
-	case strings.HasPrefix(tok, "sk-"):
+	case strings.HasPrefix(tok, "eyJ"): // JWT — how ChatGPT / OAuth plans authenticate
+		return credOAuth
+	case strings.HasPrefix(tok, "sk-"), strings.HasPrefix(tok, "AIza"):
 		return credAPIKey
 	}
 	return ""
 }
 
 // proxyAccountLabel fingerprints the credential without ever storing it:
-// SHA-256 of the raw Authorization (or x-api-key) header value, first 12 hex
-// — enough to tell accounts apart, and one-way even against a candidate-key
-// list. The plaintext key never leaves this function.
-func proxyAccountLabel(h http.Header) string {
+// SHA-256 of the raw Authorization / API-key header (or Gemini ?key= param),
+// first 12 hex — enough to tell accounts apart, and one-way even against a
+// candidate-key list. The plaintext key never leaves this function.
+func proxyAccountLabel(h http.Header, query url.Values) string {
 	key := h.Get("Authorization")
 	if key == "" {
 		key = h.Get("x-api-key")
+	}
+	if key == "" {
+		key = h.Get("x-goog-api-key")
+	}
+	if key == "" {
+		key = query.Get("key")
 	}
 	if key == "" {
 		return ""
@@ -369,6 +390,24 @@ func extractProxyModel(body []byte) string {
 	return v.Model
 }
 
+// extractProxyModelFromPath parses Gemini-style REST paths such as
+// /v1beta/models/gemini-2.5-pro:generateContent or /v1/models/gemini-2.5-flash.
+func extractProxyModelFromPath(rest string) string {
+	const marker = "/models/"
+	i := strings.Index(rest, marker)
+	if i < 0 {
+		return ""
+	}
+	tail := rest[i+len(marker):]
+	if slash := strings.IndexByte(tail, '/'); slash >= 0 {
+		tail = tail[:slash]
+	}
+	if colon := strings.IndexByte(tail, ':'); colon >= 0 {
+		tail = tail[:colon]
+	}
+	return strings.TrimSpace(tail)
+}
+
 func writeProxyErr(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -391,6 +430,15 @@ type proxyWireUsage struct {
 	PromptTokensDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+}
+
+// geminiWireUsage mirrors Google Gemini's usageMetadata payload.
+type geminiWireUsage struct {
+	PromptTokenCount        int64 `json:"promptTokenCount"`
+	CachedContentTokenCount int64 `json:"cachedContentTokenCount"`
+	CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
+	ThoughtsTokenCount      int64 `json:"thoughtsTokenCount"`
+	ToolUsePromptTokenCount int64 `json:"toolUsePromptTokenCount"`
 }
 
 type proxyTokens struct {
@@ -444,19 +492,23 @@ func (o *usageObserver) sseLine(line string) {
 		return
 	}
 	var ev struct {
-		Model   string `json:"model"`
-		Message *struct {
+		Model        string `json:"model"`
+		ModelVersion string `json:"modelVersion"`
+		Message      *struct {
 			ID    string          `json:"id"` // half of the shared event_id (ADR-0013)
 			Model string          `json:"model"`
 			Usage *proxyWireUsage `json:"usage"`
 		} `json:"message"` // Anthropic message_start wraps usage in message
-		Usage *proxyWireUsage `json:"usage"` // Anthropic message_delta / OpenAI chunks
+		Usage         *proxyWireUsage  `json:"usage"`         // Anthropic message_delta / OpenAI chunks
+		UsageMetadata *geminiWireUsage `json:"usageMetadata"` // Google Gemini SSE chunks
 	}
 	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 		return // never let a malformed event affect forwarding or later events
 	}
 	if ev.Model != "" {
 		o.model = ev.Model
+	} else if ev.ModelVersion != "" {
+		o.model = ev.ModelVersion
 	}
 	if ev.Message != nil {
 		if ev.Message.ID != "" {
@@ -472,6 +524,16 @@ func (o *usageObserver) sseLine(line string) {
 	if ev.Usage != nil {
 		o.merge(ev.Usage)
 	}
+	if ev.UsageMetadata != nil {
+		o.mergeGemini(ev.UsageMetadata)
+	}
+}
+
+func (o *usageObserver) mergeGemini(u *geminiWireUsage) {
+	cached := min(u.CachedContentTokenCount, u.PromptTokenCount)
+	o.acc.input = (u.PromptTokenCount - cached) + u.ToolUsePromptTokenCount
+	o.acc.cacheRead = cached
+	o.acc.output = u.CandidatesTokenCount + u.ThoughtsTokenCount
 }
 
 // merge folds one usage payload into the accumulator.
@@ -513,9 +575,11 @@ func (o *usageObserver) merge(u *proxyWireUsage) {
 func (o *usageObserver) result() (proxyTokens, string, string) {
 	if !o.sse && o.raw.Len() > 0 {
 		var v struct {
-			ID    string          `json:"id"`
-			Model string          `json:"model"`
-			Usage *proxyWireUsage `json:"usage"`
+			ID            string           `json:"id"`
+			Model         string           `json:"model"`
+			ModelVersion  string           `json:"modelVersion"`
+			Usage         *proxyWireUsage  `json:"usage"`
+			UsageMetadata *geminiWireUsage `json:"usageMetadata"`
 		}
 		if err := json.Unmarshal(o.raw.Bytes(), &v); err == nil {
 			if v.ID != "" {
@@ -523,9 +587,14 @@ func (o *usageObserver) result() (proxyTokens, string, string) {
 			}
 			if v.Model != "" {
 				o.model = v.Model
+			} else if v.ModelVersion != "" {
+				o.model = v.ModelVersion
 			}
 			if v.Usage != nil {
 				o.merge(v.Usage)
+			}
+			if v.UsageMetadata != nil {
+				o.mergeGemini(v.UsageMetadata)
 			}
 		}
 	}

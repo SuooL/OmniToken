@@ -8,6 +8,8 @@ const SourceUI = {
     claude: { label: "Claude", color: "--tool-claude", logo: "claude" },
     codex: { label: "Codex", color: "--tool-codex", logo: "codex" },
     dsh: { label: "DeepSeek", color: "--tool-dsh", logo: "deepseek" },
+    antigravity: { label: "Antigravity", color: "--tool-antigravity", logo: "antigravity" },
+    gemini: { label: "Gemini", color: "--tool-gemini", logo: "gemini" },
   },
   identity(source) {
     return (
@@ -65,7 +67,7 @@ const QuotaUI = {
     windows = windows.map((row) =>
       row.kind === "subscription" &&
       !row.source &&
-      ["claude-code", "codex", "dsh"].includes(row.key)
+      ["claude-code", "codex", "dsh", "antigravity", "gemini"].includes(row.key)
         ? { ...row, source: row.key }
         : row,
     );

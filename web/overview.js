@@ -221,7 +221,7 @@ const Overview = {
       .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
       .map(speedSourceKey)));
     const sourceKeys = [...new Set([
-      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+      "claude-code", "codex", "dsh", "antigravity", "gemini", ...[...contributed].sort(),
     ])].filter((source) => contributed.has(source));
     const liveSources = liveSpeed.sources || [];
     const visibleSum = liveSources.reduce((sum, row) => sum + (row.contribution_tps || 0), 0);

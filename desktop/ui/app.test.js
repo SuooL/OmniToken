@@ -412,7 +412,9 @@ test("daily cards show all models safely and preserve empty known sources", () =
     },
   });
   const html = document.getElementById("today-sources").innerHTML;
-  assert.equal((html.match(/<button/g) || []).length, 3);
+  assert.equal((html.match(/<button/g) || []).length, 5);
+  assert.match(html, /data-source="antigravity"[\s\S]*?icons\/antigravity\.svg/);
+  assert.match(html, /data-source="gemini"[\s\S]*?icons\/gemini\.svg/);
   receiveDetail({
     kind: "source:dsh",
     telemetry: {
@@ -447,7 +449,7 @@ test("older server payloads never invent source attribution from model names", (
   });
   const html = document.getElementById("today-sources").innerHTML;
   assert.ok(!html.includes("claude-opus"));
-  assert.equal((html.match(/>—<\/strong>/g) || []).length, 3);
+  assert.equal((html.match(/>—<\/strong>/g) || []).length, 5);
   assert.ok(!html.includes("不可用"));
 });
 
