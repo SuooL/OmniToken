@@ -87,6 +87,10 @@
   --source-codex-deep: #315b8e;
   --source-dsh: #35c4a3;
   --source-dsh-deep: #1c6b59;
+  --source-antigravity: #c49bff;
+  --source-antigravity-deep: #6b48b8;
+  --source-gemini: #67e4b9;
+  --source-gemini-deep: #257a5b;
   --source-api: #a982ee;
   --source-api-deep: #5f458f;
   --source-aggregate: #ff72a7;
@@ -143,4 +147,6 @@
   --tool-claude: #e9ac88;
   --tool-codex: #e4e9ee;
   --tool-dsh: #7596ff;
+  --tool-antigravity: #c49bff;
+  --tool-gemini: #67e4b9;
 }

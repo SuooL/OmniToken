@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suool/omnitoken/internal/parser/antigravity"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
 	"github.com/suool/omnitoken/internal/parser/dsh"
+	"github.com/suool/omnitoken/internal/parser/gemini"
 )
 
 // SSHHost is a remote machine mirrored over the user's existing SSH access.
@@ -54,32 +56,42 @@ func (h SSHHost) SinceTime() (time.Time, error) {
 // format; each lands in mirror/<device>/<kind>-<i>/ so the right parser can
 // be matched when scanning the mirror.
 var remotePullSets = []struct {
-	kind string
-	dirs []string
+	kind    string
+	dirs    []string
+	filters []string // optional rsync filter args; nil = default *.jsonl / *.jsonl.zstd
 }{
-	{"claude", []string{".claude/projects", ".config/claude/projects"}},
-	{"codex", []string{".codex/sessions", ".codex/archived_sessions"}},
-	{"dsh", []string{".dsh/sessions"}},
+	{"claude", []string{".claude/projects", ".config/claude/projects"}, nil},
+	{"codex", []string{".codex/sessions", ".codex/archived_sessions"}, nil},
+	{"dsh", []string{".dsh/sessions"}, nil},
+	{"antigravity", []string{".gemini/antigravity/brain"}, []string{"--exclude=chunks/", "--include=*/", "--include=transcript.jsonl", "--exclude=*"}},
+	{"gemini", []string{".gemini/tmp"}, []string{"--include=*/", "--include=*.json", "--include=*.jsonl", "--exclude=*"}},
 }
 
 // SyncSSHHost mirrors the remote log dirs under mirrorRoot/<name>/.
-// Only *.jsonl files are transferred; deletions are NOT propagated, so data
+// Only matched log files are transferred; deletions are NOT propagated, so data
 // survives locally even after remote log cleanup (cleanupPeriodDays).
 func SyncSSHHost(h SSHHost, mirrorRoot string) (string, error) {
 	dest := filepath.Join(mirrorRoot, h.DeviceName())
 	var lastErr error
 	synced := 0
 	for _, set := range remotePullSets {
+		filters := set.filters
+		if len(filters) == 0 {
+			filters = []string{"--include=*/", "--include=*.jsonl", "--include=*.jsonl.zstd", "--exclude=*"}
+		}
 		for i, rd := range set.dirs {
 			local := filepath.Join(dest, fmt.Sprintf("%s-%d", set.kind, i))
-			cmd := exec.Command("rsync",
+			args := []string{
 				"-az", "--timeout=30",
 				"-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
-				"--include=*/", "--include=*.jsonl", "--include=*.jsonl.zstd", "--exclude=*",
+			}
+			args = append(args, filters...)
+			args = append(args,
 				"--prune-empty-dirs",
 				fmt.Sprintf("%s:%s/", h.Host, rd),
 				local+"/",
 			)
+			cmd := exec.Command("rsync", args...)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				msg := strings.TrimSpace(string(out))
@@ -104,10 +116,14 @@ func MirrorSpecs(mirrorDest string) []SourceSpec {
 	claude := []string{filepath.Join(mirrorDest, "claude-0"), filepath.Join(mirrorDest, "claude-1")}
 	cx := []string{filepath.Join(mirrorDest, "codex-0"), filepath.Join(mirrorDest, "codex-1")}
 	dshDir := []string{filepath.Join(mirrorDest, "dsh-0")}
+	agyDir := []string{filepath.Join(mirrorDest, "antigravity-0")}
+	gemDir := []string{filepath.Join(mirrorDest, "gemini-0")}
 	return []SourceSpec{
 		{Dirs: claude, Parse: claudecode.Parse},
 		{Dirs: cx, Parse: codex.Parse, FullReparse: true},
 		{Dirs: dshDir, Parse: dsh.Parse, FullReparse: true},
+		{Dirs: agyDir, ParsePath: antigravity.ParsePath, Match: antigravity.MatchFile},
+		{Dirs: gemDir, ParsePath: gemini.ParsePath, Match: gemini.MatchFile, FullReparse: true},
 	}
 }
 

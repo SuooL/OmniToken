@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
+	"github.com/suool/omnitoken/internal/parser/antigravity"
 	"github.com/suool/omnitoken/internal/parser/claudecode"
 	"github.com/suool/omnitoken/internal/parser/codex"
 	"github.com/suool/omnitoken/internal/parser/dsh"
+	"github.com/suool/omnitoken/internal/parser/gemini"
 )
 
 const sinkBatch = 2000
@@ -34,6 +36,11 @@ type QuotaSink func([]model.QuotaSnapshot) error
 // the byte count consumed (excluding any trailing partial line).
 type ParseFunc func(r io.Reader, device string, turnStartMS int64) model.ParseResult
 
+// ParsePathFunc extends ParseFunc for log formats whose session identity lives
+// in the file path (Antigravity transcript.jsonl) or whose extension picks the
+// decoder (Gemini CLI .json vs .jsonl).
+type ParsePathFunc func(path string, r io.Reader, device string, turnStartMS int64) model.ParseResult
+
 // SourceSpec pairs a set of log directories with the parser for their format.
 // FullReparse marks formats whose lines are not self-contained (Codex rollout
 // files carry model/cwd context in header lines): on any growth the whole
@@ -42,6 +49,8 @@ type ParseFunc func(r io.Reader, device string, turnStartMS int64) model.ParseRe
 type SourceSpec struct {
 	Dirs        []string
 	Parse       ParseFunc
+	ParsePath   ParsePathFunc     // optional; takes precedence over Parse
+	Match       func(string) bool // optional; defaults to *.jsonl and *.jsonl.zstd
 	FullReparse bool
 }
 
@@ -53,7 +62,7 @@ type SourceSpec struct {
 // wrote the log, so answering for a remote host out of this host's config would
 // be a guess wearing the label of evidence — the same boundary RefineProvider
 // draws for the Claude probe. A nil probe leaves Codex on its built-in id.
-func LocalSpecs(claudeDirs, codexDirs, dshDirs []string, codexProbe func() CodexAuthProbe) []SourceSpec {
+func LocalSpecs(claudeDirs, codexDirs, dshDirs, antigravityDirs, geminiDirs []string, codexProbe func() CodexAuthProbe) []SourceSpec {
 	var trusted func(string) bool
 	if codexProbe != nil {
 		trusted = func(p string) bool { return codexProbe().Trusts(p) }
@@ -63,6 +72,10 @@ func LocalSpecs(claudeDirs, codexDirs, dshDirs []string, codexProbe func() Codex
 		{Dirs: codexDirs, Parse: codex.ParseWith(trusted), FullReparse: true},
 		// dsh files are zstd-compressed, reparsed whole each scan (ADR-0029).
 		{Dirs: dshDirs, Parse: dsh.Parse, FullReparse: true},
+		// Antigravity compact transcripts are append-only JSONL (ADR-0042).
+		{Dirs: antigravityDirs, ParsePath: antigravity.ParsePath, Match: antigravity.MatchFile},
+		// Gemini CLI rewrites session-*.json in place, so FullReparse (ADR-0042).
+		{Dirs: geminiDirs, ParsePath: gemini.ParsePath, Match: gemini.MatchFile, FullReparse: true},
 	}
 }
 
@@ -79,7 +92,7 @@ func LocalSpecs(claudeDirs, codexDirs, dshDirs []string, codexProbe func() Codex
 func ScanSources(specs []SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
 	total := 0
 	for _, spec := range specs {
-		for _, f := range listJSONL(spec.Dirs) {
+		for _, f := range listFiles(spec.Dirs, spec.Match) {
 			n, err := scanFile(f, spec, device, st, resolveRepo, sink, quotaSink, notBefore)
 			total += n
 			if err != nil {
@@ -107,16 +120,17 @@ func dropBefore(events []model.Event, notBefore time.Time) []model.Event {
 	return kept
 }
 
-func listJSONL(dirs []string) []string {
+func listFiles(dirs []string, match func(string) bool) []string {
+	if match == nil {
+		match = defaultLogMatch
+	}
 	var files []string
 	for _, dir := range dirs {
 		filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil // skip unreadable subtrees
 			}
-			// dsh compresses its JSONL (session.jsonl.zstd), so match that too —
-			// filepath.Ext sees ".zstd" and would otherwise skip it (ADR-0029).
-			if !d.IsDir() && (filepath.Ext(path) == ".jsonl" || strings.HasSuffix(path, ".jsonl.zstd")) {
+			if !d.IsDir() && match(path) {
 				files = append(files, path)
 			}
 			return nil
@@ -124,6 +138,12 @@ func listJSONL(dirs []string) []string {
 	}
 	sort.Strings(files)
 	return files
+}
+
+func defaultLogMatch(path string) bool {
+	// dsh compresses its JSONL (session.jsonl.zstd), so match that too —
+	// filepath.Ext sees ".zstd" and would otherwise skip it (ADR-0029).
+	return filepath.Ext(path) == ".jsonl" || strings.HasSuffix(path, ".jsonl.zstd")
 }
 
 func scanFile(path string, spec SourceSpec, device string, st *State, resolveRepo func(string) string, sink Sink, quotaSink QuotaSink, notBefore time.Time) (int, error) {
@@ -168,7 +188,12 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 		return 0, nil
 	}
 
-	res := spec.Parse(io.LimitReader(fh, end-start), device, st.TurnStartFor(path))
+	var res model.ParseResult
+	if spec.ParsePath != nil {
+		res = spec.ParsePath(path, io.LimitReader(fh, end-start), device, st.TurnStartFor(path))
+	} else {
+		res = spec.Parse(io.LimitReader(fh, end-start), device, st.TurnStartFor(path))
+	}
 	if !resuming {
 		end = start + res.Consumed
 		if err := st.BeginScan(path, start, end, res.TurnStartMS); err != nil {

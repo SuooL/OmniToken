@@ -15,6 +15,10 @@ const ChartRegistry = {
       codexDeep: cssVar("--source-codex-deep"),
       dsh: cssVar("--source-dsh"),
       dshDeep: cssVar("--source-dsh-deep"),
+      antigravity: cssVar("--source-antigravity"),
+      antigravityDeep: cssVar("--source-antigravity-deep"),
+      gemini: cssVar("--source-gemini"),
+      geminiDeep: cssVar("--source-gemini-deep"),
       api: cssVar("--source-api"),
       apiDeep: cssVar("--source-api-deep"),
       aggregate: cssVar("--source-aggregate"),
@@ -36,6 +40,8 @@ const ChartRegistry = {
     }
     if (source === "codex") return [palette.codex, palette.codexDeep];
     if (source === "dsh") return [palette.dsh, palette.dshDeep];
+    if (source === "antigravity") return [palette.antigravity, palette.antigravityDeep];
+    if (source === "gemini") return [palette.gemini, palette.geminiDeep];
     return [palette.api, palette.apiDeep];
   },
 

@@ -37,6 +37,17 @@ test("missing official reading is not a synthetic quota, and metered traffic has
   assert.match(html, /暂无/);
   assert.match(html, /按量计费/);
 });
+test("SourceUI exposes first-class identities for Antigravity and Gemini", () => {
+  const c = load();
+  const agy = vm.runInContext('SourceUI.brand("antigravity")', c);
+  const gem = vm.runInContext('SourceUI.brand("gemini")', c);
+  assert.match(agy, /icons\/antigravity\.svg/);
+  assert.match(agy, /Antigravity/);
+  assert.equal(vm.runInContext('SourceUI.color("antigravity")', c), "--tool-antigravity");
+  assert.match(gem, /icons\/gemini\.svg/);
+  assert.match(gem, /Gemini/);
+  assert.equal(vm.runInContext('SourceUI.color("gemini")', c), "--tool-gemini");
+});
 test("both windows independently expose real percentages with capped red overshoot", () => {
   const c = load();
   const html = vm.runInContext(

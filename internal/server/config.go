@@ -67,7 +67,9 @@ type Config struct {
 		Local           *bool             `json:"local"`                // scan this machine's own logs; default true
 		LocalDirs       []string          `json:"local_dirs,omitempty"` // Claude Code log dirs
 		CodexDirs       []string          `json:"codex_dirs,omitempty"`
-		DshDirs         []string          `json:"dsh_dirs,omitempty"` // DeepSeek Harness sessions (ADR-0029)
+		DshDirs         []string          `json:"dsh_dirs,omitempty"`         // DeepSeek Harness sessions (ADR-0029)
+		AntigravityDirs []string          `json:"antigravity_dirs,omitempty"` // Google Antigravity brain dirs (ADR-0042)
+		GeminiDirs      []string          `json:"gemini_dirs,omitempty"`      // Gemini CLI session dirs (ADR-0042)
 		SSHHosts        []collect.SSHHost `json:"ssh_hosts,omitempty"`
 	} `json:"collect"`
 }
@@ -113,6 +115,36 @@ func DefaultLocalDshDirs() []string {
 		root = filepath.Join(home, ".dsh")
 	}
 	return []string{filepath.Join(root, "sessions")}
+}
+
+// DefaultLocalAntigravityDirs is where Google Antigravity writes conversation
+// transcripts (~/.gemini/antigravity/brain), overridable via $ANTIGRAVITY_HOME
+// (ADR-0042).
+func DefaultLocalAntigravityDirs() []string {
+	home, _ := os.UserHomeDir()
+	root := os.Getenv("ANTIGRAVITY_HOME")
+	if root == "" {
+		root = filepath.Join(home, ".gemini", "antigravity")
+	}
+	return []string{filepath.Join(root, "brain")}
+}
+
+// DefaultLocalGeminiDirs is where Gemini CLI writes session logs (~/.gemini/tmp),
+// overridable via comma-separated $GEMINI_DATA_DIR (ADR-0042).
+func DefaultLocalGeminiDirs() []string {
+	if raw := os.Getenv("GEMINI_DATA_DIR"); raw != "" {
+		var dirs []string
+		for _, part := range strings.Split(raw, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				dirs = append(dirs, p)
+			}
+		}
+		if len(dirs) > 0 {
+			return dirs
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return []string{filepath.Join(home, ".gemini", "tmp")}
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -249,6 +281,12 @@ func (c *Config) applyDefaults() {
 	}
 	if len(c.Collect.DshDirs) == 0 {
 		c.Collect.DshDirs = DefaultLocalDshDirs()
+	}
+	if len(c.Collect.AntigravityDirs) == 0 {
+		c.Collect.AntigravityDirs = DefaultLocalAntigravityDirs()
+	}
+	if len(c.Collect.GeminiDirs) == 0 {
+		c.Collect.GeminiDirs = DefaultLocalGeminiDirs()
 	}
 }
 

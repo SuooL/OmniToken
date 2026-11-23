@@ -111,6 +111,8 @@ function sourceLabelA2(source) {
     "claude-code": "Claude",
     codex: "Codex",
     dsh: "DeepSeek",
+    antigravity: "Antigravity",
+    gemini: "Gemini",
     api: "Other/API",
   }[source] || sourceLabel(source);
 }
