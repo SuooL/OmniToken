@@ -47,3 +47,4 @@ ADR 标注 supersedes,不改写历史。
 | [0040](0040-dsh-generation-speed.md) | dsh 生成速度:按流式 chunk 时间戳产出 gen_ms / ttft_ms,不含重试与首 token 等待 | 已采纳 |
 | [0041](0041-dsh-migration-duplicates.md) | dsh 格式迁移重复计数:产出 dedup_key;冲突并列时删 event_id 大的那条(补全 0020) | 已采纳 |
 | [0042](0042-antigravity-and-gemini-sources.md) | Google Antigravity、Gemini CLI 与 Gemini 本地代理接入 | 已采纳 |
+| [0043](0043-self-update-and-hub-deploy.md) | Hub 与 Agent 按需自更新(`omnitoken self-update`)与 GitHub Actions 自动部署 | 已采纳 |

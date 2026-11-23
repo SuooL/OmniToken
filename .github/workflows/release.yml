@@ -248,3 +248,13 @@ jobs:
             latest.json --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Event-driven Hub + embedded Web deployment after release assets are live
+  # (ADR-0043). Safely skips when HUB_SSH_* secrets are not configured.
+  deploy-hub:
+    name: deploy-hub
+    needs: release
+    uses: ./.github/workflows/deploy-hub.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit

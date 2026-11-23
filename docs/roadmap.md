@@ -386,3 +386,12 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 | Gemini CLI 解析器(F29) | ✅ 完成 | `internal/parser/gemini`，对齐 `ccusage` 解析 `*.json`/`*.jsonl`，支持 `cached` 扣除与 `thoughts`/`tool` 归一，`gem:` 幂等 `event_id` |
 | Gemini 本地代理与定价(F14/F7/F29) | ✅ 完成 | `/google`、`/gemini` 上游透传、`usageMetadata` 解析、URL 模型提取、Google 计费通道分类、LiteLLM `gemini/`/`vertex_ai/`/`google/` 价表前缀 |
 | Web 九页与 macOS 菜单栏(F29/F24) | ✅ 完成 | `antigravity` 与 `gemini` 一等来源品牌、图标、配色、来源行与速度泳道/未测标注同步接入 |
+
+## M15 — Hub / Agent 按需自更新与 CI 自动部署(2026-11-22)
+
+决策见 [ADR-0043](adr/0043-self-update-and-hub-deploy.md)。严格不做后台定时拉取。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| `omnitoken self-update` 子命令(F30) | ✅ 完成 | 纯 Go 标准库，静态重定向解析最新 tag、强制 `SHA256SUMS` 校验、同目录原子替换、`-check`/`-version`/`-restart`/`-restart-service` |
+| GitHub Actions 线上 Hub 自动部署(F30) | ✅ 完成 | `.github/workflows/deploy-hub.yml` + `release.yml` 发版后自动触发，带备份、旧版引导回落、`/api/v1/health` 校验与失败自动回滚；未配 secrets 时安全跳过 |
