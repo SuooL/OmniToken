@@ -301,14 +301,57 @@ function quotaElapsed(percent, reset, minutes) {
   return Math.max(0, Math.min(100, 100 * (1 - (reset - now) / (minutes * 60000))));
 }
 
+function renderQuotaGroupCard(group) {
+  const source = group.source;
+  const label = group.label || sourceName(source);
+  const windows = [
+    {
+      key: "five_hour",
+      label: "5h",
+      tokens: group.five_hour_tokens || 0,
+      budget: group.five_hour_budget_tokens,
+      remaining: group.five_hour_remaining_tokens,
+      percent: group.five_hour_used_percent,
+      rolling: "滚动5h",
+    },
+    {
+      key: "weekly",
+      label: "Week",
+      tokens: group.weekly_tokens || 0,
+      budget: group.weekly_budget_tokens,
+      remaining: group.weekly_remaining_tokens,
+      percent: group.weekly_used_percent,
+      rolling: "滚动7d",
+    },
+  ];
+  const detailKey = `quota:${source}`;
+  return `<button type="button" class="quota-group quota-group-trigger" data-source="${esc(source)}" data-detail="${esc(detailKey)}" aria-controls="detail-panel" aria-expanded="${selectedDetail === detailKey}">
+    <div class="quota-source quota-source-row">${brand(source)}<span class="quota-badge">滚动估算</span><span class="chevron" aria-hidden="true">›</span></div>${windows
+      .map((w) => {
+        const hasBudget = finite(w.budget) && w.budget > 0 && finite(w.percent) && w.percent >= 0;
+        const severity = hasBudget ? quotaSeverity(w.percent) : "";
+        const risk = hasBudget ? severity || "estimate" : "estimate";
+        const reading = hasBudget
+          ? `<strong class="fig" data-severity="${severity}">约 ${w.percent.toFixed(0)}%</strong><small>估算</small><div class="quota-meter quota-meter-estimated" role="progressbar" aria-label="${esc(label)} ${w.label} 滚动估算已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(w.percent, 100)}" aria-valuetext="约 ${w.percent.toFixed(0)}% · 已用 ${compact(w.tokens)} tokens"><div class="quota-meter-fill" style="width:${Math.min(w.percent, 100)}%"></div></div>`
+          : `<strong class="fig">${compact(w.tokens)}</strong><small>已用</small>`;
+        const remText = finite(w.remaining) && w.remaining >= 0 ? compact(w.remaining) : "未设上限";
+        return `<div class="quota-window" data-window="${w.key}" data-risk="${risk}">
+      <span class="quota-window-label">${w.label}</span><div class="quota-reading">${reading}</div>
+      <span class="quota-remainder" title="${hasBudget ? "预估剩余额度（tokens）" : "未设置分组预算上限"}">${remText}</span>
+      <span class="quota-reset">${w.rolling}</span></div><!--quota-group-window-->`;
+      })
+      .join("")}</button>`;
+}
+
 function renderQuotas() {
-  const quotas = latestLive && latestLive.quotas;
+  const quotas = (latestLive && latestLive.quotas) || [];
+  const quotaGroups = (latestLive && latestLive.quota_groups) || [];
   const root = $("quota-grid");
-  if (!quotas || !quotas.length) {
+  if (!quotas.length && !quotaGroups.length) {
     root.innerHTML = '<div class="empty">官方配额不可用</div>';
     return;
   }
-  root.innerHTML = quotas
+  const officialHTML = quotas
     .map(
       (quota) =>
         `<section class="quota-group" data-source="${esc(quota.source)}"><div class="quota-source">${brand(quota.source)}</div>${QUOTA_WINDOWS.map(
@@ -345,6 +388,11 @@ function renderQuotas() {
         ).join("")}</section>`,
     )
     .join("");
+  const groupsHTML = quotaGroups
+    .filter((g) => g && g.source)
+    .map(renderQuotaGroupCard)
+    .join("");
+  root.innerHTML = officialHTML + groupsHTML;
 }
 
 function sourceRows(bucket) {
@@ -620,6 +668,7 @@ function renderSelectedDetail() {
     $("panel-footer").hidden = !!inlineDetail;
   }
   $("source-detail").hidden = !selectedDetail?.startsWith("source:");
+  $("quota-detail").hidden = !selectedDetail?.startsWith("quota:");
   $("speed-detail").hidden = selectedDetail !== "speed";
   $("devices-detail").hidden = selectedDetail !== "devices";
   if (document.querySelectorAll)
@@ -666,6 +715,73 @@ function renderSelectedDetail() {
               .join("")
           : `<div class="empty">${known ? "今日暂无模型用量" : "来源明细不可用"}</div>`
       }</section><section class="detail-note">包含输入、输出与缓存 tokens；与官方配额计量口径不同。</section>`;
+  } else if (selectedDetail.startsWith("quota:")) {
+    const source = selectedDetail.slice(6);
+    panel.dataset.source = source;
+    const list = (latestLive && latestLive.quota_groups) || [];
+    const group = list.find((item) => item && item.source === source);
+    $("detail-title").innerHTML =
+      `<span class="detail-title-brand">${brand(source)} · 配额分组</span>`;
+    $("detail-subtitle").textContent =
+      "近 5h / 7d 滚动窗口估算 · 按官方模型池汇总";
+    if (!group) {
+      $("quota-detail").innerHTML = '<div class="empty">分组用量不可用</div>';
+    } else {
+      const tile = (title, tokens, rem, budget, pct) => {
+        const sub =
+          finite(budget) && budget > 0 && finite(rem)
+            ? `余 ${compact(rem)} / 上限 ${compact(budget)}${finite(pct) ? `（约 ${pct.toFixed(0)}%）` : ""}`
+            : "未设上限 · 仅统计滚动已用";
+        return `<div class="quota-detail-tile"><span class="secondary">${title}</span><strong class="fig">${compact(tokens || 0)}</strong><small class="secondary">${sub}</small></div>`;
+      };
+      const groupsHTML = (group.groups || [])
+        .map((entry) => {
+          const has5hBudget =
+            finite(entry.five_hour_budget_tokens) &&
+            entry.five_hour_budget_tokens > 0 &&
+            finite(entry.five_hour_used_percent);
+          const has7dBudget =
+            finite(entry.weekly_budget_tokens) &&
+            entry.weekly_budget_tokens > 0 &&
+            finite(entry.weekly_used_percent);
+          const barPct = has5hBudget
+            ? Math.min(100, Math.max(0, entry.five_hour_used_percent))
+            : finite(entry.five_hour_share_percent)
+              ? Math.min(100, Math.max(0, entry.five_hour_share_percent))
+              : finite(entry.weekly_share_percent)
+                ? Math.min(100, Math.max(0, entry.weekly_share_percent))
+                : 0;
+          const metaParts = [];
+          if (has5hBudget)
+            metaParts.push(
+              `5h 约 ${entry.five_hour_used_percent.toFixed(0)}% · 余 ${compact(entry.five_hour_remaining_tokens ?? 0)}`,
+            );
+          else if (finite(entry.five_hour_share_percent))
+            metaParts.push(`5h 占比 ${entry.five_hour_share_percent.toFixed(1)}%`);
+          if (has7dBudget)
+            metaParts.push(
+              `Week 约 ${entry.weekly_used_percent.toFixed(0)}% · 余 ${compact(entry.weekly_remaining_tokens ?? 0)}`,
+            );
+          else if (finite(entry.weekly_share_percent))
+            metaParts.push(`Week 占比 ${entry.weekly_share_percent.toFixed(1)}%`);
+          const models = entry.models || [];
+          const modelsHTML = models.length
+            ? models
+                .map(
+                  (m) =>
+                    `<div class="quota-model-row"><div class="model-line"><span class="model-name">${esc(m.model)}</span><span class="fig">5h ${compact(m.five_hour_tokens || 0)} · 7d ${compact(m.weekly_tokens || 0)}</span></div><div class="secondary quota-model-sub">7d 输入 ${compact(m.weekly_input_tokens || 0)} · 输出 ${compact(m.weekly_output_tokens || 0)} · 缓存 ${compact((m.weekly_cache_read_tokens || 0) + (m.weekly_cache_creation_tokens || 0))}</div></div>`,
+                )
+                .join("")
+            : '<div class="empty">近 7 天暂无该分组用量</div>';
+          return `<section class="quota-detail-group" data-group-id="${esc(entry.id)}"><div class="model-line"><strong>${esc(entry.label)}</strong><span class="fig">5h ${compact(entry.five_hour_tokens || 0)} · 7d ${compact(entry.weekly_tokens || 0)}</span></div><div class="model-track"><div class="model-fill" style="width:${barPct}%"></div></div>${metaParts.length ? `<div class="secondary quota-detail-meta">${esc(metaParts.join(" · "))}</div>` : ""}${modelsHTML}</section>`;
+        })
+        .join("");
+      const unclassified =
+        group.unclassified_weekly_tokens > 0
+          ? `<div class="secondary">另有未记录模型名的历史用量：5h ${compact(group.unclassified_five_hour_tokens || 0)} / 7d ${compact(group.unclassified_weekly_tokens)} tokens。</div>`
+          : "";
+      $("quota-detail").innerHTML = `<div class="quota-detail-summary">${tile("近 5h 汇总", group.five_hour_tokens, group.five_hour_remaining_tokens, group.five_hour_budget_tokens, group.five_hour_used_percent)}${tile("近 7d 汇总", group.weekly_tokens, group.weekly_remaining_tokens, group.weekly_budget_tokens, group.weekly_used_percent)}</div>${groupsHTML}${unclassified}<section class="detail-note">基于本机 transcript 滚动统计，非官方实时配额；可在 Web 设置页为各分组配置可选参考上限。</section>`;
+    }
   } else {
     delete panel.dataset.source;
     $("detail-title").textContent =
@@ -724,6 +840,7 @@ async function openDetail(kind) {
   if (generation !== detailGeneration) return;
   renderSelectedDetail();
   renderDailyUsage();
+  renderQuotas();
   fitWindow();
 }
 function closeDetail() {
@@ -735,6 +852,7 @@ function closeDetail() {
   renderSelectedDetail();
   if (!DETAIL_WINDOW) {
     renderDailyUsage();
+    renderQuotas();
     fitWindow();
     if (previous && document.querySelectorAll)
       [...document.querySelectorAll("[data-detail]")]
@@ -760,9 +878,11 @@ function resizeDetail() {
   const content = $(
     selectedDetail.startsWith("source:")
       ? "source-detail"
-      : selectedDetail === "speed"
-        ? "speed-detail"
-        : "devices-detail",
+      : selectedDetail.startsWith("quota:")
+        ? "quota-detail"
+        : selectedDetail === "speed"
+          ? "speed-detail"
+          : "devices-detail",
   );
   const height = Math.ceil(
     content.scrollHeight +

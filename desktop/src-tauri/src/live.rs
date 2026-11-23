@@ -233,10 +233,66 @@ struct QuotaView {
 }
 
 #[derive(Serialize, Clone, Debug)]
+struct QuotaGroupModelView {
+    model: String,
+    five_hour_tokens: i64,
+    weekly_tokens: i64,
+    five_hour_input_tokens: i64,
+    five_hour_output_tokens: i64,
+    five_hour_cache_read_tokens: i64,
+    five_hour_cache_creation_tokens: i64,
+    weekly_input_tokens: i64,
+    weekly_output_tokens: i64,
+    weekly_cache_read_tokens: i64,
+    weekly_cache_creation_tokens: i64,
+    five_hour_events: i64,
+    weekly_events: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct QuotaGroupEntryView {
+    id: String,
+    label: String,
+    five_hour_tokens: i64,
+    weekly_tokens: i64,
+    five_hour_share_percent: Option<f64>,
+    weekly_share_percent: Option<f64>,
+    five_hour_budget_tokens: Option<i64>,
+    weekly_budget_tokens: Option<i64>,
+    five_hour_remaining_tokens: Option<i64>,
+    weekly_remaining_tokens: Option<i64>,
+    five_hour_used_percent: Option<f64>,
+    weekly_used_percent: Option<f64>,
+    models: Vec<QuotaGroupModelView>,
+}
+
+/// Rolling-window grouped estimate (ADR-0044), kept separate from official
+/// `QuotaView` readings so uncalibrated estimates never trigger official alerts.
+#[derive(Serialize, Clone, Debug)]
+struct QuotaGroupView {
+    source: String,
+    label: String,
+    basis: String,
+    five_hour_tokens: i64,
+    weekly_tokens: i64,
+    five_hour_budget_tokens: Option<i64>,
+    weekly_budget_tokens: Option<i64>,
+    five_hour_remaining_tokens: Option<i64>,
+    weekly_remaining_tokens: Option<i64>,
+    five_hour_used_percent: Option<f64>,
+    weekly_used_percent: Option<f64>,
+    budget_configured_groups: i64,
+    unclassified_five_hour_tokens: i64,
+    unclassified_weekly_tokens: i64,
+    groups: Vec<QuotaGroupEntryView>,
+}
+
+#[derive(Serialize, Clone, Debug)]
 struct PopoverView {
     connection: PopoverConnection,
     activity: ActivityView,
     quotas: Vec<QuotaView>,
+    quota_groups: Vec<QuotaGroupView>,
     sessions: Vec<SessionView>,
     sessions_more: usize,
     devices: Vec<DeviceView>,
@@ -408,6 +464,191 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
                 five_hour_remaining_tokens,
                 weekly_remaining_tokens,
             }
+        })
+        .collect()
+}
+
+fn quota_group_views(payload: Option<&Value>) -> Vec<QuotaGroupView> {
+    let Some(items) = payload
+        .and_then(|data| data.get("quota_groups"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let opt_pos_i64 = |v: &Value, key: &str| v.get(key).and_then(Value::as_i64).filter(|n| *n > 0);
+    let opt_nonneg_i64 =
+        |v: &Value, key: &str| v.get(key).and_then(Value::as_i64).filter(|n| *n >= 0);
+    let opt_nonneg_f64 = |v: &Value, key: &str| {
+        v.get(key)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite() && *n >= 0.0)
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let source = item.get("source").and_then(Value::as_str)?.trim();
+            if source.is_empty() {
+                return None;
+            }
+            let label = item
+                .get("label")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| source_label(source));
+            let basis = item
+                .get("basis")
+                .and_then(Value::as_str)
+                .unwrap_or("rolling_estimate")
+                .to_string();
+            let groups = item
+                .get("groups")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| {
+                            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+                            let label = entry
+                                .get("label")
+                                .and_then(Value::as_str)
+                                .unwrap_or(id.as_str())
+                                .to_string();
+                            let models = entry
+                                .get("models")
+                                .and_then(Value::as_array)
+                                .map(|list| {
+                                    list.iter()
+                                        .filter_map(|m| {
+                                            let model =
+                                                m.get("model").and_then(Value::as_str)?.to_string();
+                                            Some(QuotaGroupModelView {
+                                                model,
+                                                five_hour_tokens: m
+                                                    .get("five_hour_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_tokens: m
+                                                    .get("weekly_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                five_hour_input_tokens: m
+                                                    .get("five_hour_input_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                five_hour_output_tokens: m
+                                                    .get("five_hour_output_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                five_hour_cache_read_tokens: m
+                                                    .get("five_hour_cache_read_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                five_hour_cache_creation_tokens: m
+                                                    .get("five_hour_cache_creation_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_input_tokens: m
+                                                    .get("weekly_input_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_output_tokens: m
+                                                    .get("weekly_output_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_cache_read_tokens: m
+                                                    .get("weekly_cache_read_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_cache_creation_tokens: m
+                                                    .get("weekly_cache_creation_tokens")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                five_hour_events: m
+                                                    .get("five_hour_events")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                                weekly_events: m
+                                                    .get("weekly_events")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            Some(QuotaGroupEntryView {
+                                id,
+                                label,
+                                five_hour_tokens: entry
+                                    .get("five_hour_tokens")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0),
+                                weekly_tokens: entry
+                                    .get("weekly_tokens")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0),
+                                five_hour_share_percent: opt_nonneg_f64(
+                                    entry,
+                                    "five_hour_share_percent",
+                                ),
+                                weekly_share_percent: opt_nonneg_f64(entry, "weekly_share_percent"),
+                                five_hour_budget_tokens: opt_pos_i64(
+                                    entry,
+                                    "five_hour_budget_tokens",
+                                ),
+                                weekly_budget_tokens: opt_pos_i64(entry, "weekly_budget_tokens"),
+                                five_hour_remaining_tokens: opt_nonneg_i64(
+                                    entry,
+                                    "five_hour_remaining_tokens",
+                                ),
+                                weekly_remaining_tokens: opt_nonneg_i64(
+                                    entry,
+                                    "weekly_remaining_tokens",
+                                ),
+                                five_hour_used_percent: opt_nonneg_f64(
+                                    entry,
+                                    "five_hour_used_percent",
+                                ),
+                                weekly_used_percent: opt_nonneg_f64(entry, "weekly_used_percent"),
+                                models,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(QuotaGroupView {
+                source: source.to_string(),
+                label,
+                basis,
+                five_hour_tokens: item
+                    .get("five_hour_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                weekly_tokens: item
+                    .get("weekly_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                five_hour_budget_tokens: opt_pos_i64(item, "five_hour_budget_tokens"),
+                weekly_budget_tokens: opt_pos_i64(item, "weekly_budget_tokens"),
+                five_hour_remaining_tokens: opt_nonneg_i64(item, "five_hour_remaining_tokens"),
+                weekly_remaining_tokens: opt_nonneg_i64(item, "weekly_remaining_tokens"),
+                five_hour_used_percent: opt_nonneg_f64(item, "five_hour_used_percent"),
+                weekly_used_percent: opt_nonneg_f64(item, "weekly_used_percent"),
+                budget_configured_groups: item
+                    .get("budget_configured_groups")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                unclassified_five_hour_tokens: item
+                    .get("unclassified_five_hour_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                unclassified_weekly_tokens: item
+                    .get("unclassified_weekly_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                groups,
+            })
         })
         .collect()
 }
@@ -590,6 +831,7 @@ fn popover_view(payload: Option<&Value>, connection: &ConnectionState) -> Popove
         },
         activity,
         quotas: quota_views(payload),
+        quota_groups: quota_group_views(payload),
         sessions,
         sessions_more,
         devices,
@@ -1577,6 +1819,7 @@ mod tests {
                 "device_total",
                 "devices",
                 "devices_more",
+                "quota_groups",
                 "quotas",
                 "sessions",
                 "sessions_more",
@@ -2090,5 +2333,47 @@ mod tests {
         let codex = view.quotas.iter().find(|q| q.source == "codex").unwrap();
         assert_eq!(codex.five_hour_remaining_tokens, None);
         assert_eq!(codex.weekly_remaining_tokens, None);
+    }
+
+    #[test]
+    fn quota_groups_project_antigravity_rolling_pools_without_mixing_official_quotas() {
+        let payload = json!({
+            "generated_at": 1_700_000_000_000i64,
+            "windows": [],
+            "quotas": [],
+            "quota_groups": [{
+                "source": "antigravity",
+                "label": "Antigravity",
+                "basis": "rolling_estimate",
+                "five_hour_tokens": 60_000_000i64,
+                "weekly_tokens": 90_000_000i64,
+                "five_hour_budget_tokens": 100_000_000i64,
+                "five_hour_remaining_tokens": 40_000_000i64,
+                "five_hour_used_percent": 60.0,
+                "budget_configured_groups": 1,
+                "groups": [
+                    {
+                        "id": "gemini-pro",
+                        "label": "Gemini Pro / 4",
+                        "five_hour_tokens": 60_000_000i64,
+                        "weekly_tokens": 60_000_000i64,
+                        "five_hour_share_percent": 100.0,
+                        "models": [{"model": "gemini-4-neon-high", "five_hour_tokens": 60_000_000i64, "weekly_tokens": 60_000_000i64}]
+                    },
+                    {"id": "gemini-flash", "label": "Gemini Flash", "five_hour_tokens": 0, "weekly_tokens": 0, "models": []},
+                    {"id": "third-party", "label": "Claude / 第三方", "five_hour_tokens": 0, "weekly_tokens": 30_000_000i64, "models": []}
+                ]
+            }]
+        });
+
+        let view = view_for(Some(&payload), ConnectionKind::Live);
+        assert_eq!(view.quota_groups.len(), 1);
+        let ag = &view.quota_groups[0];
+        assert_eq!(ag.source, "antigravity");
+        assert_eq!(ag.five_hour_tokens, 60_000_000);
+        assert_eq!(ag.five_hour_remaining_tokens, Some(40_000_000));
+        assert_eq!(ag.groups.len(), 3);
+        assert_eq!(ag.groups[0].models.len(), 1);
+        assert_eq!(ag.groups[0].models[0].model, "gemini-4-neon-high");
     }
 }
