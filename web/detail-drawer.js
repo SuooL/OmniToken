@@ -8,7 +8,7 @@ const DetailDrawer = {
   ensure() {
     if (this.dialog) return this.dialog;
     const dialog = document.createElement("dialog");
-    dialog.className = "detail-drawer viz-root";
+    dialog.className = "detail-drawer";
     dialog.id = "tool-detail-drawer";
     dialog.setAttribute("aria-labelledby", "tool-detail-title");
     dialog.innerHTML =

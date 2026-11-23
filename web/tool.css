@@ -632,6 +632,20 @@ body.drawer-open {
   --text-primary: #e6eaf0;
   --text-secondary: #a4afbe;
   --border: #303742;
+  --tool-surface: #171b22;
+  --tool-line: #303742;
+  --tool-ink: #e6eaf0;
+  --tool-secondary: #a4afbe;
+  --tool-hover: #232c37;
+  --tool-healthy: #70d3ad;
+  --tool-warn: #edba66;
+  --tool-serious: #f39b61;
+  --tool-critical: #ff7e85;
+  --tool-claude: #e9ac88;
+  --tool-codex: #e4e9ee;
+  --tool-dsh: #7596ff;
+  --tool-antigravity: #c49bff;
+  --tool-gemini: #67e4b9;
   --font-body:
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   color-scheme: dark;
