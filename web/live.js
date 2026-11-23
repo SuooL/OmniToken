@@ -202,7 +202,7 @@ const Live = {
       if (v.device && v.display_name) this.deviceNames[v.device] = v.display_name;
     }
 
-    this.renderQuotas(d.quotas || [], d.windows || []);
+    this.renderQuotas(d.quotas || [], d.windows || [], d.quota_groups || []);
 
     const burn = d.burn || {};
     document.getElementById("burn-rate").textContent = compact(burn.per_minute || 0) + "/min";
@@ -246,8 +246,12 @@ const Live = {
     if (el) el.innerHTML = "";
   },
 
-  renderQuotas(quotas, windows) {
-    ToolUI.updateHTML(document.getElementById("quota-row"), (this.connectionStale ? '<p class="subtle">连接中断 · 显示上次成功读数</p>' : "") + QuotaUI.render(windows || [], quotas || []));
+  renderQuotas(quotas, windows, quotaGroups = []) {
+    this.quotaGroups = quotaGroups || [];
+    const el = document.getElementById("quota-row");
+    QuotaUI.bindGroupDetail?.(el, () => this.quotaGroups || []);
+    ToolUI.updateHTML(el, (this.connectionStale ? '<p class="subtle">连接中断 · 显示上次成功读数</p>' : "") + QuotaUI.render(windows || [], quotas || [], this.quotaGroups));
+    this.quotaGroups.forEach((group) => DetailDrawer.update?.(`quota-group:${group.source}`, QuotaUI.renderGroupDetail?.(group) || ""));
   },
 
   // Ground truth from the machines' own process tables (ADR-0012), as opposed

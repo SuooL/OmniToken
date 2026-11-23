@@ -395,3 +395,13 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 |---|---|---|
 | `omnitoken self-update` 子命令(F30) | ✅ 完成 | 纯 Go 标准库，静态重定向解析最新 tag、强制 `SHA256SUMS` 校验、同目录原子替换、`-check`/`-version`/`-restart`/`-restart-service` |
 | GitHub Actions 线上 Hub 自动部署(F30) | ✅ 完成 | `.github/workflows/deploy-hub.yml` + `release.yml` 发版后自动触发，带备份、旧版引导回落、`/api/v1/health` 校验与失败自动回滚；未配 secrets 时安全跳过 |
+
+## M16 — Antigravity 模型分组配额与估算视图(2026-11-22)
+
+决策见 [ADR-0044](adr/0044-antigravity-quota-groups.md)。在不伪造官方配额百分比的前提下，为 Web 与 macOS 菜单栏的「配额与预估」接入 Antigravity 滚动窗口汇总与三组官方模型池详情。
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 后端三组归类与滚动聚合(`quota_groups`) | ✅ 完成 | `gemini-pro` / `gemini-flash` / `third-party` 统一归类、5h/7d 滚动聚合、可选分组预算（`config.json` + `/api/v1/settings` 热生效） |
+| Web 配额分组行、详情抽屉与设置 | ✅ 完成 | 总览与实时页接入 Antigravity 滚动估算行，点击打开 `DetailDrawer` 展示三组与模型明细；设置页支持配置可选分组上限 |
+| macOS 菜单栏配额分组行与相邻详情 | ✅ 完成 | `live.rs` 投影 `quota_groups`；主面板展示可点击 Antigravity 汇总，点击在相邻详情窗口展示三组与模型明细 |

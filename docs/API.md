@@ -305,6 +305,14 @@ ADR-0014 之后它改为在 Rust 侧常驻一条 `/api/v1/stream`,这个端点�
 两者共用一份构造是有意为之:燃烧速率只定义一次,面板与 Live 页不会对同一个
 十分钟给出不同的数。网页面板走 SSE,不要用这个端点轮询。
 
+#### `quota_groups`（ADR-0044）
+
+`/api/v1/live` 与 SSE `snapshot` / `live` 事件另含 `quota_groups` 数组，用于表达无官方配额快照但需按官方模型池分组汇总的滚动窗口估算（当前包含 `source: "antigravity"`，`basis: "rolling_estimate"`）：
+
+- 顶层包含 `five_hour_tokens`、`weekly_tokens`、分组数组 `groups[]`（固定顺序：`gemini-pro` / `gemini-flash` / `third-party`），以及在存在可选预算配置时附带的 `*_budget_tokens`、`*_remaining_tokens`、`*_used_percent`（均为估算值，不混入 `quotas[]` / `windows[]` 官方权威字段）；
+- 每个分组含 `id`、`label`、5h/7d token 与事件数、组内占比、可选费用与预算余量，以及按用量排序的 `models[]`（含 5h/7d 的 input/output/cache 明细）；
+- 可选预算通过 `config.json` 的 `antigravity_quota_budgets` 或 `GET/PUT /api/v1/settings` 的 `antigravity_quota_budgets` 在线维护（DB 优先于配置，保存后立即生效）。
+
 
 ### Scheduled pricing status (ADR-0037)
 

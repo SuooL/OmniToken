@@ -170,3 +170,57 @@ test("unknown or expired quota bounds do not fabricate time markers", () => {
   const html = vm.runInContext('QuotaUI.render([], [{source:"codex",window_minutes:300,used_percent:0,resets_at:2000000000+300*60000*2}])', c);
   assert.match(html, /left:0%/);
 });
+test("Antigravity rolling quota groups render honestly without fake progress bars when unbudgeted", () => {
+  const c = load();
+  const group = {
+    source: "antigravity",
+    label: "Antigravity",
+    basis: "rolling_estimate",
+    five_hour_tokens: 60000000,
+    weekly_tokens: 90000000,
+    budget_configured_groups: 0,
+    groups: [
+      { id: "gemini-pro", label: "Gemini Pro / 4", five_hour_tokens: 60000000, weekly_tokens: 60000000, five_hour_share_percent: 100, weekly_share_percent: 66.7, models: [{ model: "gemini-4-neon-high", five_hour_tokens: 60000000, weekly_tokens: 60000000, weekly_input_tokens: 2000000, weekly_output_tokens: 200000, weekly_cache_read_tokens: 57800000 }] },
+      { id: "gemini-flash", label: "Gemini Flash", five_hour_tokens: 0, weekly_tokens: 0, models: [] },
+      { id: "third-party", label: "Claude / 第三方", five_hour_tokens: 0, weekly_tokens: 30000000, weekly_share_percent: 33.3, models: [{ model: "claude-sonnet-4-6", five_hour_tokens: 0, weekly_tokens: 30000000 }] },
+    ],
+  };
+  c._group = group;
+  const html = vm.runInContext("QuotaUI.render([], [], [_group])", c);
+  assert.match(html, /Antigravity/);
+  assert.match(html, /滚动估算/);
+  assert.match(html, /60M/);
+  assert.match(html, /90M/);
+  assert.match(html, /未设上限/);
+  assert.ok(!html.includes('role="progressbar"'));
+
+  const detail = vm.runInContext("QuotaUI.renderGroupDetail(_group)", c);
+  assert.match(detail, /Gemini Pro \/ 4/);
+  assert.match(detail, /Gemini Flash/);
+  assert.match(detail, /Claude \/ 第三方/);
+  assert.match(detail, /gemini-4-neon-high/);
+  assert.match(detail, /claude-sonnet-4-6/);
+});
+test("Antigravity quota groups show estimated percent and remaining tokens when budgeted", () => {
+  const c = load();
+  c._group = {
+    source: "antigravity",
+    label: "Antigravity",
+    basis: "rolling_estimate",
+    five_hour_tokens: 50000000,
+    weekly_tokens: 100000000,
+    five_hour_budget_tokens: 100000000,
+    weekly_budget_tokens: 400000000,
+    five_hour_remaining_tokens: 50000000,
+    weekly_remaining_tokens: 300000000,
+    five_hour_used_percent: 50,
+    weekly_used_percent: 25,
+    budget_configured_groups: 2,
+    groups: [],
+  };
+  const html = vm.runInContext("QuotaUI.render([], [], [_group])", c);
+  assert.match(html, /约 50%/);
+  assert.match(html, /data-remaining="50000000"/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /2\/3 组已设上限/);
+});
