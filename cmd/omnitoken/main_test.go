@@ -2,15 +2,20 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/suool/omnitoken/internal/agent"
+	"github.com/suool/omnitoken/internal/selfupdate"
 	"github.com/suool/omnitoken/internal/siteauth"
 )
 
@@ -146,5 +151,51 @@ func TestAgentEnrollRejectsSecretCommandLineFlags(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
 			t.Fatalf("%s error=%v, want undefined flag so credentials cannot enter argv", flagName, err)
 		}
+	}
+}
+
+func TestSelfUpdateCommandChecksAndReplacesBinary(t *testing.T) {
+	asset, err := selfupdate.AssetName(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported host %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	payload := []byte("new-omnitoken-bin")
+	sum := sha256.Sum256(payload)
+	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), asset)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			http.Redirect(w, r, "/releases/tag/v9.9.9", http.StatusFound)
+		case "/releases/download/v9.9.9/SHA256SUMS":
+			w.Write([]byte(sums))
+		case "/releases/download/v9.9.9/" + asset:
+			w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	target := filepath.Join(t.TempDir(), "omnitoken")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runSelfUpdateWith([]string{"-check", "-repo-url", srv.URL, "-binary", target}, &out); err != nil {
+		t.Fatalf("self-update -check: %v", err)
+	}
+	if !strings.Contains(out.String(), "v9.9.9") {
+		t.Fatalf("check output = %q", out.String())
+	}
+	out.Reset()
+	if err := runSelfUpdateWith([]string{"-repo-url", srv.URL, "-binary", target}, &out); err != nil {
+		t.Fatalf("self-update: %v", err)
+	}
+	if !strings.Contains(out.String(), "updated") {
+		t.Fatalf("update output = %q", out.String())
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("replaced binary = %q, err=%v", string(got), err)
 	}
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/suool/omnitoken/internal/agent"
+	"github.com/suool/omnitoken/internal/selfupdate"
 	"github.com/suool/omnitoken/internal/server"
 	"github.com/suool/omnitoken/internal/siteauth"
 	"github.com/suool/omnitoken/internal/statusline"
@@ -48,6 +50,10 @@ func main() {
 		runStatusline(os.Args[2:])
 	case "version":
 		fmt.Println("omnitoken " + version)
+	case "self-update":
+		if err := runSelfUpdateWith(os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("self-update: %v", err)
+		}
 	case "auth-code":
 		if err := runAuthCodeWith(os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("auth-code: %v", err)
@@ -66,7 +72,57 @@ func usage() {
   omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code's statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
-  omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook`)
+  omnitoken statusline -setup [-setup-undo]                     # install/remove the Claude Code hook
+  omnitoken self-update [-check] [-version vX.Y.Z] [-restart] [-restart-service NAME]`)
+}
+
+func runSelfUpdateWith(args []string, output io.Writer) error {
+	fs := flag.NewFlagSet("self-update", flag.ContinueOnError)
+	fs.SetOutput(output)
+	checkOnly := fs.Bool("check", false, "check latest version without downloading or modifying binary")
+	targetVersion := fs.String("version", "", "install a specific release tag (e.g. v0.5.0); default latest")
+	repoURL := fs.String("repo-url", selfupdate.DefaultRepoURL, "release repository base URL")
+	baseURL := fs.String("base-url", "", "direct mirror base URL holding <asset> and SHA256SUMS")
+	binaryPath := fs.String("binary", "", "target binary path to replace (default: current executable)")
+	allowDowngrade := fs.Bool("allow-downgrade", false, "allow replacing with an equal or older version")
+	autoRestart := fs.Bool("restart", false, "auto-detect and restart active omnitoken systemd/launchd services")
+	restartService := fs.String("restart-service", "", "comma-separated service names to restart after update")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var services []string
+	if strings.TrimSpace(*restartService) != "" {
+		services = append(services, *restartService)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	res, err := selfupdate.Run(ctx, selfupdate.Options{
+		CurrentVersion:  version,
+		TargetVersion:   *targetVersion,
+		RepoURL:         *repoURL,
+		BaseURL:         *baseURL,
+		BinaryPath:      *binaryPath,
+		CheckOnly:       *checkOnly,
+		AllowDowngrade:  *allowDowngrade,
+		AutoRestart:     *autoRestart,
+		RestartServices: services,
+	})
+	if err != nil {
+		return err
+	}
+	switch {
+	case res.AlreadyCurrent:
+		_, err = fmt.Fprintf(output, "omnitoken %s is already up to date (latest: %s)\n", res.CurrentVersion, res.TargetVersion)
+	case *checkOnly:
+		_, err = fmt.Fprintf(output, "current: %s, available: %s (%s)\n", res.CurrentVersion, res.TargetVersion, res.Asset)
+	case res.Updated:
+		msg := fmt.Sprintf("updated %s -> %s (%s)", res.CurrentVersion, res.TargetVersion, res.BinaryPath)
+		if len(res.Restarted) > 0 {
+			msg += fmt.Sprintf("; restarted: %s", strings.Join(res.Restarted, ", "))
+		}
+		_, err = fmt.Fprintln(output, msg)
+	}
+	return err
 }
 
 func runAuthCodeWith(args []string, output io.Writer) error {
