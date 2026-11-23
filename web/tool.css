@@ -18,6 +18,8 @@ body.tool-app {
   --source-claude: var(--tool-claude);
   --source-codex: var(--tool-codex);
   --source-dsh: var(--tool-dsh);
+  --source-antigravity: var(--tool-antigravity);
+  --source-gemini: var(--tool-gemini);
   --source-aggregate: #78bafa;
   --status-healthy: var(--tool-healthy);
   --meter-warn: var(--tool-warn);
@@ -355,6 +357,12 @@ body.tool-app {
 }
 .source-brand[data-source="dsh"] {
   color: #7596ff;
+}
+.source-brand[data-source="antigravity"] {
+  color: var(--tool-antigravity);
+}
+.source-brand[data-source="gemini"] {
+  color: var(--tool-gemini);
 }
 .tool-ui .view-state {
   background: #a4afbe07;

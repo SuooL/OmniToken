@@ -231,7 +231,7 @@ const SpeedView = {
       .filter((row) => Number.isFinite(row.contribution_tps) && row.contribution_tps > 0)
       .map(speedSourceKey)));
     const keys = [...new Set([
-      "claude-code", "codex", "dsh", ...[...contributed].sort(),
+      "claude-code", "codex", "dsh", "antigravity", "gemini", ...[...contributed].sort(),
     ])].filter((source) => contributed.has(source));
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);

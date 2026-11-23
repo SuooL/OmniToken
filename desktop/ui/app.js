@@ -46,10 +46,13 @@ const sourceName = (source) =>
     "claude-code": "Claude",
     codex: "Codex",
     dsh: "DeepSeek",
+    antigravity: "Antigravity",
+    gemini: "Gemini",
     api: "Other/API",
     proxy: "Other/API",
     "openai-api": "Other/API",
     "anthropic-api": "Other/API",
+    "google-api": "Other/API",
   })[source] ||
   source ||
   "未知来源";
@@ -190,12 +193,16 @@ function renderHero() {
     : "设备未知";
 }
 
-const DAILY_SOURCES = ["claude-code", "codex", "dsh"];
+const DAILY_SOURCES = ["claude-code", "codex", "dsh", "antigravity", "gemini"];
 
 function brand(source) {
-  const file = { "claude-code": "claude", codex: "codex", dsh: "deepseek" }[
-    source
-  ];
+  const file = {
+    "claude-code": "claude",
+    codex: "codex",
+    dsh: "deepseek",
+    antigravity: "antigravity",
+    gemini: "gemini",
+  }[source];
   return `<span class="brand">${file ? `<img src="icons/${file}.svg" alt="">` : '<span class="other-logo" aria-hidden="true">◇</span>'}<span class="brand-name">${esc(sourceName(source))}</span></span>`;
 }
 
@@ -251,7 +258,13 @@ const QUOTA_WINDOWS = [
   { key: "weekly", label: "Week" },
 ];
 
-const SOURCE_TONE = { "claude-code": "claude", codex: "codex", dsh: "dsh" };
+const SOURCE_TONE = {
+  "claude-code": "claude",
+  codex: "codex",
+  dsh: "dsh",
+  antigravity: "antigravity",
+  gemini: "gemini",
+};
 const percentLabel = (value) =>
   finite(value) ? `${value.toFixed(0)}%` : "暂无";
 

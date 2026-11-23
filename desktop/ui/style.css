@@ -30,6 +30,8 @@ body {
   --claude: var(--tool-claude);
   --codex: var(--tool-codex);
   --dsh: var(--tool-dsh);
+  --antigravity: var(--tool-antigravity);
+  --gemini: var(--tool-gemini);
   --source: var(--accent);
   height: 100%;
   padding: 15px;
@@ -251,6 +253,12 @@ input {
 }
 [data-source="dsh"] {
   --source: var(--dsh);
+}
+[data-source="antigravity"] {
+  --source: var(--antigravity);
+}
+[data-source="gemini"] {
+  --source: var(--gemini);
 }
 .source-row > .fig {
   color: var(--source);
@@ -547,6 +555,12 @@ body.details-window .panel {
 }
 .lane-dsh {
   --source: var(--dsh);
+}
+.lane-antigravity {
+  --source: var(--antigravity);
+}
+.lane-gemini {
+  --source: var(--gemini);
 }
 .lane-bars {
   height: 42px;
