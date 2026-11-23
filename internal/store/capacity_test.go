@@ -520,3 +520,103 @@ func TestResetCapacityIsScopedToOneSource(t *testing.T) {
 		t.Errorf("claude-code calibration = %+v, want it untouched", left)
 	}
 }
+
+func TestApplyIngestV2CalibratesAntigravityPerPoolCapacity(t *testing.T) {
+	s := capStore(t)
+	now := time.Now()
+	resets := now.Add(2 * time.Hour)
+	at := now.Add(-30 * time.Minute).UnixMilli()
+	const devID = "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001"
+	const batchID = "018f2d5a-7b31-7d98-bf8e-3c2f35a1b001"
+	const bootID = "018f2d5a-7b31-7d98-bf8e-3c2f35a1c001"
+
+	if _, err := s.InsertEvents([]model.Event{
+		{EventID: "ag-gem", TS: at, Device: devID, Source: "antigravity",
+			Provider: model.ProviderGoogleOAuth, Model: "gemini-4-neon-high", InputTokens: 690_000},
+		{EventID: "ag-3p", TS: at, Device: devID, Source: "antigravity",
+			Provider: model.ProviderGoogleOAuth, Model: "claude-opus-4-6-thinking", InputTokens: 9_000_000},
+	}, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ApplyIngestV2(model.IngestEnvelopeV2{
+		ProtocolVersion: model.IngestProtocolV2,
+		DeviceID:        devID,
+		BootID:          bootID,
+		BatchID:         batchID,
+		Sequence:        1,
+		CapturedAt:      now.UnixMilli(),
+		Kind:            model.IngestKindQuotas,
+		Quotas: []model.QuotaSnapshot{
+			{Device: devID, Source: "antigravity", LimitID: "antigravity-account", Scope: "gemini-5h",
+				WindowMinutes: 300, UsedPercent: 6.9, ResetsAt: resets.UnixMilli(), ObservedAt: now.UnixMilli()},
+			{Device: devID, Source: "antigravity", LimitID: "antigravity-account", Scope: "3p-5h",
+				WindowMinutes: 300, UsedPercent: 45.0, ResetsAt: resets.UnixMilli(), ObservedAt: now.UnixMilli()},
+		},
+	}, now.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ack.Accepted != 2 {
+		t.Fatalf("accepted = %d, want 2", res.Ack.Accepted)
+	}
+	gemSamples, err := s.CapacitySamples("antigravity", "gemini-5h", 300, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gemSamples) != 1 || gemSamples[0].TokensAtPeak != 690_000 {
+		t.Fatalf("gemini-5h samples = %+v, want only gemini tokens (690k)", gemSamples)
+	}
+	tpSamples, err := s.CapacitySamples("antigravity", "3p-5h", 300, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tpSamples) != 1 || tpSamples[0].TokensAtPeak != 9_000_000 {
+		t.Fatalf("3p-5h samples = %+v, want only 3p tokens (9M)", tpSamples)
+	}
+	// Fractional precision for antigravity allows live-only estimation at 6.9%.
+	capTokens, ok := CapacityForWindowWithSource("antigravity", 0, false, 690_000, 6.9)
+	if !ok || capTokens < 9_900_000 || capTokens > 10_100_000 {
+		t.Fatalf("antigravity live capacity at 6.9%% = %d (ok=%v), want ~10M", capTokens, ok)
+	}
+	if _, ok := CapacityForWindowWithSource("claude-code", 0, false, 690_000, 6.9); ok {
+		t.Fatal("integer-percent source must still withhold live-only estimate below 10%")
+	}
+}
+
+func TestPruneOperationalTablesRetainsEventsAndCapacity(t *testing.T) {
+	s := capStore(t)
+	now := time.Now()
+	oldObs := now.Add(-40 * 24 * time.Hour).UnixMilli()
+	freshObs := now.Add(-1 * time.Hour).UnixMilli()
+
+	if _, err := s.InsertEvents([]model.Event{
+		{EventID: "old-ev", TS: oldObs, Device: "mac", Source: "claude-code", Model: "claude-opus-4-8", InputTokens: 100},
+	}, oldObs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertQuotas([]model.QuotaSnapshot{
+		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 40, ResetsAt: oldObs + 3600_000, ObservedAt: oldObs},
+		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 50, ResetsAt: freshObs + 3600_000, ObservedAt: freshObs},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO ingest_receipts (batch_id, device_id, protocol_version, ack_sequence, accepted, duplicates, server_time) VALUES (?, ?, 2, '1', 1, 0, ?), (?, ?, 2, '2', 1, 0, ?)`,
+		"old-b", "dev1", now.Add(-20*24*time.Hour).UnixMilli(),
+		"new-b", "dev1", freshObs,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	qDel, rDel, err := s.PruneOperationalTables(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qDel != 1 || rDel != 1 {
+		t.Fatalf("pruned quotas=%d receipts=%d, want 1 and 1", qDel, rDel)
+	}
+	var evCount int
+	if err := s.rdb.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&evCount); err != nil || evCount != 1 {
+		t.Fatalf("events must never be pruned: count=%d err=%v", evCount, err)
+	}
+}

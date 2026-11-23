@@ -121,6 +121,29 @@ func (s *Store) LatestHeartbeat(deviceID string) (model.Heartbeat, int64, error)
 	return heartbeat, receivedAt, nil
 }
 
+// ListLatestHeartbeats returns every device's latest stored heartbeat in one
+// query, avoiding N+1 lookups on the devices view.
+func (s *Store) ListLatestHeartbeats() (map[string]model.Heartbeat, error) {
+	rows, err := s.rdb.Query(`SELECT device_id, heartbeat FROM device_heartbeats`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]model.Heartbeat{}
+	for rows.Next() {
+		var deviceID, encoded string
+		if err := rows.Scan(&deviceID, &encoded); err != nil {
+			return nil, err
+		}
+		var hb model.Heartbeat
+		if err := json.Unmarshal([]byte(encoded), &hb); err != nil {
+			return nil, fmt.Errorf("decode heartbeat for %s: %w", deviceID, err)
+		}
+		out[deviceID] = hb
+	}
+	return out, rows.Err()
+}
+
 // RegisterDevice creates a stable device principal. Re-registering a device ID
 // or credential is rejected by the database uniqueness constraints.
 func (s *Store) RegisterDevice(deviceID, displayName, plaintextToken string, capabilities []string, createdAt int64) (DeviceRecord, error) {

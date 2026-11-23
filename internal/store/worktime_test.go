@@ -45,3 +45,16 @@ func TestZeroDurationPointsStillBridge(t *testing.T) {
 		t.Fatalf("point bridging wrong: %+v", spans)
 	}
 }
+
+func TestBridgeSpansHandlesOutOfOrderStarts(t *testing.T) {
+	// Short event [9,10] finishes before long concurrent event [2,12]: sorting
+	// by start time yields a single merged span [2,12] instead of losing [2,9].
+	points := []evPoint{
+		{ts: 10 * m, dur: 1 * m},  // [9,10]
+		{ts: 12 * m, dur: 10 * m}, // [2,12]
+	}
+	spans := bridgeSpans(points, 5*m)
+	if len(spans) != 1 || spans[0].start != 2*m || spans[0].end != 12*m {
+		t.Fatalf("out-of-order start spans = %+v, want [2m, 12m]", spans)
+	}
+}

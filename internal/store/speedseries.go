@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"sort"
 	"time"
 
@@ -41,10 +43,10 @@ func (s *Store) SpeedSeries(from, to time.Time, bucket time.Duration, device str
 		bucketMS = time.Minute.Milliseconds()
 	}
 	startMS, endMS := from.UnixMilli(), to.UnixMilli()
-	n := int((endMS - startMS) / bucketMS)
-	if n <= 0 {
+	if endMS <= startMS {
 		return []SpeedBucket{}, nil
 	}
+	n := int((endMS - startMS + bucketMS - 1) / bucketMS)
 
 	out := make([]SpeedBucket, n)
 	spansPer := make([][]span, n)
@@ -68,6 +70,12 @@ func (s *Store) SpeedSeries(from, to time.Time, bucket time.Duration, device str
 	}
 	defer rows.Close()
 
+	type bucketAlloc struct {
+		index     int
+		interval  span
+		tokens    int64
+		remainder int64
+	}
 	for rows.Next() {
 		var ts, genMS, outTok int64
 		if err := rows.Scan(&ts, &genMS, &outTok); err != nil {
@@ -83,16 +91,40 @@ func (s *Store) SpeedSeries(from, to time.Time, bucket time.Duration, device str
 		// for a month of it.
 		first := int((max(evStart, startMS) - startMS) / bucketMS)
 		last := int((min(evEnd, endMS) - startMS) / bucketMS)
+		var allocs []bucketAlloc
+		var covered, allocated int64
 		for i := max(first, 0); i <= min(last, n-1); i++ {
 			bStart := out[i].StartMS
-			bEnd := bStart + bucketMS
+			bEnd := min(bStart+bucketMS, endMS)
 			lo, hi := max(evStart, bStart), min(evEnd, bEnd)
 			if hi <= lo {
 				continue
 			}
-			// Tokens follow time: the share of the interval inside this bucket.
-			out[i].OutputTokens += outTok * (hi - lo) / total
-			spansPer[i] = append(spansPer[i], span{lo, hi})
+			overlap := hi - lo
+			num := outTok * overlap
+			a := bucketAlloc{
+				index:     i,
+				interval:  span{lo, hi},
+				tokens:    num / total,
+				remainder: num % total,
+			}
+			allocs = append(allocs, a)
+			covered += overlap
+			allocated += a.tokens
+		}
+		target := outTok * covered / total
+		sort.SliceStable(allocs, func(i, j int) bool {
+			if allocs[i].remainder == allocs[j].remainder {
+				return allocs[i].index < allocs[j].index
+			}
+			return allocs[i].remainder > allocs[j].remainder
+		})
+		for i := int64(0); i < target-allocated; i++ {
+			allocs[i].tokens++
+		}
+		for _, a := range allocs {
+			out[a.index].OutputTokens += a.tokens
+			spansPer[a.index] = append(spansPer[a.index], a.interval)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -160,7 +192,13 @@ type SpeedModelStat struct {
 // logs after 30 days, so events older than a rescan can never be given an
 // interval. A speed built on 12% of the events is not a fact about the model.
 func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) {
-	rows, err := s.rdb.Query(
+	tx, err := s.rdb.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
 		`SELECT model, device, session_id, ts, gen_ms, output_tokens, ttft_ms, source
 		 FROM events
 		 WHERE ts >= ? AND ts < ? AND gen_ms > 0 AND output_tokens > 0`,
@@ -168,7 +206,6 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	type streamKey struct{ model, device, session string }
 	streams := map[streamKey][]span{}
@@ -180,6 +217,7 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 		var mdl, device, session, source string
 		var ts, genMS, outTok, ttftMS int64
 		if err := rows.Scan(&mdl, &device, &session, &ts, &genMS, &outTok, &ttftMS, &source); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		// Same folding as every other view: two ids for one model must not
@@ -200,8 +238,10 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 
 	active := map[string]int64{}
 	streamCount := map[string]int64{}
@@ -212,7 +252,7 @@ func (s *Store) SpeedByModelUnion(from, to time.Time) ([]SpeedModelStat, error) 
 		}
 	}
 
-	totals, err := s.eventCountByModel(from, to)
+	totals, err := eventCountByModelTx(tx, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -262,10 +302,10 @@ func ttftQuantiles(values []int64) (median, p90 float64) {
 	return median, float64(sorted[min(rank, n)-1])
 }
 
-// eventCountByModel counts every event per model, interval or not, so coverage
-// has an honest denominator.
-func (s *Store) eventCountByModel(from, to time.Time) (map[string]int64, error) {
-	rows, err := s.rdb.Query(
+// eventCountByModelTx counts every event per model, interval or not, so coverage
+// has an honest denominator within the same read snapshot.
+func eventCountByModelTx(tx *sql.Tx, from, to time.Time) (map[string]int64, error) {
+	rows, err := tx.Query(
 		`SELECT model, COUNT(*) FROM events
 		 WHERE ts >= ? AND ts < ? AND output_tokens > 0
 		 GROUP BY model`, from.UnixMilli(), to.UnixMilli())

@@ -215,9 +215,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Tell the panel a repaint is worthwhile: every cost on screen just moved.
-	if overrides != nil {
-		s.bcast.Notify()
+	// Tell the panel a repaint is worthwhile whenever costs or device labels changed.
+	if overrides != nil || labels != nil {
+		s.invalidateReadViews()
 	}
 	writeJSON(w, map[string]any{
 		"status":           settingsSavedMsg,

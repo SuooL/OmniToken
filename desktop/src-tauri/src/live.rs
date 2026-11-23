@@ -236,6 +236,8 @@ struct QuotaView {
     label: String,
     five_hour_percent: Option<f64>,
     weekly_percent: Option<f64>,
+    five_hour_scope: Option<String>,
+    weekly_scope: Option<String>,
     five_hour_resets_at_ms: Option<i64>,
     weekly_resets_at_ms: Option<i64>,
     /// Estimates from the matching authoritative window card (ADR-0025/0034).
@@ -348,30 +350,75 @@ fn remaining_tokens(window: Option<&Value>, percent: Option<f64>) -> Option<i64>
     Some(capacity.saturating_sub(used).max(0))
 }
 
-/// The tightest weekly reading and its reset deadline, matching the server card.
-fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
+fn quota_pool(source: &str, scope: Option<&str>) -> &'static str {
+    let s = scope.unwrap_or("").trim().to_ascii_lowercase();
+    match source {
+        "antigravity" => {
+            if s.contains("argon") {
+                "gemini-argon"
+            } else if s.starts_with("gemini") {
+                "gemini"
+            } else if s.starts_with("3p") {
+                "3p"
+            } else {
+                "all"
+            }
+        }
+        "claude-code" => {
+            if s.contains("opus") {
+                "opus"
+            } else if s.contains("sonnet") {
+                "sonnet"
+            } else if s.contains("haiku") {
+                "haiku"
+            } else {
+                "all"
+            }
+        }
+        _ => "all",
+    }
+}
+
+/// The tightest reading, reset deadline, and scope for one (source, window_minutes).
+fn tightest_quota_window(
+    quotas: &[Value],
+    source: &str,
+    window_minutes: i64,
+) -> Option<(f64, Option<i64>, Option<String>)> {
     quotas
         .iter()
         .filter(|quota| quota.get("source").and_then(Value::as_str) == Some(source))
-        .filter(|quota| {
-            quota.get("window_minutes").and_then(Value::as_i64) == Some(WEEKLY_WINDOW_MINUTES)
-        })
+        .filter(|quota| quota.get("window_minutes").and_then(Value::as_i64) == Some(window_minutes))
         .filter_map(|quota| {
-            Some((
-                quota.get("used_percent").and_then(Value::as_f64)?,
-                quota
-                    .get("resets_at")
-                    .and_then(Value::as_i64)
-                    .filter(|n| *n > 0),
-            ))
+            let pct = quota
+                .get("used_percent")
+                .and_then(Value::as_f64)
+                .filter(|p| p.is_finite() && *p >= 0.0)?;
+            let resets_at = quota
+                .get("resets_at")
+                .and_then(Value::as_i64)
+                .filter(|n| *n > 0);
+            let scope = quota
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            Some((pct, resets_at, scope))
         })
         .fold(
             None,
-            |tightest: Option<(f64, Option<i64>)>, current| match tightest {
-                Some(best) if best.0 >= current.0 => Some(best),
+            |tightest: Option<(f64, Option<i64>, Option<String>)>, current| match tightest {
+                Some(best) if best.0 > current.0 => Some(best),
+                Some(best) if best.0 == current.0 && best.2 <= current.2 => Some(best),
                 _ => Some(current),
             },
         )
+}
+
+/// The tightest weekly reading and its reset deadline, matching the server card.
+fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>, Option<String>)> {
+    tightest_quota_window(quotas, source, WEEKLY_WINDOW_MINUTES)
 }
 
 fn quota_scope_label(scope: &str) -> String {
@@ -460,36 +507,6 @@ fn quota_buckets_for(quotas: &[Value], source: &str) -> Vec<QuotaBucketView> {
     }
 }
 
-fn tightest_quota_window(
-    quotas: &[Value],
-    source: &str,
-    window_minutes: i64,
-) -> Option<(f64, Option<i64>)> {
-    quotas
-        .iter()
-        .filter(|quota| quota.get("source").and_then(Value::as_str) == Some(source))
-        .filter(|quota| quota.get("window_minutes").and_then(Value::as_i64) == Some(window_minutes))
-        .filter_map(|quota| {
-            Some((
-                quota
-                    .get("used_percent")
-                    .and_then(Value::as_f64)
-                    .filter(|p| p.is_finite() && *p >= 0.0)?,
-                quota
-                    .get("resets_at")
-                    .and_then(Value::as_i64)
-                    .filter(|n| *n > 0),
-            ))
-        })
-        .fold(
-            None,
-            |tightest: Option<(f64, Option<i64>)>, current| match tightest {
-                Some(best) if best.0 >= current.0 => Some(best),
-                _ => Some(current),
-            },
-        )
-}
-
 /// Both windows are peers: a fresh 5-hour window must not hide a near-full
 /// weekly limit. Rolling placeholders are never presented as official quotas.
 fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
@@ -527,31 +544,67 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
                         .and_then(Value::as_f64)
                         .unwrap_or(0.0)
                 })
-                .or_else(|| five_hour_from_quotas.map(|(percent, _)| percent));
+                .or_else(|| {
+                    five_hour_from_quotas
+                        .as_ref()
+                        .map(|(percent, _, _)| *percent)
+                });
+            let five_hour_scope = five_hour
+                .and_then(|window| window.get("scope").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| {
+                    five_hour_from_quotas
+                        .as_ref()
+                        .and_then(|(_, _, scope)| scope.clone())
+                });
             let weekly = weekly_quota(quotas, source);
-            let weekly_percent = weekly.map(|(percent, _)| percent);
-            let weekly_remaining_tokens =
-                remaining_tokens(window_card(windows, source, true), weekly_percent);
+            let weekly_card = window_card(windows, source, true);
+            let weekly_percent = weekly.as_ref().map(|(percent, _, _)| *percent);
+            let weekly_scope = weekly
+                .as_ref()
+                .and_then(|(_, _, scope)| scope.clone())
+                .or_else(|| {
+                    weekly_card
+                        .and_then(|window| window.get("scope").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToString::to_string)
+                });
+            let weekly_remaining_tokens = remaining_tokens(weekly_card, weekly_percent);
             let five_hour_remaining_tokens =
                 remaining_tokens(window_card(windows, source, false), five_hour_percent);
-            // Both limits apply. A 5h allowance is not spendable beyond the
-            // remaining weekly allowance, even just after the 5h reset.
-            let five_hour_remaining_tokens =
+            // Both limits apply only when the 5h and weekly windows draw from
+            // the same underlying model pool (e.g. Antigravity 3p-5h must not
+            // be clamped by gemini-argon-wtu-weekly).
+            let same_pool = quota_pool(source, five_hour_scope.as_deref())
+                == quota_pool(source, weekly_scope.as_deref());
+            let five_hour_remaining_tokens = if same_pool {
                 match (five_hour_remaining_tokens, weekly_remaining_tokens) {
                     (_, Some(0)) if five_hour_percent.is_some() => Some(0),
                     (Some(five_hour), Some(weekly)) => Some(five_hour.min(weekly)),
                     (five_hour, _) => five_hour,
-                };
+                }
+            } else {
+                five_hour_remaining_tokens
+            };
             QuotaView {
                 source: source.to_string(),
                 label: source_label(source),
                 five_hour_percent,
                 weekly_percent,
+                five_hour_scope,
+                weekly_scope,
                 five_hour_resets_at_ms: five_hour
                     .and_then(|window| window.get("resets_at").and_then(Value::as_i64))
                     .filter(|n| *n > 0)
-                    .or_else(|| five_hour_from_quotas.and_then(|(_, resets_at)| resets_at)),
-                weekly_resets_at_ms: weekly.and_then(|(_, resets_at)| resets_at),
+                    .or_else(|| {
+                        five_hour_from_quotas
+                            .as_ref()
+                            .and_then(|(_, resets_at, _)| *resets_at)
+                    }),
+                weekly_resets_at_ms: weekly.as_ref().and_then(|(_, resets_at, _)| *resets_at),
                 five_hour_remaining_tokens,
                 weekly_remaining_tokens,
                 buckets: quota_buckets_for(quotas, source),
@@ -818,9 +871,20 @@ fn stale_after_ms() -> i64 {
 /// trains the user to dismiss it.
 pub const THRESHOLDS: [u8; 2] = [75, 90];
 
-/// One quota window, at one threshold. `resets_at` is part of the identity on
-/// purpose: when the window rolls over the server reports a new reset instant, so
-/// the same threshold re-arms by itself and no expiry bookkeeping is needed.
+/// One quota window, at one threshold. `resets_at` is bucketed at hour
+/// resolution (matching server `LatestQuotas` / `quota_capacity`) so derived
+/// reset jitter across seconds/minutes never re-fires duplicate alerts while
+/// distinct ≥5h windows still re-arm cleanly.
+const ALERT_RESET_BUCKET_MS: i64 = 3_600_000;
+
+fn alert_reset_bucket(resets_ms: i64) -> i64 {
+    if resets_ms <= 0 {
+        0
+    } else {
+        (resets_ms / ALERT_RESET_BUCKET_MS) + 1
+    }
+}
+
 type AlertKey = (String, String, i64, u8);
 
 #[derive(Default)]
@@ -836,13 +900,22 @@ pub struct Alert {
 
 fn quota_name(q: &Value) -> String {
     let source = q.get("source").and_then(Value::as_str).unwrap_or("");
-    let source = if source == "claude-code" {
-        "claude"
-    } else {
-        source
+    let source = match source {
+        "claude-code" => "claude",
+        "antigravity" => "Antigravity",
+        other => other,
     };
     let window = q.get("window_label").and_then(Value::as_str).unwrap_or("");
-    format!("{source} · {window}")
+    let scope = q.get("scope").and_then(Value::as_str).unwrap_or("").trim();
+    let pool_suffix = match scope {
+        "" | "five_hour" | "seven_day" | "primary" | "secondary" => String::new(),
+        other => quota_scope_label(other),
+    };
+    if pool_suffix.is_empty() {
+        format!("{source} · {window}")
+    } else {
+        format!("{source} · {pool_suffix} · {window}")
+    }
 }
 
 impl Alerts {
@@ -864,13 +937,14 @@ impl Alerts {
             let source = q.get("source").and_then(Value::as_str).unwrap_or("");
             let scope = q.get("scope").and_then(Value::as_str).unwrap_or("");
             let resets = q.get("resets_at").and_then(Value::as_i64).unwrap_or(0);
+            let reset_bucket = alert_reset_bucket(resets);
 
             let mut highest: Option<u8> = None;
             for t in THRESHOLDS {
                 if pct < t as f64 {
                     continue;
                 }
-                let key = (source.to_string(), scope.to_string(), resets, t);
+                let key = (source.to_string(), scope.to_string(), reset_bucket, t);
                 if self.fired.insert(key) {
                     highest = Some(t);
                 }
@@ -893,8 +967,9 @@ impl Alerts {
     /// Forget windows that have already rolled over, so the set cannot grow for
     /// as long as the app stays open.
     pub fn forget_before(&mut self, now_ms: i64) {
+        let now_bucket = alert_reset_bucket(now_ms);
         self.fired
-            .retain(|(_, _, resets, _)| *resets == 0 || *resets >= now_ms);
+            .retain(|(_, _, reset_bucket, _)| *reset_bucket == 0 || *reset_bucket >= now_bucket);
     }
 }
 
@@ -1295,13 +1370,18 @@ mod tests {
         assert_eq!(a.crossings(&[quota(78.0, 1000)]).len(), 0);
     }
 
-    // A rolled-over window reports a new reset instant, which is what re-arms
-    // the warning without any expiry bookkeeping.
+    // A rolled-over window reports a new reset instant (at least 5h later),
+    // which re-arms the warning while ignoring sub-hour reset jitter.
     #[test]
     fn rearms_when_the_window_rolls_over() {
         let mut a = Alerts::default();
-        assert_eq!(a.crossings(&[quota(80.0, 1000)]).len(), 1);
-        assert_eq!(a.crossings(&[quota(80.0, 2000)]).len(), 1);
+        let w1 = 1_700_000_000_000i64;
+        let w2 = w1 + 5 * 3_600_000;
+        assert_eq!(a.crossings(&[quota(80.0, w1)]).len(), 1);
+        // 18s reset jitter in the same window must not duplicate the alert.
+        assert_eq!(a.crossings(&[quota(80.0, w1 + 18_000)]).len(), 0);
+        // A new window 5h later re-arms.
+        assert_eq!(a.crossings(&[quota(80.0, w2)]).len(), 1);
     }
 
     #[test]
@@ -1325,11 +1405,12 @@ mod tests {
     #[test]
     fn forgets_windows_that_have_reset() {
         let mut a = Alerts::default();
-        assert_eq!(a.crossings(&[quota(80.0, 1000)]).len(), 1);
-        a.forget_before(5000);
+        let w1 = 3_600_000i64 * 10;
+        assert_eq!(a.crossings(&[quota(80.0, w1)]).len(), 1);
+        a.forget_before(w1 + 2 * 3_600_000);
         // The entry is gone, so the same window would warn again — which is
         // correct: at that point it is a window we have no memory of.
-        assert_eq!(a.crossings(&[quota(80.0, 1000)]).len(), 1);
+        assert_eq!(a.crossings(&[quota(80.0, w1)]).len(), 1);
     }
 
     // resets_at == 0 means the server gave no boundary. Those must not be swept,
@@ -1775,11 +1856,13 @@ mod tests {
                 "five_hour_percent",
                 "five_hour_remaining_tokens",
                 "five_hour_resets_at_ms",
+                "five_hour_scope",
                 "label",
                 "source",
                 "weekly_percent",
                 "weekly_remaining_tokens",
                 "weekly_resets_at_ms",
+                "weekly_scope",
             ]
         );
 

@@ -113,7 +113,7 @@ func (s *Server) handleRevokeDeviceV2(w http.ResponseWriter, r *http.Request) {
 		writeIngestV2Error(w, http.StatusInternalServerError, "store_error")
 		return
 	}
-	s.bcast.Notify()
+	s.invalidateReadViews()
 	writeJSON(w, map[string]any{
 		"device_id":  deviceID,
 		"status":     "revoked",

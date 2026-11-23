@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"sort"
 	"time"
 
@@ -93,7 +95,13 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		},
 	}
 
-	rows, err := s.rdb.Query(
+	tx, err := s.rdb.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
 		`SELECT model, COALESCE(SUM(`+telemetryTokenExpression+`),0)
 		 FROM events WHERE ts >= ? AND ts <= ?
 		 GROUP BY model`,
@@ -139,13 +147,13 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 		return out.Today.Models[i].Tokens > out.Today.Models[j].Tokens
 	})
 
-	sources, err := s.telemetryDailySources(todayStart, now)
+	sources, err := telemetryDailySourcesTx(tx, todayStart, now)
 	if err != nil {
 		return out, err
 	}
 	out.Today.Sources = sources
 
-	if err := s.rdb.QueryRow(
+	if err := tx.QueryRow(
 		`SELECT COALESCE(SUM(`+telemetryTokenExpression+`),0)
 		 FROM events WHERE ts >= ? AND ts <= ?`,
 		out.Rolling5H.StartMS, out.Rolling5H.EndMS,
@@ -154,7 +162,7 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 	}
 
 	previousStartMS := now.Add(-10 * time.Hour).UnixMilli()
-	sourceRows, err := s.rdb.Query(
+	sourceRows, err := tx.Query(
 		`SELECT source,
 		        COALESCE(SUM(CASE WHEN ts >= ? THEN `+telemetryTokenExpression+` ELSE 0 END),0),
 		        COALESCE(SUM(CASE WHEN ts >= ? AND ts < ? THEN `+telemetryTokenExpression+` ELSE 0 END),0)
@@ -211,12 +219,12 @@ func (s *Store) TelemetryUsage(todayStart, now time.Time) (TelemetryUsageSnapsho
 	return out, nil
 }
 
-// telemetryDailySources preserves the actual tool/model relationship. A model
+// telemetryDailySourcesTx preserves the actual tool/model relationship. A model
 // may be used through more than one tool, so names cannot determine its source.
-func (s *Store) telemetryDailySources(todayStart, now time.Time) ([]TelemetryDailySourceUsage, error) {
+func telemetryDailySourcesTx(tx *sql.Tx, todayStart, now time.Time) ([]TelemetryDailySourceUsage, error) {
 	previousStart := todayStart.AddDate(0, 0, -1)
 	previousEnd := now.AddDate(0, 0, -1)
-	rows, err := s.rdb.Query(`SELECT source, model,
+	rows, err := tx.Query(`SELECT source, model,
   COALESCE(SUM(CASE WHEN ts >= ? THEN `+telemetryTokenExpression+` ELSE 0 END),0),
   COALESCE(SUM(CASE WHEN ts <= ? AND ts < ? THEN `+telemetryTokenExpression+` ELSE 0 END),0)
   FROM events WHERE ts >= ? AND ts <= ? GROUP BY source, model`,

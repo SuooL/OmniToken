@@ -529,6 +529,7 @@ func (a *Agent) sendHeartbeat() error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("heartbeat server %s: %s", resp.Status, msg)
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
 
@@ -642,16 +643,23 @@ func (a *Agent) drainOutbox() (int, error) {
 	}
 }
 
+func isPermanentIngestReject(status int) bool {
+	switch status {
+	case http.StatusBadRequest,
+		http.StatusConflict,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 func (a *Agent) uploadOldest() error {
-	envelope, err := a.outbox.PeekBatch()
+	raw, err := a.outbox.PeekRaw()
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/v2/ingest", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/v2/ingest", bytes.NewReader(raw.Payload))
 	if err != nil {
 		return err
 	}
@@ -665,6 +673,15 @@ func (a *Agent) uploadOldest() error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		if isPermanentIngestReject(resp.StatusCode) {
+			reason := strings.TrimSpace(string(msg))
+			if qerr := a.outbox.QuarantineOldest(raw.BatchID, resp.StatusCode, reason); qerr != nil {
+				log.Printf("agent: quarantine batch %s failed: %v", raw.BatchID, qerr)
+			} else {
+				log.Printf("agent: quarantined permanently rejected batch %s (HTTP %d: %s)", raw.BatchID, resp.StatusCode, reason)
+				return nil
+			}
+		}
 		return fmt.Errorf("server %s: %s", resp.Status, msg)
 	}
 	ackBody, err := io.ReadAll(io.LimitReader(resp.Body, ingestAckBodyMax+1))
@@ -751,6 +768,7 @@ func (a *Agent) postIngest(payload map[string]any) error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("server %s: %s", resp.Status, msg)
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
 

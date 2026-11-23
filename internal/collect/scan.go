@@ -251,7 +251,12 @@ func scanFile(path string, spec SourceSpec, device string, st *State, resolveRep
 		if err != nil {
 			return 0, fmt.Errorf("identify quota batch for %s: %w", path, err)
 		}
-		if !st.DeliveryDone(path, key) {
+		const quotaChunkOrdinal = -1
+		if crossScan {
+			nextChunks[quotaChunkOrdinal] = key
+		}
+		alreadyCommitted := crossScan && st.ChunkDelivered(path, quotaChunkOrdinal, key)
+		if !alreadyCommitted && !st.DeliveryDone(path, key) {
 			if err := quotaSink(res.Quotas); err != nil {
 				return 0, fmt.Errorf("quota sink for %s: %w", path, err)
 			}

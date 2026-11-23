@@ -97,10 +97,7 @@ type rowQueryer interface {
 // changing anything. It applies the same validation as the merge, so a typo is
 // rejected at preview time rather than after the confirmation dialog.
 func (s *Store) PlanDeviceMerge(from, to string) (DeviceMergePlan, error) {
-	if err := s.ensureSettings(); err != nil {
-		return DeviceMergePlan{}, err
-	}
-	return planDeviceMerge(s.db, from, to)
+	return planDeviceMerge(s.rdb, from, to)
 }
 
 func planDeviceMerge(q rowQueryer, from, to string) (DeviceMergePlan, error) {
@@ -235,6 +232,12 @@ func (s *Store) MergeDeviceIdentity(from, to, actor string, at int64) (DeviceMer
 	if err != nil {
 		return DeviceMergePlan{}, err
 	}
+	if _, err := tx.Exec(`DELETE FROM quota_latest WHERE device = ?`, from); err != nil {
+		return DeviceMergePlan{}, err
+	}
+	if err := refreshQuotaLatestForDeviceTx(tx, to); err != nil {
+		return DeviceMergePlan{}, err
+	}
 
 	// Process state is a snapshot the reporting device rewrites every round
 	// (ADR-0012), and its primary key contains the device. Migrating it would
@@ -322,10 +325,7 @@ func appendDeviceMergeRecord(tx *sql.Tx, record DeviceMergeRecord) error {
 // DeviceMergeHistory returns the audit log, oldest first. There is no delete
 // counterpart on purpose (ADR-0019 §5).
 func (s *Store) DeviceMergeHistory() ([]DeviceMergeRecord, error) {
-	if err := s.ensureSettings(); err != nil {
-		return nil, err
-	}
-	return deviceMergeHistory(s.db)
+	return deviceMergeHistory(s.rdb)
 }
 
 func deviceMergeHistory(q rowQueryer) ([]DeviceMergeRecord, error) {

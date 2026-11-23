@@ -1,8 +1,6 @@
 package server
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -116,6 +114,11 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	heartbeats, err := s.store.ListLatestHeartbeats()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, record := range registered {
 		index, exists := indexByDevice[record.DeviceID]
 		if !exists {
@@ -133,14 +136,10 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			age := max(now.UnixMilli()-record.LastSeenAt, 0)
 			entry.LastSeenAgeMS = &age
 		}
-		heartbeat, _, heartbeatErr := s.store.LatestHeartbeat(record.DeviceID)
-		if heartbeatErr == nil {
+		if heartbeat, ok := heartbeats[record.DeviceID]; ok {
 			entry.QueuedBatches = heartbeat.QueuedBatches
 			entry.QueuedBytes = heartbeat.QueuedBytes
 			entry.OldestQueuedAt = heartbeat.OldestQueuedAt
-		} else if !errors.Is(heartbeatErr, sql.ErrNoRows) {
-			http.Error(w, heartbeatErr.Error(), http.StatusInternalServerError)
-			return
 		}
 	}
 

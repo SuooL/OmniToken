@@ -1,8 +1,15 @@
 package collect
 
 import (
+	"context"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+const (
+	gitProbeTimeout = 5 * time.Second
+	sshProbeTimeout = 15 * time.Second
 )
 
 // NormalizeRepoURL maps the many spellings of one remote to a single identity,
@@ -70,7 +77,9 @@ func SSHRepoResolver(host string) func(cwd string) string {
 	return func(cwd string) string {
 		script := "git -C " + shQuote(cwd) + " config --get remote.origin.url 2>/dev/null" +
 			" || git -C " + shQuote(cwd) + " rev-parse --show-toplevel 2>/dev/null | sed 's/^/local:/'"
-		out, err := sshCommand(host, script).Output()
+		ctx, cancel := context.WithTimeout(context.Background(), sshProbeTimeout)
+		defer cancel()
+		out, err := sshCommandContext(ctx, host, script).Output()
 		if err != nil {
 			return ""
 		}
@@ -83,7 +92,9 @@ func SSHRepoResolver(host string) func(cwd string) string {
 }
 
 func runGit(dir string, args ...string) (string, bool) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
@@ -92,7 +103,11 @@ func runGit(dir string, args ...string) (string, bool) {
 }
 
 func sshCommand(host, script string) *exec.Cmd {
-	return exec.Command("ssh",
+	return sshCommandContext(context.Background(), host, script)
+}
+
+func sshCommandContext(ctx context.Context, host, script string) *exec.Cmd {
+	return exec.CommandContext(ctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		host, script)

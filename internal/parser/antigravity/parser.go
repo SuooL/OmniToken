@@ -62,16 +62,14 @@ func Parse(r io.Reader, device string, turnStartMS int64) model.ParseResult {
 // re-reads them once flushed.
 func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res model.ParseResult) {
 	sessionID := sessionIDFromPath(path)
-	var timings map[int64]stepTiming
-	var cwd string
-	metaLoaded := false
 	br := bufio.NewReaderSize(r, 1<<20)
 	var prevMS int64
+	var stepIndices []int64
 	res.TurnStartMS = turnStartMS
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			return res
+			break
 		}
 		res.Consumed += int64(len(line))
 		rec, ok := decodeLine(line)
@@ -83,22 +81,25 @@ func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res 
 			if prevMS > 0 && ev.TS > prevMS {
 				ev.DurationMS = min(ev.TS-prevMS, maxSpanMS)
 			}
-			if !metaLoaded {
-				timings = loadConversationTimings(path, sessionID)
-				cwd = loadConversationCWD(path, sessionID)
-				metaLoaded = true
-			}
-			if t, ok := timings[rec.StepIndex]; ok {
-				ev.GenMS = t.GenMS
-				ev.TTFTMS = t.TTFTMS
-			}
-			ev.CWD = cwd
 			res.Events = append(res.Events, ev)
+			stepIndices = append(stepIndices, rec.StepIndex)
 		}
 		if lineMS > 0 {
 			prevMS = lineMS
 		}
 	}
+	if len(res.Events) > 0 {
+		timings := loadConversationTimings(path, sessionID, stepIndices...)
+		cwd := loadConversationCWD(path, sessionID)
+		for i := range res.Events {
+			if t, ok := timings[stepIndices[i]]; ok {
+				res.Events[i].GenMS = t.GenMS
+				res.Events[i].TTFTMS = t.TTFTMS
+			}
+			res.Events[i].CWD = cwd
+		}
+	}
+	return res
 }
 
 func decodeLine(line string) (transcriptLine, bool) {

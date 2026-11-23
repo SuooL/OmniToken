@@ -25,7 +25,10 @@ import (
 
 const Source = "gemini"
 
-const defaultModel = "unknown"
+const (
+	defaultModel       = "unknown"
+	maxGeminiFileBytes = 64 << 20 // upper bound on a single session file read into memory
+)
 
 // MatchFile accepts *.json and *.jsonl session logs under ~/.gemini/tmp.
 func MatchFile(path string) bool {
@@ -40,24 +43,33 @@ func Parse(r io.Reader, device string, turnStartMS int64) model.ParseResult {
 
 // ParsePath reads the whole Gemini CLI session file (FullReparse) and returns
 // deterministic usage events. Consumed equals the total bytes read so offset
-// tracking matches file size on disk.
+// tracking matches file size on disk, except when a .json file fails to decode
+// (e.g. mid-write truncation), where Consumed stays 0 so the next scan retries.
 func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res model.ParseResult) {
 	res.TurnStartMS = turnStartMS
-	data, err := io.ReadAll(r)
-	if err != nil || len(data) == 0 {
+	data, err := io.ReadAll(io.LimitReader(r, maxGeminiFileBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxGeminiFileBytes {
 		return res
 	}
-	res.Consumed = int64(len(data))
+	ext := strings.ToLower(filepath.Ext(path))
 	fallbackSession := fileStem(path)
-	if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+	if ext == ".jsonl" {
+		res.Consumed = int64(len(data))
 		res.Events = parseJSONL(data, fallbackSession, device)
 		return res
 	}
 	if events, ok := parseJSON(data, fallbackSession, device); ok {
+		res.Consumed = int64(len(data))
 		res.Events = events
 		return res
 	}
+	if ext == ".json" {
+		// Truncated / mid-write .json file: leave Consumed=0 so the next scan
+		// re-reads once Gemini CLI finishes writing.
+		return res
+	}
 	// Fallback when path has no extension (e.g. direct Parse calls with JSONL).
+	res.Consumed = int64(len(data))
 	res.Events = parseJSONL(data, fallbackSession, device)
 	return res
 }
@@ -136,13 +148,22 @@ func parseJSON(data []byte, fallbackSession, device string) ([]model.Event, bool
 	}
 	if len(rec.Messages) > 0 {
 		var events []model.Event
+		directIndexes := map[string]int{}
+		currentModel := strings.TrimSpace(rec.Model)
 		for i, msg := range rec.Messages {
+			if m := strings.TrimSpace(msg.Model); m != "" {
+				currentModel = m
+			}
 			if !isGeminiType(msg.Type) {
 				continue
 			}
 			toks, ok := parseTokens(msg.Tokens)
 			if !ok {
 				continue
+			}
+			modelName := strings.TrimSpace(msg.Model)
+			if modelName == "" {
+				modelName = currentModel
 			}
 			ts := parseAnyTS(msg.Timestamp)
 			if ts <= 0 {
@@ -151,7 +172,19 @@ func parseJSON(data []byte, fallbackSession, device string) ([]model.Event, bool
 			if ts <= 0 {
 				ts = sessionTS
 			}
-			if ev, ok := buildEvent(msg.Model, sessionID, device, ts, i, toks, normalizeSessionInput, strings.TrimSpace(msg.ID)); ok {
+			msgID := strings.TrimSpace(msg.ID)
+			ev, ok := buildEvent(modelName, sessionID, device, ts, i, toks, normalizeSessionInput, msgID)
+			if !ok {
+				continue
+			}
+			if msgID != "" {
+				if idx, exists := directIndexes[msgID]; exists {
+					events[idx] = ev
+				} else {
+					directIndexes[msgID] = len(events)
+					events = append(events, ev)
+				}
+			} else {
 				events = append(events, ev)
 			}
 		}
@@ -397,19 +430,29 @@ func firstTS(values ...any) int64 {
 }
 
 func parseAnyTS(v any) int64 {
-	s, ok := v.(string)
-	if !ok {
+	switch tv := v.(type) {
+	case float64:
+		if math.IsNaN(tv) || math.IsInf(tv, 0) || tv <= 0 {
+			return 0
+		}
+		if tv >= 1e12 {
+			return int64(tv)
+		}
+		if tv >= 1e9 {
+			return int64(tv * 1000)
+		}
 		return 0
-	}
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t.UnixMilli()
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UnixMilli()
+	case string:
+		s := strings.TrimSpace(tv)
+		if s == "" {
+			return 0
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.UnixMilli()
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t.UnixMilli()
+		}
 	}
 	return 0
 }

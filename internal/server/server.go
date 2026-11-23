@@ -128,7 +128,10 @@ func (s *Server) Run() error {
 
 	go s.runPricingUpdates(context.Background())
 	go s.runCollectors()
-	go s.backfillCapacity()
+	go func() {
+		s.backfillCapacity()
+		s.runOperationalRetention()
+	}()
 	s.startProxy()
 
 	if s.cfg.Token == "" {
@@ -661,10 +664,49 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"by": dim, "rows": named})
 }
 
+func (s *Server) invalidateReadViews() {
+	if s.readCache != nil {
+		s.readCache.clear()
+	}
+	if s.bcast != nil {
+		s.bcast.Notify()
+	}
+}
+
+func (s *Server) runOperationalRetention() {
+	prune := func() {
+		qDel, rDel, err := s.store.PruneOperationalTables(time.Now())
+		if err != nil {
+			log.Printf("store[prune]: %v", err)
+			return
+		}
+		if qDel > 0 || rDel > 0 {
+			log.Printf("store[prune]: removed %d aged quota snapshots (>35d) and %d ingest receipts (>14d)", qDel, rDel)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		prune()
+	}
+}
+
+const maxQueryIntBound = 100_000
+
 func queryInt(r *http.Request, key string, def int) int {
 	if v := r.URL.Query().Get(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
+			maxVal := maxQueryIntBound
+			switch key {
+			case "days":
+				maxVal = 3650
+			case "limit":
+				maxVal = 5000
+			case "top":
+				maxVal = 100
+			}
+			return min(n, maxVal)
 		}
 	}
 	return def
