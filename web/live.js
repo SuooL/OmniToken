@@ -164,7 +164,7 @@ const Live = {
 
     const rows = sessions.map((s, i) => `
       <div class="lane lane-${(i % 5) + 1}">
-        <div class="who">${esc(s.repo ? repoLabel(s.repo).split("/").pop() : (s.session_id || "—").slice(0, 8))}
+        <div class="who" title="${esc(s.repo || s.cwd || s.session_id || "")}">${esc((s.repo || s.cwd) ? repoLabel(s.repo, s.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop() : (s.session_id || "—").slice(0, 8))}
           <span class="sub">${esc(this.deviceLabel(s.device))} · 会话自身速度 ${Number(s.tps || 0).toFixed(1)} tok/s</span></div>
         <div class="track">${blocks(s.spans)}</div>
         <div class="rate">${Number(s.contribution_tps ?? s.tps ?? 0).toFixed(1)}<span class="u"> 贡献 t/s</span></div>
