@@ -103,6 +103,7 @@ fn settings_get(app: tauri::AppHandle) -> settings::SettingsView {
 /// The response is redacted even after success: the webview learns only whether
 /// a credential exists, never what it is.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn settings_set(
     app: tauri::AppHandle,
     server: String,
@@ -110,6 +111,9 @@ async fn settings_set(
     panel_url: String,
     autostart: bool,
     clear_token: Option<bool>,
+    tray_title: Option<settings::TrayTitle>,
+    notify: Option<bool>,
+    hotkey: Option<bool>,
 ) -> Result<settings::SettingsView, String> {
     let current = settings::load(&app);
     let mut next = settings::validate_candidate(
@@ -121,13 +125,23 @@ async fn settings_set(
     )
     .await?;
     next.autostart = autostart;
+    if let Some(title) = tray_title {
+        next.tray_title = title;
+    }
+    if let Some(n) = notify {
+        next.notify = n;
+    }
+    if let Some(hk) = hotkey {
+        next.hotkey = hk;
+    }
     settings::save(&app, &next)?;
 
-    // Register/unregister the LaunchAgent to match what was just stored. Writing
-    // the flag alone is not enough — the OS state only changes here (same step
-    // the tray's "开机自启" item runs, lib.rs `on_menu`).
+    // Register/unregister the LaunchAgent and global shortcut to match what was
+    // just stored. Writing the flag alone is not enough — the OS state only
+    // changes here (same step the tray's menu items run, lib.rs `on_menu`).
     apply_autostart(&app, next.autostart);
-    // Keep the tray's own checkmark honest now that the panel can flip the flag.
+    apply_hotkey(&app, next.hotkey);
+    // Keep the tray's own checkmarks honest now that the panel can flip them.
     tray::sync_checks(&app);
 
     // Point the bridge at the new address now instead of waiting for the old

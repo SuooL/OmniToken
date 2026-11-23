@@ -26,6 +26,7 @@ function speedIsEmpty(data) {
 
 const SpeedView = {
   _timer: null,
+  days: 30,
   lastData: null,
   _loadGeneration: 0,
 
@@ -50,7 +51,7 @@ const SpeedView = {
     }
     try {
       const results = await Promise.allSettled([
-        Api.get("/api/v1/speed?days=30"),
+        Api.get(`/api/v1/speed?days=${this.days || 30}`),
         TelemetryCache.load("1h"),
         LiveSnapshotCache.load(),
       ]);
@@ -163,7 +164,11 @@ const SpeedView = {
         <section class="card">
           <div class="card-head">
             <h2>按模型 · 近 <span id="speed-days">30</span> 天 <span id="speed-model-info"></span></h2>
-            <span class="chip badge approx">并集口径 · 日志推算 + 工具自记计时</span>
+            <div class="head-tools">
+              <div class="range-switch" id="speed-range" role="group" aria-label="时间范围">${[7, 30, 90].map((n) =>
+                `<button type="button" class="ghost-btn" data-days="${n}" aria-pressed="${n === (this.days || 30)}">近 ${n} 天</button>`).join("")}</div>
+              <span class="chip badge approx">并集口径 · 日志推算 + 工具自记计时</span>
+            </div>
           </div>
           <div class="data-table" id="speed-model-table"></div>
           ${ToolUI.analysis("speed-bars-analysis", "模型速度条形比较", `<div class="bars" id="speed-bars"></div>`)}
@@ -188,8 +193,22 @@ const SpeedView = {
         </section>
 `)}
         `;
+      const rangeEl = document.getElementById("speed-range");
+      if (rangeEl) {
+        rangeEl.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-days]");
+          if (!btn) return;
+          const next = Number(btn.dataset.days);
+          if (next && next !== this.days) {
+            this.days = next;
+            this.load();
+          }
+        });
+      }
       root.dataset.built = "1";
     }
+    document.querySelectorAll?.("#speed-range [data-days]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.days) === (this.days || 30))));
     document.getElementById("speed-days").textContent = days;
     document.getElementById("speed-days-exact").textContent = days;
     document.getElementById("speed-window").textContent = series.window_minutes || 60;
@@ -236,10 +255,11 @@ const SpeedView = {
     document.querySelector("#view-speed [data-role='measured-coverage']").textContent =
       telemetryCoverageLabel(speed);
     document.getElementById("speed-unmeasured").innerHTML = (speed.unmeasured_sources || []).map((source) =>
-      `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度 unavailable；用量不受影响</div>`
+      `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测；用量不受影响</div>`
     ).join("");
     const el = document.getElementById("speed-source-lanes");
     if (!buckets.length || !keys.length) {
+      if (el.style) el.style.height = "";
       ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">此范围暂无已测来源速度。</p>`;
       return;
@@ -248,16 +268,15 @@ const SpeedView = {
     const maximum = this.laneCeiling(Math.max(...buckets.flatMap((bucket) => (bucket.sources || [])
       .map((row) => Number.isFinite(row.contribution_tps) ? row.contribution_tps : 0)), 1) * 1.1);
     if (el.querySelector?.(".empty")) el.replaceChildren();
+    const laneH = 54, laneGap = 24, topPad = 16, bottomPad = 26;
+    const totalH = Math.max(240, topPad + keys.length * laneH + Math.max(0, keys.length - 1) * laneGap + bottomPad);
+    if (el.style) el.style.height = `${totalH}px`;
     ChartRegistry.set(el, {
       titleText: "速度页来源贡献",
-      // Lanes divide the container instead of taking a fixed 54px each. With
-      // one source that fixed height used a fifth of a 280px card and packed
-      // every y tick into it until the labels overlapped into a smear; the
-      // overview and live views already size their lanes this way.
       grid: keys.map((_, i) => ({
         left: 58, right: 18,
-        top: 16 + i * (220 / keys.length),
-        height: Math.max(38, 170 / keys.length),
+        top: topPad + i * (laneH + laneGap),
+        height: laneH,
       })),
       xAxis: keys.map((_, i) => ({
         type: "category", gridIndex: i, data: labels,
@@ -317,7 +336,7 @@ const SpeedView = {
     const note = document.getElementById("speed-curve-note");
     if (!buckets.some((b) => b.active_ms > 0)) {
       ChartRegistry.disposeWithin?.(el);
-      el.innerHTML = `<p class="bars"><span class="empty">近 ${series.window_minutes || 60} 分钟没有生成。开始使用 Claude,曲线会实时出现。</span></p>`;
+      el.innerHTML = `<p class="bars"><span class="empty">近 ${series.window_minutes || 60} 分钟没有生成。开始使用任意受支持工具后，曲线会实时出现。</span></p>`;
       note.textContent = "";
       return;
     }
@@ -465,7 +484,7 @@ const SpeedView = {
         <th>响应数</th><th>会话流</th><th>覆盖率</th><th>中位 TTFT</th><th>P90 TTFT</th>
       </tr></thead><tbody>` +
       sorted.map((r) => `<tr>
-        <td>${esc(r.model || "(未知)")}</td>
+        <td>${r.model ? `<a class="inline-link" href="#details?model=${encodeURIComponent(r.model)}&amp;days=${this.days || 30}">${esc(r.model)}</a>` : "日志未记录模型"}</td>
         <td>${this.channelChip(r)}</td>
         <td>${this.tps(r.tps)}</td>
         <td>${this.dur(r.active_ms)}</td>

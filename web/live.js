@@ -49,14 +49,21 @@ const Live = {
       this.telemetryData = result.data;
       this.renderTelemetry(result);
     } catch (error) {
-      const cached = TelemetryCache.peek("1h");
-      if (cached.data) this.renderTelemetry(cached);
-      else {
-        const host = document.getElementById("live-telemetry-card");
+      const host = document.getElementById("live-telemetry-card");
+      if (error && (error.status === 401 || error.status === 403)) {
+        this.telemetryData = null;
         if (host) {
+          ChartRegistry.disposeWithin?.(host);
           const issue = classifyAPIError(error);
           host.innerHTML = `<section class="state-panel"><strong>${esc(issue.title)}</strong><p class="subtle">${esc(issue.detail)}</p></section>`;
         }
+        return;
+      }
+      const cached = TelemetryCache.peek("1h");
+      if (cached.data) this.renderTelemetry(cached);
+      else if (host) {
+        const issue = classifyAPIError(error);
+        host.innerHTML = `<section class="state-panel"><strong>${esc(issue.title)}</strong><p class="subtle">${esc(issue.detail)}</p></section>`;
       }
     }
   },
@@ -69,7 +76,7 @@ const Live = {
       host.innerHTML = `<article class="chart-card"><div class="card-head"><h2>生成速度来源 · 近一小时</h2><div id="live-coverage" class="coverage-note" data-role="measured-coverage"></div></div><div id="live-source-chart" class="chart source-lanes" data-chart="live-source-lanes"></div><div id="live-unmeasured"></div></article>`;
     }
     document.getElementById("live-coverage").textContent = telemetryCoverageLabel(speed) + (result.stale ? " · 显示上次成功数据" : "");
-    ToolUI.updateHTML(document.getElementById("live-unmeasured"), (speed.unmeasured_sources || []).map((source) => `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测 / not measured</div>`).join(""));
+    ToolUI.updateHTML(document.getElementById("live-unmeasured"), (speed.unmeasured_sources || []).map((source) => `<div class="unavailable-lane">${esc(SourceUI.label(source))} 速度不可测</div>`).join(""));
     const buckets = speed.series || [];
     // Capability alone is not a measurement in the selected window.
     const contributed = new Set(buckets.flatMap((bucket) => (bucket.sources || [])
@@ -80,6 +87,7 @@ const Live = {
     ])].filter((source) => contributed.has(source));
     const el = document.getElementById("live-source-chart");
     if (!buckets.length || !sourceKeys.length) {
+      if (el.style) el.style.height = "";
       ChartRegistry.disposeWithin?.(el);
       el.innerHTML = `<p class="empty">近一小时没有可测生成区间。</p>`;
       ChartRegistry.renderFallback?.(el, {caption: "近一小时来源贡献 · 暂无可测区间", columns: [], rows: []});
@@ -87,9 +95,13 @@ const Live = {
     }
     el.querySelectorAll?.(".empty").forEach((node) => node.remove());
     const labels = buckets.map((bucket) => new Date(bucket.start_ms).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}));
+    const laneH = 54, laneGap = 24, topPad = 14, bottomPad = 26;
+    const totalH = Math.max(240, topPad + sourceKeys.length * laneH + Math.max(0, sourceKeys.length - 1) * laneGap + bottomPad);
+    if (el.style) el.style.height = `${totalH}px`;
     const grids = sourceKeys.map((_, index) => ({
-      left: 58, right: 18, top: 14 + index * (220 / sourceKeys.length),
-      height: Math.max(38, 170 / sourceKeys.length),
+      left: 58, right: 18,
+      top: topPad + index * (laneH + laneGap),
+      height: laneH,
     }));
     ChartRegistry.set(el, {
       titleText: "实时页一小时来源贡献",
@@ -157,18 +169,24 @@ const Live = {
 
     const sessions = sp.sessions || [];
     if (!sessions.length) {
-      el.innerHTML = `<p class="subtle">近 10 分钟没有已测贡献会话。开始使用 Claude,这里会实时出现。</p>`;
+      el.innerHTML = `<p class="subtle">近 10 分钟没有已测贡献会话。开始使用任意受支持工具后，这里会实时出现。</p>`;
       document.getElementById("lane-note").textContent = "";
       return;
     }
 
-    const rows = sessions.map((s, i) => `
+    const rows = sessions.map((s, i) => {
+      const label = esc((s.repo || s.cwd) ? repoLabel(s.repo, s.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop() : (s.session_id || "—").slice(0, 8));
+      const whoHTML = s.session_id
+        ? `<a class="inline-link" href="#details?session=${encodeURIComponent(s.session_id)}">${label}</a>`
+        : label;
+      return `
       <div class="lane lane-${(i % 5) + 1}">
-        <div class="who" title="${esc(s.repo || s.cwd || s.session_id || "")}">${esc((s.repo || s.cwd) ? repoLabel(s.repo, s.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop() : (s.session_id || "—").slice(0, 8))}
+        <div class="who" title="${esc(s.repo || s.cwd || s.session_id || "")}">${whoHTML}
           <span class="sub">${esc(this.deviceLabel(s.device))} · 会话自身速度 ${Number(s.tps || 0).toFixed(1)} tok/s</span></div>
         <div class="track">${blocks(s.spans)}</div>
         <div class="rate">${Number(s.contribution_tps ?? s.tps ?? 0).toFixed(1)}<span class="u"> 贡献 t/s</span></div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
     el.innerHTML = rows + `
       <div class="lane union">
         <div class="who">全部设备(并集)</div>
@@ -221,22 +239,28 @@ const Live = {
     devEl.innerHTML = devs.length ? devs.map((v) => `
       <div class="row dev-row">
         <div class="row-head">
-          <span class="key"><span class="dot ${this.visualState(v)}"></span>${esc(v.display_name || v.device)} <span class="extra">${this.connectionLabel(v)}</span></span>
+          <span class="key"><span class="dot ${esc(this.visualState(v))}"></span><a class="inline-link" href="#details?device=${encodeURIComponent(v.device || "")}&amp;days=7">${esc(v.display_name || v.device)}</a> <span class="extra">${esc(this.connectionLabel(v))}</span></span>
           <span class="val">${compact(v.today_tokens)} <span class="extra">今日</span></span>
         </div>
-        <div class="row-head sub2"><span class="key">最后活动 ${this.deviceLastSeen(v)} · ${this.procLabel(v)}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
+        <div class="row-head sub2"><span class="key">最后活动 ${esc(this.deviceLastSeen(v))} · ${esc(this.procLabel(v))}</span><span class="val extra">${full(v.today_events)} 请求</span></div>
       </div>`).join("") : `<span class="empty">暂无设备</span>`;
 
     const sesEl = document.getElementById("live-sessions");
     const ses = d.sessions || [];
     sesEl.innerHTML = ses.length ? `<table><thead><tr><th>设备</th><th>项目</th><th>模型</th><th>tokens</th><th>最后活动</th></tr></thead><tbody>` +
-      ses.map((s) => `<tr>
+      ses.map((s) => {
+        const proj = esc(this.trunc(repoLabel(s.repo, s.cwd), 36));
+        const href = s.session_id
+          ? `#details?session=${encodeURIComponent(s.session_id)}`
+          : s.repo ? `#details?repo=${encodeURIComponent(s.repo)}&days=7` : "";
+        return `<tr>
         <td title="${esc(s.device || "")}">${esc(this.deviceLabel(s.device))}</td>
-        <td title="${esc(s.cwd || "")}">${esc(this.trunc(repoLabel(s.repo, s.cwd), 36))}</td>
-        <td>${esc(s.model)}</td>
+        <td title="${esc(s.cwd || "")}">${href ? `<a class="inline-link" href="${esc(href)}">${proj}</a>` : proj}</td>
+        <td>${esc(s.model || "日志未记录模型")}</td>
         <td>${compact(s.tokens)}</td>
         <td>${relTime(s.last_ts)}</td>
-      </tr>`).join("") + `</tbody></table>`
+      </tr>`;
+      }).join("") + `</tbody></table>`
       : `<span class="empty">近 10 分钟无活跃会话</span>`;
   },
 
@@ -282,7 +306,7 @@ const Live = {
         <td title="${esc(s.device || "")}">${esc(this.deviceLabel(s.device))}</td>
         <td>${SourceUI.brand(s.source)}</td>
         <td>${esc(since(s.started_at))}</td>
-        <td class="extra">${s.pid}</td>
+        <td class="extra">${esc(String(s.pid ?? ""))}</td>
       </tr>`).join("") + `</tbody></table>`;
   },
 
@@ -300,7 +324,7 @@ const Live = {
 
   connectionLabel(v) {
     if (v.identity_status !== "registered") return this.stateLabel(v.state);
-    return { online: "在线", stale: "延迟", offline: "离线" }[this.effectiveConnectionState(v)] || "未知";
+    return { online: "在线", stale: "未及时上报", offline: "离线" }[this.effectiveConnectionState(v)] || "未知";
   },
 
   effectiveConnectionState(v, elapsedMS = this.snapshotElapsedMS()) {

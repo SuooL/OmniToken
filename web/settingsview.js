@@ -60,13 +60,18 @@ const SettingsView = {
   _devices: [],    // [{key, tokens, last_seen}] from the breakdown API
   _labels: {},     // hostname -> display name
   _merges: [],     // audit log of past identity merges (read-only, ADR-0019)
+  _registered: [], // registered v2 devices for revocation UI
+  _pricingUpdate: null,
+  _diag: { telemetry: null, live: null },
   _local: {},      // {device, hostname, duplicate_identity} for this machine
   _loaded: false,
   _activeGroup: "connection",
+  _pendingPrefill: "",
   _advancedOpen: false,
   _draft: { pricing: null, devices: null, readToken: null, adminToken: null },
   _revision: { pricing: 0, devices: 0, tokens: 0 },
   _saving: { pricing: false, devices: false },
+  _revoke: { deviceId: "", confirm: "", busy: false },
   // The merge tool's own state. `plan` is whatever the server last previewed;
   // it is thrown away the moment either side changes, so a confirmation can
   // never be typed against numbers computed for a different pair.
@@ -81,17 +86,57 @@ const SettingsView = {
     // throw away half-typed input.
   },
 
+  applyRoute(params, shouldRender = true) {
+    if (!params) return;
+    const group = params.get("group");
+    if (["connection", "pricing", "devices", "appearance"].includes(group)) {
+      this._activeGroup = group;
+    }
+    const prefill = (params.get("prefill") || "").trim();
+    if (prefill) {
+      this._activeGroup = "pricing";
+      this._pendingPrefill = prefill;
+    }
+    if (shouldRender && this._loaded) {
+      if (this._pendingPrefill) {
+        this.applyPendingPrefill();
+        this.render();
+      } else {
+        this.selectGroup(this._activeGroup);
+      }
+    }
+  },
+
+  applyPendingPrefill() {
+    const model = (this._pendingPrefill || "").trim();
+    if (!model) return;
+    this._pendingPrefill = "";
+    const draft = this.pricingDraft();
+    const key = model.toLowerCase();
+    if (!draft.some((row) => String(row.model || "").trim().toLowerCase() === key)) {
+      draft.push({ model, in: 0, out: 0, cr: 0, cw: 0 });
+      this._revision.pricing += 1;
+    }
+  },
+
   async load() {
     const root = document.getElementById("view-settings");
     if (!this._loaded) root.innerHTML = "";
     renderState(root, { kind: "loading", title: "正在加载设置" });
     try {
-      const [settings, devices] = await Promise.all([
+      const [settings, devices, telemetryRes, liveRes] = await Promise.all([
         Api.get("/api/v1/settings"),
         // A device list failure must not block editing pricing or the token.
         Api.get("/api/v1/breakdown?by=device&days=3650").catch(() => ({ rows: [] })),
+        typeof TelemetryCache !== "undefined" ? TelemetryCache.load("today").catch(() => null) : Promise.resolve(null),
+        typeof LiveSnapshotCache !== "undefined" ? LiveSnapshotCache.load().catch(() => null) : Promise.resolve(null),
       ]);
       this.adopt(settings, devices);
+      this._diag = {
+        telemetry: telemetryRes && telemetryRes.data ? telemetryRes.data : null,
+        live: liveRes || null,
+      };
+      if (this._pendingPrefill) this.applyPendingPrefill();
       this._loaded = true;
       this.render();
       renderState(root, { kind: "ready", title: "" });
@@ -103,6 +148,16 @@ const SettingsView = {
       // box for storing it lives on this page, so bailing out entirely left the
       // user with a banner telling them to come here and nothing to type into.
       const issue = classifyAPIError(e);
+      if (e && (e.status === 401 || e.status === 403)) {
+        this._loaded = false;
+        this._rows = [];
+        this._devices = [];
+        this._labels = {};
+        this._merges = [];
+        this._registered = [];
+        this._pricingUpdate = null;
+        this._diag = { telemetry: null, live: null };
+      }
       if (!this._loaded) {
         root.innerHTML = this.tokenCard();
         this.bind(root);
@@ -127,8 +182,10 @@ const SettingsView = {
       cr: po[m].cache_read_per_mtok || 0,
       cw: po[m].cache_write_per_mtok || 0,
     }));
+    this._pricingUpdate = (settings && settings.pricing_update) || null;
     this._labels = (settings && settings.device_labels) || {};
     this._merges = (settings && settings.device_merges) || [];
+    this._registered = (settings && settings.registered_devices) || [];
     this._local = (settings && settings.local_identity) || {};
     this._devices = (devices && devices.rows) || [];
     // Devices that only exist as a saved label (retired machine) stay editable.
@@ -140,7 +197,7 @@ const SettingsView = {
 
   render() {
     const root = document.getElementById("view-settings");
-    const groups = [["connection", "连接与凭据"], ["pricing", "定价"], ["devices", "设备管理"], ["appearance", "外观"]];
+    const groups = [["connection", "连接与凭据"], ["pricing", "定价"], ["devices", "设备管理"], ["appearance", "采集与显示"]];
     const panel = (key, html) => `<div id="settings-panel-${key}" data-settings-panel="${key}"${key === this._activeGroup ? "" : " hidden"}>${html}</div>`;
     root.innerHTML = `<div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分组">${groups.map(([key, title]) =>
@@ -170,6 +227,22 @@ const SettingsView = {
 
   // ---- pricing overrides -------------------------------------------------
 
+  pricingStatusBar() {
+    const st = this._pricingUpdate;
+    if (!st) return "";
+    const snap = st.active_snapshot === "cache" ? "在线缓存价表" : "内置 LiteLLM 价表";
+    const models = st.model_count ? `${full(st.model_count)} 个模型` : "模型数未知";
+    const synced = st.last_success_at_ms ? `上次成功 ${relTime(st.last_success_at_ms)}` : "尚未在线刷新";
+    const auto = st.enabled ? `每 ${st.interval_hours || 24}h 自动刷新` : "已关闭自动刷新";
+    const err = st.last_error ? `<span class="err">最近刷新异常：${esc(st.last_error)}</span>` : "";
+    return `<div class="pricing-status-bar${st.last_error ? " has-err" : ""}">
+      <span><strong>价表状态</strong> · ${snap}</span>
+      <span>${models}</span>
+      <span>${auto} · ${synced}</span>
+      ${err}
+    </div>`;
+  },
+
   pricingCard() {
     const pricing = this._draft.pricing || this._rows;
     const rows = pricing.map((r, i) => `<tr>
@@ -196,6 +269,7 @@ const SettingsView = {
             <button class="ghost-btn" data-act="save-price">保存</button>
           </div>
         </div>
+        ${this.pricingStatusBar()}
         <p class="subtle">覆盖内置价格表中的单个模型。成本为查询时计算,保存后历史成本立即按新价重算,<b>无需重启</b>。模型名不区分大小写;写在 config.json 里的覆盖不在此列表,但仍然生效(此处同名条目优先)。</p>
         <div class="data-table">${body}</div>
         <div class="save-note" data-note="price">&nbsp;</div>
@@ -417,7 +491,40 @@ const SettingsView = {
   },
 
   preferencesCard() {
+    const sources = ["claude-code", "codex", "dsh", "antigravity", "gemini"];
+    const todaySources = ((this._diag.telemetry || {}).today || {}).sources || [];
+    const speedCov = ((this._diag.telemetry || {}).speed || {}).coverage || [];
+    const quotas = (this._diag.live && this._diag.live.quotas) || [];
+    const cards = sources.map((src) => {
+      const row = todaySources.find((r) => r.source === src);
+      const cov = speedCov.find((c) => c.source === src);
+      const qs = quotas.filter((q) => q.source === src);
+      const tokText = row && row.tokens > 0 ? `今日 ${compact(row.tokens)} tokens` : "今日暂无事件";
+      const covText = cov && cov.total_events > 0
+        ? `速度覆盖 ${cov.measured_events}/${cov.total_events}`
+        : "今日无测速样本";
+      const qText = qs.length
+        ? `官方配额 ${qs.length} 桶 · 最近 ${relTime(Math.max(...qs.map((q) => q.observed_at || 0)))}`
+        : (src === "dsh" || src === "gemini" ? "无官方配额通道" : "尚未收到官方配额");
+      return `<div class="diag-card">
+        <div class="diag-head">${typeof SourceUI !== "undefined" ? SourceUI.brand(src) : esc(src)}<span>${esc(tokText)}</span></div>
+        <div class="diag-meta">${esc(covText)}<br>${esc(qText)}</div>
+      </div>`;
+    }).join("");
+    const snippets = [
+      ["官方配额 statusLine 接入（Claude Code / Antigravity）", "omnitoken statusline -setup"],
+      ["本地代理精确测速（Anthropic 上游）", "ANTHROPIC_BASE_URL=http://127.0.0.1:8899/anthropic"],
+      ["客户端一键升级并平滑重启", "omnitoken self-update -restart"],
+    ];
     return `
+      <section class="instrument-card" data-settings-group="diagnostics" data-settings-scope="section">
+        <div class="card-head"><h2>采集与接入状态</h2><span class="subtle">5 大工具今日遥测与官方配额诊断</span></div>
+        <div class="diag-grid">${cards}</div>
+        <h3>常用接入与维护命令</h3>
+        ${snippets.map(([title, cmd]) => `
+          <p class="subtle" style="margin:8px 0 2px">${esc(title)}</p>
+          <div class="copy-cmd-row"><code>${esc(cmd)}</code><button type="button" class="ghost-btn" data-act="copy-cmd" data-cmd="${esc(cmd)}">复制</button></div>`).join("")}
+      </section>
       <section class="instrument-card" data-settings-group="preferences" data-settings-scope="section">
         <div class="card-head"><h2>显示偏好</h2><span class="subtle">跟随当前浏览器</span></div>
         <p class="subtle">当前使用深色主题；减少动态效果由 <code>prefers-reduced-motion</code> 控制。
@@ -426,11 +533,29 @@ const SettingsView = {
   },
 
   dangerCard() {
+    const active = (this._registered || []).filter((d) => !d.revoked_at);
+    const revokedCount = (this._registered || []).filter((d) => d.revoked_at > 0).length;
+    const options = `<option value="">选择要吊销的已注册设备…</option>` +
+      active.map((d) => `<option value="${esc(d.device_id)}"${d.device_id === this._revoke.deviceId ? " selected" : ""}>${esc(d.display_name || d.device_id)} · ${esc(d.device_id.slice(0, 8))}</option>`).join("");
+    const selected = active.find((d) => d.device_id === this._revoke.deviceId);
+    const canRevoke = selected && this._revoke.confirm.trim() === selected.device_id && !this._revoke.busy;
     return `
       <section class="state-panel settings-danger" data-settings-danger="true">
-        <div class="card-head"><h2>危险操作</h2><span class="chip">管理凭据</span></div>
-        <p class="subtle">撤销设备身份会立即使其凭据失效，必须通过独立确认流程执行。
-          定价删除和设备改名不属于身份撤销；每个上方“保存”按钮也只提交所在分组。</p>
+        <div class="card-head"><h2>设备身份吊销（危险操作）</h2><span class="chip">管理凭据</span></div>
+        <p class="subtle">吊销设备身份会立即使其 v2 Agent 凭据失效，历史事件不会被删除。
+          当前有效注册设备 ${active.length} 台${revokedCount ? ` · 已吊销 ${revokedCount} 台` : ""}。</p>
+        ${active.length ? `
+          <div class="filter-row">
+            <select id="revoke-device-select" aria-label="选择要吊销的设备">${options}</select>
+          </div>
+          ${selected ? `<div class="filter-row">
+            <label>输入完整设备 ID <code>${esc(selected.device_id)}</code> 以确认
+              <input class="form-input" id="revoke-confirm" type="text" spellcheck="false" autocomplete="off" value="${esc(this._revoke.confirm)}" placeholder="${esc(selected.device_id)}">
+            </label>
+            <button type="button" class="ghost-btn revoke-run" data-act="revoke-run"${canRevoke ? "" : " disabled"}>确认吊销凭据</button>
+          </div>` : ""}
+        ` : `<p class="subtle">当前没有可吊销的有效注册设备。</p>`}
+        <div class="save-note" data-note="revoke">&nbsp;</div>
       </section>`;
   },
 
@@ -470,6 +595,20 @@ const SettingsView = {
         this.previewMerge();
       } else if (act === "merge-run") {
         this.runMerge();
+      } else if (act === "revoke-run") {
+        this.runRevoke();
+      } else if (act === "goto-connection") {
+        this.selectGroup("connection");
+      } else if (act === "copy-cmd") {
+        if (typeof copySnippet === "function") copySnippet(btn.dataset.cmd || "", btn);
+      }
+    };
+    root.onchange = (ev) => {
+      if (ev.target && ev.target.id === "revoke-device-select") {
+        this._revoke.deviceId = ev.target.value;
+        this._revoke.confirm = "";
+        this._advancedOpen = true;
+        this.render();
       }
     };
     const advanced = root.querySelector("#settings-device-advanced");
@@ -512,6 +651,10 @@ const SettingsView = {
       this._merge.confirm = target.value;
       const run = document.querySelector("#view-settings .merge-run");
       if (run) run.disabled = !mergeSubmission(this._merge).ok;
+    } else if (target.id === "revoke-confirm") {
+      this._revoke.confirm = target.value;
+      const run = document.querySelector("#view-settings .revoke-run");
+      if (run) run.disabled = !(this._revoke.deviceId && target.value.trim() === this._revoke.deviceId && !this._revoke.busy);
     } else if (target.id === "settings-read-token") {
       this._draft.readToken = target.value;
       this._revision.tokens += 1;
@@ -676,13 +819,48 @@ const SettingsView = {
         : "凭据当前会话有效,但浏览器拒绝持久化");
   },
 
+  async runRevoke() {
+    const id = this._revoke.deviceId;
+    if (!id || this._revoke.confirm.trim() !== id || this._revoke.busy) {
+      return this.note("revoke", false, "请先选择设备并完整输入其设备 ID");
+    }
+    this._revoke.busy = true;
+    try {
+      this.note("revoke", true, "正在吊销…");
+      const res = await Api.post(`/api/v2/devices/${encodeURIComponent(id)}/revoke`, {});
+      if (res.status === 401) {
+        return this.noteUnauthorized("revoke");
+      }
+      if (!res.ok) {
+        return this.note("revoke", false, "吊销失败：" + ((await res.text()).trim() || `HTTP ${res.status}`));
+      }
+      this._revoke = { deviceId: "", confirm: "", busy: false };
+      await this.load();
+      this._advancedOpen = true;
+      this.render();
+      this.note("revoke", true, `已吊销设备 ${id} 的凭据，该节点将无法继续上报。`);
+    } catch (e) {
+      this.note("revoke", false, "吊销失败：" + e.message);
+    } finally {
+      this._revoke.busy = false;
+    }
+  },
+
+  noteUnauthorized(key) {
+    const el = document.querySelector(`#view-settings .save-note[data-note="${key}"]`);
+    if (!el) return false;
+    el.className = "save-note err";
+    el.innerHTML = `未授权：需要管理 token。<button type="button" class="ghost-btn" data-act="goto-connection" style="margin-left:8px">前往连接与凭据</button>`;
+    return false;
+  },
+
   // put sends one section; the server leaves absent sections untouched.
   async put(body, noteKey) {
     this.note(noteKey, true, "保存中…");
     try {
       const res = await Api.put("/api/v1/settings", body);
       if (res.status === 401) {
-        this.note(noteKey, false, "未授权:请在下方填写管理 token 后重试");
+        this.noteUnauthorized(noteKey);
         return false;
       }
       if (!res.ok) {

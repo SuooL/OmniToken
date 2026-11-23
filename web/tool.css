@@ -956,3 +956,165 @@ body.drawer-open {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
 }
+
+/* Wave 3 UX & feature components */
+.tool-ui .refresh-btn {
+  padding: 3px 9px;
+  font-size: 12px;
+  min-height: 26px;
+}
+.tool-ui .period-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.tool-ui .period-cell {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.tool-ui .period-cell .label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.tool-ui .period-cell .val {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 3px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.tool-ui .period-cell .cost-line {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 860px) {
+  .tool-ui .period-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 420px) {
+  .tool-ui .period-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tool-ui .page-utilities {
+    max-width: 100%;
+  }
+  .tool-ui .page-head {
+    flex-direction: column;
+  }
+}
+.tool-ui .version-badge {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+.tool-ui .version-badge.outdated {
+  border-color: var(--tool-warn);
+  color: var(--tool-warn);
+  background: #edba6614;
+}
+.tool-ui .inline-link,
+.detail-drawer .inline-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.tool-ui .inline-link:hover,
+.detail-drawer .inline-link:hover {
+  text-decoration: underline;
+}
+.tool-ui .unpriced-link {
+  color: var(--tool-warn);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--tool-warn);
+  white-space: nowrap;
+}
+.tool-ui .unpriced-link:hover {
+  color: var(--text-primary);
+  border-bottom-style: solid;
+}
+.tool-ui .pricing-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tool-ui .pricing-status-bar.has-err {
+  border-color: var(--tool-warn);
+}
+.tool-ui .copy-cmd-row,
+.detail-drawer .copy-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.tool-ui .copy-cmd-row code,
+.detail-drawer .copy-cmd-row code {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.tool-ui .chip-clear-all {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 6px;
+}
+.tool-ui .chip-clear-all:hover {
+  text-decoration: underline;
+}
+.tool-ui .range-switch {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.tool-ui .diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.tool-ui .diag-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+.tool-ui .diag-card .diag-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tool-ui .diag-card .diag-meta {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}

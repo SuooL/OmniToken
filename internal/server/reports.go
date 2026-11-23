@@ -21,7 +21,8 @@ type periodReportRow struct {
 
 type sessionReportRow struct {
 	store.SessionRow
-	CostUSD *float64 `json:"cost_usd,omitempty"`
+	DeviceDisplayName string   `json:"device_display_name,omitempty"`
+	CostUSD           *float64 `json:"cost_usd,omitempty"`
 }
 
 // handleReports serves aggregate report rows (F12) as JSON or CSV downloads.
@@ -56,9 +57,18 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 			return split[i].SessionID + "\x00" + split[i].Device, split[i].ModelUsageRow
 		})
 		unpriced = missing
+		names, err := s.deviceNames()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		out := make([]sessionReportRow, 0, len(srows))
 		for _, sr := range srows {
-			out = append(out, sessionReportRow{SessionRow: sr, CostUSD: costs[sr.SessionID+"\x00"+sr.Device]})
+			out = append(out, sessionReportRow{
+				SessionRow:        sr,
+				DeviceDisplayName: names.name(sr.Device),
+				CostUSD:           costs[sr.SessionID+"\x00"+sr.Device],
+			})
 		}
 		rows = out
 		writeCSV = func(cw *csv.Writer) error { return sessionCSV(cw, out) }

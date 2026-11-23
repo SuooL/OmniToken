@@ -134,9 +134,13 @@ const ModelsView = {
         <section class="stat-row" id="models-tiles"></section>
         <section class="instrument-card">
           <div class="card-head"><h2>模型排名 · 按来源拆分</h2>
-            <label>排序 <select id="models-sort"><option value="tokens">tokens</option><option value="cost">成本</option></select></label>
+            <div class="head-tools">
+              <div class="range-switch" id="models-range" role="group" aria-label="时间范围">${[7, 30, 90].map((n) =>
+                `<button type="button" class="ghost-btn" data-days="${n}" aria-pressed="${n === this.DAYS}">近 ${n} 天</button>`).join("")}</div>
+              <label>排序 <select id="models-sort"><option value="tokens">tokens</option><option value="cost">成本</option><option value="unit_cost">均价</option></select></label>
+            </div>
           </div>
-          <p class="subtle">近 30 天 · 排名覆盖本次接口返回模型；每日构成请求 Top 100，再折叠为前 4 + 其他。无定价不参与成本排名。</p>
+          <p class="subtle" id="models-table-note">近 ${this.DAYS} 天 · 排名覆盖本次接口返回模型；每日构成请求 Top 100，再折叠为前 4 + 其他。无定价不参与成本排名。</p>
           <div class="data-table data-table-shell" id="models-table"></div>
         </section>
         <section class="chart-card">
@@ -152,17 +156,33 @@ const ModelsView = {
       document.getElementById("models-sort").addEventListener("change", () => {
         if (this.lastData) this.render(this.lastData);
       });
+      const rangeEl = document.getElementById("models-range");
+      if (rangeEl) {
+        rangeEl.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-days]");
+          if (!btn) return;
+          const next = Number(btn.dataset.days);
+          if (next && next !== this.DAYS) { this.DAYS = next; this.load(); }
+        });
+      }
       root.dataset.built = "1";
     }
+    document.querySelectorAll?.("#models-range [data-days]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.days) === this.DAYS)));
+    const noteEl = document.getElementById("models-table-note");
+    if (noteEl) noteEl.textContent = `近 ${d.days || this.DAYS} 天 · 排名覆盖本次接口返回模型；每日构成请求 Top 100，再折叠为前 4 + 其他。无定价不参与成本排名。`;
     document.getElementById("models-source-title").textContent =
       `模型 × 来源 · 近 ${d.days || this.DAYS} 天`;
     document.getElementById("models-daily-title").textContent =
       `每日模型构成 · 接口 Top ${d.top_n || 100} · 图示前 4 + 其他`;
     document.getElementById("models-tiles").innerHTML = this.tiles(models, srcSeries, unpriced);
     const sort = document.getElementById("models-sort").value || "tokens";
+    const unitCost = (r) => r.total_tokens > 0 && Number.isFinite(r.cost_usd) ? (r.cost_usd * 1e6) / r.total_tokens : -1;
     const sorted = [...rows].sort((a, b) => sort === "cost"
       ? (unpriced.has(a.model) - unpriced.has(b.model)) || (b.cost_usd || 0) - (a.cost_usd || 0)
-      : b.total_tokens - a.total_tokens);
+      : sort === "unit_cost"
+        ? (unpriced.has(a.model) - unpriced.has(b.model)) || unitCost(b) - unitCost(a)
+        : b.total_tokens - a.total_tokens);
     ToolUI.updateHTML(document.getElementById("models-table"), this.table(sorted, unpriced));
     this.sourceChart(models, srcSeries);
     this.costTokenChart(models);
@@ -185,13 +205,14 @@ const ModelsView = {
     if (el.querySelector?.(".empty")) el.replaceChildren();
     ChartRegistry.set(el, {
       titleText: "模型 token 与成本关系",
-      grid: {left: 48, right: 24, top: 16, bottom: 40, containLabel: true},
+      grid: {left: 48, right: 84, top: 16, bottom: 40, containLabel: true},
       xAxis: {type: "log", min: low / Math.pow(10, padding), max: high * Math.pow(10, padding), name: "tokens", axisLabel: {color: cssVar("--text-muted"), formatter: compact}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
       yAxis: {type: "value", name: "USD", axisLabel: {color: cssVar("--text-muted"), formatter: usd}, splitLine: {lineStyle: {color: cssVar("--grid")}}},
       series: [{
         type: "scatter", symbolSize: 12, itemStyle: {color: cssVar("--source-aggregate")},
         data: rows.map((model) => ({name: this.modelLabel(model.model), value: [model.total, model.cost]})),
         label: {show: true, position: "right", color: cssVar("--text-secondary"), formatter: ({name}) => name},
+        labelLayout: {hideOverlap: true},
       }],
     });
   },
@@ -476,21 +497,32 @@ const ModelsView = {
     const grand = rows.reduce((a, r) => a + r.total_tokens, 0) || 1;
     return `<table><thead><tr>
         <th>模型</th><th>来源</th><th>输入</th><th>输出</th><th>缓存读取</th>
-        <th>缓存写入</th><th>合计</th><th>成本</th><th>请求</th><th>占比</th>
+        <th>缓存写入</th><th>合计</th><th>缓存命中率</th><th>成本</th><th>均价 ($/1M)</th><th>请求</th><th>占比</th>
       </tr></thead><tbody>` +
       rows.map((r) => {
-        const label = this.sourceLabel(r.source);
-        const cost = unpriced.has(r.model) || !Number.isFinite(r.cost_usd) ? "无定价" : usd(r.cost_usd);
+        const isUnpriced = unpriced.has(r.model) || !Number.isFinite(r.cost_usd);
+        const cost = isUnpriced
+          ? (r.model ? `<a class="unpriced-link" href="#settings?group=pricing&amp;prefill=${encodeURIComponent(r.model)}">无定价 · 去配置</a>` : "无定价")
+          : usd(r.cost_usd);
+        const avgPrice = !isUnpriced && r.total_tokens > 0 ? usd((r.cost_usd * 1e6) / r.total_tokens) : "—";
+        const denom = (r.input_tokens || 0) + (r.cache_read_tokens || 0);
+        const hitRate = denom > 0 ? `${(100 * (r.cache_read_tokens || 0) / denom).toFixed(1)}%` : "—";
         const share = (100 * r.total_tokens / grand).toFixed(1) + "%";
+        const modelText = esc(this.trunc(this.modelLabel(r.model), 34));
+        const modelCell = r.model
+          ? `<a class="inline-link" href="#details?model=${encodeURIComponent(r.model)}${r.source ? `&amp;source=${encodeURIComponent(r.source)}` : ""}&amp;days=${this.DAYS}">${modelText}</a>`
+          : modelText;
         return `<tr>
-          <td title="${esc(this.modelLabel(r.model))}">${esc(this.trunc(this.modelLabel(r.model), 34))}</td>
+          <td title="${esc(this.modelLabel(r.model))}">${modelCell}</td>
           <td>${SourceUI.brand(r.source)}</td>
           <td>${full(r.input_tokens)}</td>
           <td>${full(r.output_tokens)}</td>
           <td>${full(r.cache_read_tokens)}</td>
           <td>${full(r.cache_creation_tokens)}</td>
           <td>${full(r.total_tokens)}</td>
+          <td>${hitRate}</td>
           <td>${cost}</td>
+          <td>${avgPrice}</td>
           <td>${full(r.events)}</td>
           <td>${share}</td>
         </tr>`;
