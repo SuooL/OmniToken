@@ -34,9 +34,6 @@ func (s *Store) ensureSettings() error {
 // GetSetting returns the stored value, or "" when the key was never set.
 // A missing key is not an error: callers apply their own default.
 func (s *Store) GetSetting(key string) (string, error) {
-	if err := s.ensureSettings(); err != nil {
-		return "", err
-	}
 	var v string
 	err := s.rdb.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&v)
 	if err == sql.ErrNoRows {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/suool/omnitoken/internal/model"
@@ -44,13 +45,70 @@ CREATE TABLE IF NOT EXISTS quota_capacity (
 );
 `
 
-// windowIDMinutes reduces a reset instant to the window's identity.
-//
-// Minute resolution for the same reason LatestQuotas uses it: Codex derives the
-// boundary from "resets in N seconds", so consecutive observations of one
-// window land milliseconds apart. Keyed raw, a single window would deposit a
-// sample per observation and drown every other window in the estimate.
-func windowIDMinutes(resetsAt int64) int64 { return resetsAt / 60000 }
+// windowIDHours reduces a reset instant to the window's identity at hour
+// resolution, matching LatestQuotas. Derived boundaries (e.g. "resets in N
+// seconds") can drift across minute boundaries over the life of a weekly
+// window, whereas real windows are at least 5 hours apart.
+func windowIDHours(resetsAt int64) int64 { return resetsAt / 3_600_000 }
+
+// quotaPool normalizes a (source, scope) pair to its underlying model pool so
+// calibration, window token sums, and 5h/weekly remaining clamps only pair
+// readings that draw from the same allowance.
+func quotaPool(source, scope string) string {
+	s := strings.ToLower(strings.TrimSpace(scope))
+	switch source {
+	case "antigravity":
+		switch {
+		case strings.Contains(s, "argon"):
+			return "gemini-argon"
+		case strings.HasPrefix(s, "gemini"):
+			return "gemini"
+		case strings.HasPrefix(s, "3p"):
+			return "3p"
+		}
+	case "claude-code":
+		switch {
+		case strings.Contains(s, "opus"):
+			return "opus"
+		case strings.Contains(s, "sonnet"):
+			return "sonnet"
+		case strings.Contains(s, "haiku"):
+			return "haiku"
+		}
+	}
+	return "all"
+}
+
+// ScopeMatchesModel reports whether an event's model draws from the quota pool
+// identified by (source, scope).
+func ScopeMatchesModel(source, scope, modelName string) bool {
+	pool := quotaPool(source, scope)
+	if pool == "all" {
+		return true
+	}
+	m := strings.ToLower(strings.TrimSpace(modelName))
+	switch source {
+	case "antigravity":
+		switch pool {
+		case "gemini-argon":
+			return strings.Contains(m, "argon")
+		case "gemini":
+			return strings.HasPrefix(m, "gemini") || strings.Contains(m, "/gemini")
+		case "3p":
+			return m != "" && !strings.HasPrefix(m, "gemini") && !strings.Contains(m, "/gemini")
+		}
+	case "claude-code":
+		return strings.Contains(m, pool)
+	}
+	return true
+}
+
+// ScopesSharePool reports whether two scopes of the same source draw from the
+// same underlying model pool (e.g., gemini-5h and gemini-weekly share "gemini",
+// whereas 3p-5h and gemini-argon-wtu-weekly are independent pools).
+func ScopesSharePool(source, scopeA, scopeB string) bool {
+	return quotaPool(source, scopeA) == quotaPool(source, scopeB)
+}
 
 // CapacityObservation is one look at a live window: how full the provider says
 // it is, and how many subscription tokens this fleet has put into it so far.
@@ -102,7 +160,7 @@ func (s *Store) ObserveCapacity(o CapacityObservation) error {
 		   tokens_at_peak = excluded.tokens_at_peak,
 		   updated_at = excluded.updated_at
 		 WHERE excluded.peak_percent > quota_capacity.peak_percent`,
-		o.Source, o.Scope, o.WindowMinutes, windowIDMinutes(o.ResetsAt),
+		o.Source, o.Scope, o.WindowMinutes, windowIDHours(o.ResetsAt),
 		o.UsedPercent, o.Tokens, time.Now().UnixMilli())
 	return err
 }
@@ -130,7 +188,7 @@ func (s *Store) ObserveCapacityFromQuota(q model.QuotaSnapshot, now int64) error
 	err := s.rdb.QueryRow(
 		`SELECT peak_percent FROM quota_capacity
 		 WHERE source = ? AND scope = ? AND window_minutes = ? AND window_id = ?`,
-		q.Source, q.Scope, q.WindowMinutes, windowIDMinutes(q.ResetsAt)).Scan(&peak)
+		q.Source, q.Scope, q.WindowMinutes, windowIDHours(q.ResetsAt)).Scan(&peak)
 	switch {
 	case err == nil && q.UsedPercent <= peak:
 		return nil
@@ -138,7 +196,20 @@ func (s *Store) ObserveCapacityFromQuota(q model.QuotaSnapshot, now int64) error
 		return err
 	}
 	start := q.ResetsAt - int64(q.WindowMinutes)*60_000
-	tokens, err := s.subscriptionTokens(q.Source, start, now)
+	// Bound the token sum by the observation instant and the window reset so
+	// delayed deliveries or post-reset snapshots never pull later-window tokens
+	// into this sample's numerator.
+	end := q.ObservedAt
+	if end <= 0 || end > now {
+		end = now
+	}
+	if end > q.ResetsAt {
+		end = q.ResetsAt
+	}
+	if end < start {
+		return nil
+	}
+	tokens, err := s.subscriptionTokens(q.Source, q.Scope, start, end)
 	if err != nil {
 		return err
 	}
@@ -262,34 +333,45 @@ const (
 	// capacityQuantum is the rounding in an integer percentage: half a point.
 	capacityQuantum = 0.5
 	// capacityLiveOnlyMinPercent is how full a window must be before its own
-	// ratio is used with no prior behind it at all — 10% keeps the rounding
-	// error under 5%. Below that, and with nothing learned yet, the honest
-	// answer is still no answer.
-	capacityLiveOnlyMinPercent = 10.0
+	// ratio is used with no prior behind it at all — 10% keeps integer-percent
+	// rounding error under 5%. Fractional providers (Antigravity) carry
+	// negligible rounding error and can extrapolate safely from 5%.
+	capacityLiveOnlyMinPercent           = 10.0
+	capacityFractionalLiveOnlyMinPercent = 5.0
+	capacityFractionalQuantum            = 0.05
 )
 
 // CapacityForWindow combines what past windows taught with what this window is
-// currently reporting.
-//
-// tokens is what this fleet has put into the live window and pct the provider's
-// authoritative percentage for it. Returns ok=false when neither source can say
-// anything: no prior, and a percentage too coarse to divide by.
+// currently reporting, assuming integer-percentage provider precision.
 func CapacityForWindow(prior int64, priorOK bool, tokens int64, pct float64) (int64, bool) {
+	return CapacityForWindowWithSource("", prior, priorOK, tokens, pct)
+}
+
+// CapacityForWindowWithSource is CapacityForWindow parameterized by source
+// precision: Antigravity reports fractional remaining_fraction values rather
+// than integer percentages, so its live ratio stabilizes at a lower threshold.
+func CapacityForWindowWithSource(source string, prior int64, priorOK bool, tokens int64, pct float64) (int64, bool) {
 	live, liveOK := 0.0, false
 	if tokens > 0 && pct > 0 {
 		live, liveOK = float64(tokens)/pct*100, true
+	}
+	minPct := capacityLiveOnlyMinPercent
+	quantum := capacityQuantum
+	if source == "antigravity" {
+		minPct = capacityFractionalLiveOnlyMinPercent
+		quantum = capacityFractionalQuantum
 	}
 	switch {
 	case !liveOK:
 		return prior, priorOK && prior > 0
 	case !priorOK || prior <= 0:
-		if pct < capacityLiveOnlyMinPercent {
+		if pct < minPct {
 			return 0, false
 		}
 		return int64(live), true
 	}
 	// Inverse-variance weight; see the block comment above.
-	k := capacityQuantum / capacityPriorCV
+	k := quantum / capacityPriorCV
 	w := pct * pct / (pct*pct + k*k)
 	return int64(w*live + (1-w)*float64(prior)), true
 }
@@ -309,10 +391,10 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 		`SELECT source, scope, window_minutes, resets_at, used_percent, observed_at
 		 FROM (SELECT source, scope, window_minutes, resets_at, used_percent, observed_at,
 		              ROW_NUMBER() OVER (
-		                PARTITION BY source, scope, window_minutes, resets_at / 60000
+		                PARTITION BY source, scope, window_minutes, resets_at / 3600000
 		                ORDER BY used_percent DESC, observed_at ASC) AS rn
 		       FROM quota_snapshots
-		       WHERE observed_at >= ? AND resets_at > 0 AND used_percent >= ?)
+		       WHERE observed_at >= ? AND resets_at > 0 AND observed_at <= resets_at AND used_percent >= ?)
 		 WHERE rn = 1`,
 		since.UnixMilli(), capacityMinPeak)
 	if err != nil {
@@ -342,7 +424,7 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 	filled := 0
 	for _, p := range peaks {
 		start := p.resetsAt - int64(p.windowMinutes)*60_000
-		tokens, err := s.subscriptionTokens(p.source, start, p.observedAt)
+		tokens, err := s.subscriptionTokens(p.source, p.scope, start, p.observedAt)
 		if err != nil {
 			return filled, err
 		}
@@ -361,13 +443,11 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 }
 
 // subscriptionTokens sums the traffic that counts against a quota window: only
-// the subscription channel does (ADR-0018 §7). The channel is derived in Go
-// from the stored provider, exactly as every read path does it, rather than
-// being spelled out as a provider list in SQL that would drift from the mapping.
-func (s *Store) subscriptionTokens(source string, from, to int64) (int64, error) {
+// the subscription channel and models matching scope's pool count (ADR-0018 §7).
+func (s *Store) subscriptionTokens(source, scope string, from, to int64) (int64, error) {
 	rows, err := s.rdb.Query(
-		`SELECT provider, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0)
-		 FROM events WHERE source = ? AND ts >= ? AND ts <= ? GROUP BY provider`,
+		`SELECT provider, model, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0)
+		 FROM events WHERE source = ? AND ts >= ? AND ts <= ? GROUP BY provider, model`,
 		source, from, to)
 	if err != nil {
 		return 0, err
@@ -375,12 +455,12 @@ func (s *Store) subscriptionTokens(source string, from, to int64) (int64, error)
 	defer rows.Close()
 	var total int64
 	for rows.Next() {
-		var provider string
+		var provider, modelName string
 		var tokens int64
-		if err := rows.Scan(&provider, &tokens); err != nil {
+		if err := rows.Scan(&provider, &modelName, &tokens); err != nil {
 			return 0, err
 		}
-		if IsSubscription(source, provider) {
+		if IsSubscription(source, provider) && ScopeMatchesModel(source, scope, modelName) {
 			total += tokens
 		}
 	}

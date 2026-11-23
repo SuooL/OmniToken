@@ -354,3 +354,24 @@ func TestOutboxCapacityReturnsBackpressureWithoutDeletingRows(t *testing.T) {
 		t.Fatalf("oldest after pressure = %#v, err=%v", got, err)
 	}
 }
+
+func TestOutboxQuarantinesPermanentRejectWithoutBlockingQueue(t *testing.T) {
+	outbox := openTestOutbox(t, filepath.Join(t.TempDir(), "outbox.db"), DefaultOutboxMaxBytes)
+	if err := outbox.Enqueue(outboxEnvelope(outboxBatchA, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue(outboxEnvelope(outboxBatchB, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.QuarantineOldest(outboxBatchA, 422, "invalid_event"); err != nil {
+		t.Fatalf("QuarantineOldest: %v", err)
+	}
+	dlCount, err := outbox.DeadLetterCount()
+	if err != nil || dlCount != 1 {
+		t.Fatalf("DeadLetterCount = %d, err=%v; want 1", dlCount, err)
+	}
+	raw, err := outbox.PeekRaw()
+	if err != nil || raw.BatchID != outboxBatchB || raw.Sequence != 2 {
+		t.Fatalf("next batch after quarantine = %#v, err=%v; want batch B seq 2", raw, err)
+	}
+}

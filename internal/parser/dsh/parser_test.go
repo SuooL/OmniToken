@@ -333,6 +333,17 @@ func TestTimingDoesNotChangeEventID(t *testing.T) {
 	}
 }
 
+func TestTruncatedZstdLeavesConsumedZero(t *testing.T) {
+	// A truncated mid-write zstd frame must leave Consumed == 0 so the next scan
+	// retries once dsh flushes the frame instead of skipping the rest of the file.
+	comp := zstdJSONL(t, sessionLine, reqCtxAnth, msgAnth)
+	truncated := comp[:len(comp)/2]
+	res := Parse(bytes.NewReader(truncated), "dev-1", 0)
+	if res.Consumed != 0 {
+		t.Errorf("Consumed = %d, want 0 for truncated zstd frame", res.Consumed)
+	}
+}
+
 func TestGarbageInputDoesNotPanic(t *testing.T) {
 	// Not a zstd stream at all: Parse must return cleanly (Consumed set, no events).
 	res := Parse(bytes.NewReader([]byte("plain uncompressed bytes")), "dev-1", 0)

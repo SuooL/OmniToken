@@ -31,18 +31,33 @@ type span struct{ start, end int64 } // unix ms, start ≤ end
 
 type evPoint struct{ ts, dur int64 }
 
-// bridgeSpans folds one session's chronological event intervals into active
-// spans, bridging gaps ≤ idleMS.
+// bridgeSpans folds one session's event intervals into active spans, bridging
+// gaps ≤ idleMS. Intervals are sorted by start time first because events
+// ordered by completion timestamp `ts` can have out-of-order `ts - dur` starts
+// when a long turn finishes after a shorter concurrent one.
 func bridgeSpans(points []evPoint, idleMS int64) []span {
-	var out []span
-	for _, p := range points {
-		start, end := p.ts-p.dur, p.ts
-		if n := len(out); n > 0 && start-out[n-1].end <= idleMS {
-			if end > out[n-1].end {
-				out[n-1].end = end
+	if len(points) == 0 {
+		return nil
+	}
+	raw := make([]span, len(points))
+	for i, p := range points {
+		dur := max(p.dur, 0)
+		raw[i] = span{start: p.ts - dur, end: p.ts}
+	}
+	sort.Slice(raw, func(i, j int) bool {
+		if raw[i].start == raw[j].start {
+			return raw[i].end < raw[j].end
+		}
+		return raw[i].start < raw[j].start
+	})
+	out := make([]span, 0, len(raw))
+	for _, sp := range raw {
+		if n := len(out); n > 0 && sp.start-out[n-1].end <= idleMS {
+			if sp.end > out[n-1].end {
+				out[n-1].end = sp.end
 			}
 		} else {
-			out = append(out, span{start, end})
+			out = append(out, sp)
 		}
 	}
 	return out

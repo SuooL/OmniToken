@@ -112,7 +112,7 @@ func (s *Server) fillCapacity(card *windowCard, source string, w fiveHourWin, wi
 		log.Printf("quota[capacity]: estimate: %v", err)
 		return
 	}
-	capacity, ok := store.CapacityForWindow(prior, priorOK, card.Tokens, w.pct)
+	capacity, ok := store.CapacityForWindowWithSource(source, prior, priorOK, card.Tokens, w.pct)
 	if !ok {
 		return
 	}
@@ -164,8 +164,15 @@ func tightestQuota(quotas []model.QuotaSnapshot, now time.Time, windowMinutes in
 		if q.WindowMinutes != windowMinutes || q.ResetsAt == 0 || q.ResetsAt < now.UnixMilli() {
 			continue
 		}
-		if cur, ok := out[q.Source]; ok && cur.pct >= q.UsedPercent {
-			continue
+		if cur, ok := out[q.Source]; ok {
+			if cur.pct > q.UsedPercent {
+				continue
+			}
+			if cur.pct == q.UsedPercent {
+				if cur.observed > q.ObservedAt || (cur.observed == q.ObservedAt && cur.scope <= q.Scope) {
+					continue
+				}
+			}
 		}
 		resets := time.UnixMilli(q.ResetsAt)
 		out[q.Source] = fiveHourWin{
@@ -178,11 +185,17 @@ func tightestQuota(quotas []model.QuotaSnapshot, now time.Time, windowMinutes in
 
 func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) ([]windowCard, error) {
 	rollingStart := now.Add(-fiveHours)
+	usageCache := map[int64][]store.ProviderUsage{}
 
 	sum := func(from time.Time, keep func(store.ProviderUsage) bool) (tokens, events int64, cost float64, err error) {
-		rows, err := s.store.UsageByProvider(from, now.Add(time.Minute))
-		if err != nil {
-			return 0, 0, 0, err
+		key := from.UnixMilli()
+		rows, ok := usageCache[key]
+		if !ok {
+			rows, err = s.store.UsageByProvider(from, now.Add(time.Minute))
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			usageCache[key] = rows
 		}
 		for _, u := range rows {
 			if !keep(u) {
@@ -218,7 +231,13 @@ func (s *Server) buildWindowCards(now time.Time, quotas []model.QuotaSnapshot) (
 				continue
 			}
 			keep := func(u store.ProviderUsage) bool {
-				return u.Source == source && store.IsSubscription(u.Source, u.Provider)
+				if u.Source != source || !store.IsSubscription(u.Source, u.Provider) {
+					return false
+				}
+				if authoritative {
+					return store.ScopeMatchesModel(source, w.scope, u.Model)
+				}
+				return true
 			}
 			// The 5-hour card keeps the bare source as its key: it predates the
 			// weekly one and both the panel and the menubar address it by that.

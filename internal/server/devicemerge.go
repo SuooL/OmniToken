@@ -79,7 +79,7 @@ func (s *Server) handleDeviceMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Every per-device chart on screen just changed shape.
-	s.bcast.Notify()
+	s.invalidateReadViews()
 	writeJSON(w, s.deviceMergeResponse(applied, req.To, true, history))
 }
 

@@ -23,17 +23,39 @@ package dsh
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/suool/omnitoken/internal/model"
 )
+
+var dshZstdPool = sync.Pool{
+	New: func() any {
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return nil
+		}
+		return dec
+	},
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
 
 // Source is the Event.Source value for dsh-observed usage.
 const Source = "dsh"
@@ -114,18 +136,25 @@ type stepTiming struct {
 // event per assistant/message that reports usage. r is the compressed bytes;
 // Consumed is their length so the caller's offset matches the on-disk size.
 func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
-	raw, err := io.ReadAll(r)
-	res.Consumed = int64(len(raw))
-	if err != nil {
+	cr := &countingReader{r: r}
+	dec, _ := dshZstdPool.Get().(*zstd.Decoder)
+	if dec == nil {
+		var err error
+		dec, err = zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return res
+		}
+	}
+	if err := dec.Reset(cr); err != nil {
+		dshZstdPool.Put(dec)
 		return res
 	}
-	dec, err := zstd.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return res
-	}
-	defer dec.Close()
+	defer func() {
+		_ = dec.Reset(nil)
+		dshZstdPool.Put(dec)
+	}()
 
-	br := bufio.NewReaderSize(dec, 1<<20)
+	br := bufio.NewReaderSize(dec, 256<<10)
 	var sessionID, cwd, curProvider, curModel string
 	steps := map[string]*stepTiming{}
 	for {
@@ -213,6 +242,19 @@ func Parse(r io.Reader, device string, _ int64) (res model.ParseResult) {
 			}
 		}
 		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				// Drain any trailing bytes (e.g. zstd epilogue) so Consumed matches
+				// the exact compressed file size on disk.
+				_, _ = io.Copy(io.Discard, cr)
+				res.Consumed = cr.n
+			} else if errors.Is(rerr, io.ErrUnexpectedEOF) {
+				// Truncated mid-write frame: keep Consumed=0 so the next scan retries
+				// once dsh flushes the frame instead of skipping the rest of the file.
+				res.Consumed = 0
+			} else {
+				_, _ = io.Copy(io.Discard, cr)
+				res.Consumed = cr.n
+			}
 			return res
 		}
 	}

@@ -80,8 +80,21 @@ func TestPeriodRowsWeekly(t *testing.T) {
 	if rows[0].Events != 2 || rows[1].Events != 1 {
 		t.Errorf("week event counts = %d, %d; want 2, 1", rows[0].Events, rows[1].Events)
 	}
-	if rows[0].Bucket != "2026-W10" { // %W: Monday-first week number
-		t.Errorf("bucket = %q, want 2026-W10", rows[0].Bucket)
+	if rows[0].Bucket != "2026-W11" { // ISO-8601 %G-W%V
+		t.Errorf("bucket = %q, want 2026-W11", rows[0].Bucket)
+	}
+	// Year boundary: Wed 2025-12-31 and Thu 2026-01-01 share ISO week 2026-W01
+	// rather than splitting into 2025-W52 and 2026-W00.
+	mustInsert(t, s,
+		testEvent("y1", localTS(2025, 12, 31, 12), "sy", "mac", 10, 5),
+		testEvent("y2", localTS(2026, 1, 1, 12), "sy", "mac", 20, 5),
+	)
+	yr, err := s.PeriodRows("weekly", localTS(2025, 12, 28, 0), localTS(2026, 1, 5, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(yr) != 1 || yr[0].Bucket != "2026-W01" || yr[0].Events != 2 {
+		t.Errorf("year-boundary ISO week wrong: %+v", yr)
 	}
 }
 

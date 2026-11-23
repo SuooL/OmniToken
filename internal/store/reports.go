@@ -8,7 +8,8 @@ import (
 )
 
 // periodExpr is the SQLite expression naming a row's bucket. daily matches
-// Daily's date() bucketing; weekly is "%Y-W%W" (Monday-first week number),
+// Daily's date() bucketing; weekly uses ISO-8601 "%G-W%V" (Monday-first week
+// number with ISO week-year so year boundaries do not split into W00),
 // monthly "%Y-%m" — all in localtime, so a bucket boundary means the same here
 // as everywhere else (ADR-0021).
 func periodExpr(granularity string) (string, error) {
@@ -16,7 +17,7 @@ func periodExpr(granularity string) (string, error) {
 	case "daily":
 		return `date(ts/1000, 'unixepoch', 'localtime')`, nil
 	case "weekly":
-		return `strftime('%Y-W%W', ts/1000, 'unixepoch', 'localtime')`, nil
+		return `strftime('%G-W%V', ts/1000, 'unixepoch', 'localtime')`, nil
 	case "monthly":
 		return `strftime('%Y-%m', ts/1000, 'unixepoch', 'localtime')`, nil
 	}

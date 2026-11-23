@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,9 +25,11 @@ const stepTypePlannerResponse = 15
 
 // loadConversationTimings reads ONLY step_type=15 timestamp metadata from the
 // sibling `<root>/conversations/<session-id>.db` SQLite database (read-only).
+// When stepIndices is non-empty, only those step indices are queried so
+// incremental scans do not re-read and decode the entire conversation history.
 // Prompt text, thinking traces, and tool payloads live in other columns and
 // are never selected (N4). Missing or unreadable DBs silently return nil.
-func loadConversationTimings(transcriptPath, sessionID string) map[int64]stepTiming {
+func loadConversationTimings(transcriptPath, sessionID string, stepIndices ...int64) map[int64]stepTiming {
 	dbPath := conversationDBPath(transcriptPath, sessionID)
 	if dbPath == "" {
 		return nil
@@ -34,7 +37,7 @@ func loadConversationTimings(transcriptPath, sessionID string) map[int64]stepTim
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
-	uri := "file:" + (&url.URL{Path: filepath.ToSlash(dbPath)}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(200)"
+	uri := "file:" + (&url.URL{Path: filepath.ToSlash(dbPath)}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(1000)"
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return nil
@@ -42,21 +45,51 @@ func loadConversationTimings(transcriptPath, sessionID string) map[int64]stepTim
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	rows, err := db.Query(`SELECT idx, metadata FROM steps WHERE step_type = ?`, stepTypePlannerResponse)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
 	out := map[int64]stepTiming{}
-	for rows.Next() {
-		var idx int64
-		var blob []byte
-		if err := rows.Scan(&idx, &blob); err != nil || len(blob) == 0 {
-			continue
+	scanRows := func(rows *sql.Rows) {
+		defer rows.Close()
+		for rows.Next() {
+			var idx int64
+			var blob []byte
+			if err := rows.Scan(&idx, &blob); err != nil || len(blob) == 0 {
+				continue
+			}
+			if t, ok := decodeStepMetadataTiming(blob); ok {
+				out[idx] = t
+			}
 		}
-		if t, ok := decodeStepMetadataTiming(blob); ok {
-			out[idx] = t
+	}
+
+	if len(stepIndices) == 0 {
+		rows, err := db.Query(`SELECT idx, metadata FROM steps WHERE step_type = ?`, stepTypePlannerResponse)
+		if err != nil {
+			return nil
+		}
+		scanRows(rows)
+	} else {
+		seen := make(map[int64]struct{}, len(stepIndices))
+		uniq := make([]int64, 0, len(stepIndices))
+		for _, idx := range stepIndices {
+			if _, ok := seen[idx]; !ok {
+				seen[idx] = struct{}{}
+				uniq = append(uniq, idx)
+			}
+		}
+		const chunk = 500
+		for start := 0; start < len(uniq); start += chunk {
+			part := uniq[start:min(start+chunk, len(uniq))]
+			placeholders := strings.Repeat("?,", len(part))
+			placeholders = placeholders[:len(placeholders)-1]
+			args := make([]any, 1+len(part))
+			args[0] = stepTypePlannerResponse
+			for i, idx := range part {
+				args[i+1] = idx
+			}
+			rows, err := db.Query(`SELECT idx, metadata FROM steps WHERE step_type = ? AND idx IN (`+placeholders+`)`, args...)
+			if err != nil {
+				return nil
+			}
+			scanRows(rows)
 		}
 	}
 	if len(out) == 0 {
@@ -90,20 +123,43 @@ func conversationDBPath(transcriptPath, sessionID string) string {
 	return filepath.Join(root, "conversations", sessionID+".db")
 }
 
+type summaryCWDCacheEntry struct {
+	modUnixNano int64
+	size        int64
+	byID        map[string]string
+}
+
+var (
+	summaryCWDMu    sync.Mutex
+	summaryCWDCache = map[string]summaryCWDCacheEntry{}
+)
+
 // loadConversationCWD reads ONLY the workspace_uris column for sessionID from
-// Antigravity's read-only `<root>/conversation_summaries.db` metadata table.
-// Titles, previews, and raw summaries are never selected (N4). Missing or
-// unreadable DBs silently return "".
+// Antigravity's read-only `<root>/conversation_summaries.db` metadata table,
+// cached per (dbPath, mtime, size) so scanning many conversations opens the
+// shared DB once per change. Titles, previews, and raw summaries are never
+// selected (N4). Missing or unreadable DBs silently return "".
 func loadConversationCWD(transcriptPath, sessionID string) string {
 	root := antigravityRoot(transcriptPath)
 	if root == "" || sessionID == "" {
 		return ""
 	}
 	dbPath := filepath.Join(root, "conversation_summaries.db")
-	if _, err := os.Stat(dbPath); err != nil {
+	info, err := os.Stat(dbPath)
+	if err != nil {
 		return ""
 	}
-	uri := "file:" + (&url.URL{Path: filepath.ToSlash(dbPath)}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(200)"
+	modNano := info.ModTime().UnixNano()
+	size := info.Size()
+
+	summaryCWDMu.Lock()
+	entry, ok := summaryCWDCache[dbPath]
+	summaryCWDMu.Unlock()
+	if ok && entry.modUnixNano == modNano && entry.size == size {
+		return entry.byID[sessionID]
+	}
+
+	uri := "file:" + (&url.URL{Path: filepath.ToSlash(dbPath)}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(1000)"
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return ""
@@ -111,11 +167,30 @@ func loadConversationCWD(transcriptPath, sessionID string) string {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	var raw string
-	if err := db.QueryRow(`SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ? LIMIT 1`, sessionID).Scan(&raw); err != nil {
+	rows, err := db.Query(`SELECT conversation_id, workspace_uris FROM conversation_summaries`)
+	if err != nil {
 		return ""
 	}
-	return parseWorkspaceURIs(raw)
+	defer rows.Close()
+	byID := map[string]string{}
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			continue
+		}
+		if p := parseWorkspaceURIs(raw); p != "" {
+			byID[id] = p
+		}
+	}
+
+	summaryCWDMu.Lock()
+	summaryCWDCache[dbPath] = summaryCWDCacheEntry{
+		modUnixNano: modNano,
+		size:        size,
+		byID:        byID,
+	}
+	summaryCWDMu.Unlock()
+	return byID[sessionID]
 }
 
 func parseWorkspaceURIs(raw string) string {

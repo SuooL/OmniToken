@@ -51,6 +51,14 @@ func (s *Server) cachedJSON(key string, ttl time.Duration, compute func() ([]byt
 // the whole ttl — so the next request after one retries.
 func (c *respCache) bytes(key string, ttl time.Duration, compute func() ([]byte, error)) ([]byte, error) {
 	c.mu.Lock()
+	now := c.now()
+	if len(c.m) > 64 {
+		for k, entry := range c.m {
+			if entry.ready == nil && !now.Before(entry.expires) {
+				delete(c.m, k)
+			}
+		}
+	}
 	if e := c.m[key]; e != nil {
 		if e.ready != nil {
 			ch := e.ready
@@ -58,7 +66,7 @@ func (c *respCache) bytes(key string, ttl time.Duration, compute func() ([]byte,
 			<-ch
 			return e.body, e.err
 		}
-		if c.now().Before(e.expires) {
+		if now.Before(e.expires) {
 			body := e.body
 			c.mu.Unlock()
 			return body, nil

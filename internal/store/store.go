@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -48,6 +49,9 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_device_ts ON events(device, ts);
 CREATE INDEX IF NOT EXISTS idx_events_model_ts ON events(model, ts);
 CREATE INDEX IF NOT EXISTS idx_events_repo_ts ON events(repo, ts);
+CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts);
+CREATE INDEX IF NOT EXISTS idx_events_provider_ts ON events(provider, ts);
+CREATE INDEX IF NOT EXISTS idx_events_session_ts ON events(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 `
 
@@ -66,7 +70,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(true)")
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +81,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateQuotaSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateQuotaLatest(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -97,6 +105,14 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateCodexCapacitySamples(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateCapacityWindowIDHours(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateIngestReceiptsIndexes(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -206,6 +222,85 @@ func migrateCodexCapacitySamples(db *sql.DB) error {
 	return err
 }
 
+const capacityWindowIDHoursKey = "schema.capacity_window_id_hours_v1"
+
+// migrateCapacityWindowIDHours clears minute-bucketed quota_capacity rows once
+// so BackfillCapacity rebuilds them at hour resolution with per-pool model
+// filtering. Derived calibration only — events are untouched.
+func migrateCapacityWindowIDHours(db *sql.DB) error {
+	var done string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, capacityWindowIDHoursKey).Scan(&done)
+	if err == nil && done != "" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := db.Exec(`DELETE FROM quota_capacity`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("store: 重建 %d 条容量校准样本以切换到小时级窗口分桶与分池模型归因", n)
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, 'done')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, capacityWindowIDHoursKey)
+	return err
+}
+
+func migrateIngestReceiptsIndexes(db *sql.DB) error {
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_ingest_receipts_device`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ingest_receipts_server_time ON ingest_receipts(server_time)`)
+	return err
+}
+
+const (
+	quotaSnapshotRetention = 35 * 24 * time.Hour
+	ingestReceiptRetention = 14 * 24 * time.Hour
+	pruneBatchSize         = 50_000
+)
+
+// PruneOperationalTables removes aged rows from transient operational tables
+// (quota_snapshots > 35d, ingest_receipts > 14d) in bounded batches so the
+// database does not grow unboundedly while leaving events and learned
+// quota_capacity samples strictly untouched.
+func (s *Store) PruneOperationalTables(now time.Time) (quotasDeleted, receiptsDeleted int64, err error) {
+	quotaCutoff := now.Add(-quotaSnapshotRetention).UnixMilli()
+	for {
+		res, execErr := s.db.Exec(
+			`DELETE FROM quota_snapshots WHERE rowid IN (
+				SELECT rowid FROM quota_snapshots WHERE observed_at < ? LIMIT ?
+			)`, quotaCutoff, pruneBatchSize)
+		if execErr != nil {
+			return quotasDeleted, receiptsDeleted, execErr
+		}
+		n, _ := res.RowsAffected()
+		quotasDeleted += n
+		if n < pruneBatchSize {
+			break
+		}
+	}
+	receiptCutoff := now.Add(-ingestReceiptRetention).UnixMilli()
+	for {
+		res, execErr := s.db.Exec(
+			`DELETE FROM ingest_receipts WHERE rowid IN (
+				SELECT rowid FROM ingest_receipts WHERE server_time < ? LIMIT ?
+			)`, receiptCutoff, pruneBatchSize)
+		if execErr != nil {
+			return quotasDeleted, receiptsDeleted, execErr
+		}
+		n, _ := res.RowsAffected()
+		receiptsDeleted += n
+		if n < pruneBatchSize {
+			break
+		}
+	}
+	return quotasDeleted, receiptsDeleted, nil
+}
+
 // DeviceOrigin records how a row's device attribution was obtained (ADR-0015).
 // It is a property of the channel the events arrived on, not of the event, so
 // it is passed alongside a batch instead of living on model.Event.
@@ -255,10 +350,12 @@ func migrateEventsDeviceOrigin(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(sqlText, "device_origin") {
-		return nil
+	if !strings.Contains(sqlText, "device_origin") {
+		if _, err = db.Exec(`ALTER TABLE events ADD COLUMN device_origin TEXT NOT NULL DEFAULT 'observed'`); err != nil {
+			return err
+		}
 	}
-	_, err = db.Exec(`ALTER TABLE events ADD COLUMN device_origin TEXT NOT NULL DEFAULT 'observed'`)
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_self_device ON events(device) WHERE device_origin = 'self' AND device != ''`)
 	return err
 }
 
@@ -328,10 +425,10 @@ func (s *Store) InsertEventsFrom(events []model.Event, receivedAt int64, origin 
 	defer tx.Rollback()
 	result, err := insertEventsFromTx(tx, events, receivedAt, origin)
 	if err != nil {
-		return result.inserted, err
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return result.inserted, err
+		return 0, err
 	}
 	logEventApply(result)
 	return result.inserted, nil
