@@ -217,6 +217,17 @@ struct DeviceView {
     running: i64,
 }
 
+/// One individual official quota bucket (e.g. `gemini-5h`, `3p-weekly`) shown
+/// when a source exposes multiple official pools (ADR-0045).
+#[derive(Serialize, Clone, Debug)]
+struct QuotaBucketView {
+    scope: String,
+    label: String,
+    window_minutes: i64,
+    used_percent: f64,
+    resets_at_ms: Option<i64>,
+}
+
 /// Independent official percentages and estimated token remainders for each
 /// window. Missing readings and estimates stay absent rather than becoming 0.
 #[derive(Serialize, Clone, Debug)]
@@ -230,6 +241,8 @@ struct QuotaView {
     /// Estimates from the matching authoritative window card (ADR-0025/0034).
     five_hour_remaining_tokens: Option<i64>,
     weekly_remaining_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    buckets: Vec<QuotaBucketView>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -250,6 +263,9 @@ fn source_label(source: &str) -> String {
     match source {
         "claude-code" => "Claude".to_string(),
         "codex" => "Codex".to_string(),
+        "antigravity" => "Antigravity".to_string(),
+        "gemini" => "Gemini".to_string(),
+        "dsh" => "DeepSeek".to_string(),
         "api" | "proxy" | "openai-api" | "anthropic-api" => "Other/API".to_string(),
         "" => "—".to_string(),
         other => other.to_string(),
@@ -358,6 +374,122 @@ fn weekly_quota(quotas: &[Value], source: &str) -> Option<(f64, Option<i64>)> {
         )
 }
 
+fn quota_scope_label(scope: &str) -> String {
+    match scope.trim() {
+        "gemini-5h" | "gemini-weekly" => "Gemini".to_string(),
+        "gemini-argon-wtu-weekly" => "Gemini 4 Argon".to_string(),
+        "3p-5h" | "3p-weekly" => "Claude / 第三方".to_string(),
+        "five_hour" => "5h".to_string(),
+        "seven_day" => "Week".to_string(),
+        "seven_day_opus" => "Opus".to_string(),
+        "seven_day_sonnet" => "Sonnet".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn quota_scope_rank(scope: &str) -> usize {
+    match scope.trim() {
+        "gemini-5h" => 1,
+        "gemini-weekly" => 2,
+        "gemini-argon-wtu-weekly" => 3,
+        "3p-5h" => 4,
+        "3p-weekly" => 5,
+        _ => 99,
+    }
+}
+
+fn quota_buckets_for(quotas: &[Value], source: &str) -> Vec<QuotaBucketView> {
+    let mut by_key: HashMap<(i64, String), QuotaBucketView> = HashMap::new();
+    for quota in quotas {
+        if quota.get("source").and_then(Value::as_str) != Some(source) {
+            continue;
+        }
+        let Some(used_percent) = quota
+            .get("used_percent")
+            .and_then(Value::as_f64)
+            .filter(|p| p.is_finite() && *p >= 0.0)
+        else {
+            continue;
+        };
+        let window_minutes = quota
+            .get("window_minutes")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let scope = quota
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let resets_at_ms = quota
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .filter(|n| *n > 0);
+        let key = (window_minutes, scope.clone());
+        let replace = by_key
+            .get(&key)
+            .map_or(true, |prev| used_percent > prev.used_percent);
+        if replace {
+            by_key.insert(
+                key,
+                QuotaBucketView {
+                    label: quota_scope_label(&scope),
+                    scope,
+                    window_minutes,
+                    used_percent,
+                    resets_at_ms,
+                },
+            );
+        }
+    }
+    let mut out: Vec<QuotaBucketView> = by_key.into_values().collect();
+    out.sort_by(|a, b| {
+        quota_scope_rank(&a.scope)
+            .cmp(&quota_scope_rank(&b.scope))
+            .then_with(|| a.window_minutes.cmp(&b.window_minutes))
+            .then_with(|| a.scope.cmp(&b.scope))
+    });
+    let mut per_window: HashMap<i64, usize> = HashMap::new();
+    for b in &out {
+        *per_window.entry(b.window_minutes).or_insert(0) += 1;
+    }
+    let multi = out.len() > 2 || per_window.values().any(|&n| n > 1);
+    if multi || (source == "antigravity" && !out.is_empty()) {
+        out
+    } else {
+        Vec::new()
+    }
+}
+
+fn tightest_quota_window(
+    quotas: &[Value],
+    source: &str,
+    window_minutes: i64,
+) -> Option<(f64, Option<i64>)> {
+    quotas
+        .iter()
+        .filter(|quota| quota.get("source").and_then(Value::as_str) == Some(source))
+        .filter(|quota| quota.get("window_minutes").and_then(Value::as_i64) == Some(window_minutes))
+        .filter_map(|quota| {
+            Some((
+                quota
+                    .get("used_percent")
+                    .and_then(Value::as_f64)
+                    .filter(|p| p.is_finite() && *p >= 0.0)?,
+                quota
+                    .get("resets_at")
+                    .and_then(Value::as_i64)
+                    .filter(|n| *n > 0),
+            ))
+        })
+        .fold(
+            None,
+            |tightest: Option<(f64, Option<i64>)>, current| match tightest {
+                Some(best) if best.0 >= current.0 => Some(best),
+                _ => Some(current),
+            },
+        )
+}
+
 /// Both windows are peers: a fresh 5-hour window must not hide a near-full
 /// weekly limit. Rolling placeholders are never presented as official quotas.
 fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
@@ -372,16 +504,30 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
             .unwrap_or(&[])
     };
     let (quotas, windows) = (array("quotas"), array("windows"));
-    QUOTA_SOURCES
+    let mut sources: Vec<&str> = QUOTA_SOURCES.to_vec();
+    let has_antigravity = quotas
         .iter()
-        .map(|&source| {
+        .any(|q| q.get("source").and_then(Value::as_str) == Some("antigravity"))
+        || windows.iter().any(|w| {
+            w.get("source").and_then(Value::as_str) == Some("antigravity")
+                && w.get("authoritative").and_then(Value::as_bool) == Some(true)
+        });
+    if has_antigravity {
+        sources.push("antigravity");
+    }
+    sources
+        .into_iter()
+        .map(|source| {
             let five_hour = five_hour_window(windows, source);
-            let five_hour_percent = five_hour.map(|window| {
-                window
-                    .get("used_percent")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0)
-            });
+            let five_hour_from_quotas = tightest_quota_window(quotas, source, 300);
+            let five_hour_percent = five_hour
+                .map(|window| {
+                    window
+                        .get("used_percent")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0)
+                })
+                .or_else(|| five_hour_from_quotas.map(|(percent, _)| percent));
             let weekly = weekly_quota(quotas, source);
             let weekly_percent = weekly.map(|(percent, _)| percent);
             let weekly_remaining_tokens =
@@ -403,10 +549,12 @@ fn quota_views(payload: Option<&Value>) -> Vec<QuotaView> {
                 weekly_percent,
                 five_hour_resets_at_ms: five_hour
                     .and_then(|window| window.get("resets_at").and_then(Value::as_i64))
-                    .filter(|n| *n > 0),
+                    .filter(|n| *n > 0)
+                    .or_else(|| five_hour_from_quotas.and_then(|(_, resets_at)| resets_at)),
                 weekly_resets_at_ms: weekly.and_then(|(_, resets_at)| resets_at),
                 five_hour_remaining_tokens,
                 weekly_remaining_tokens,
+                buckets: quota_buckets_for(quotas, source),
             }
         })
         .collect()
@@ -2090,5 +2238,37 @@ mod tests {
         let codex = view.quotas.iter().find(|q| q.source == "codex").unwrap();
         assert_eq!(codex.five_hour_remaining_tokens, None);
         assert_eq!(codex.weekly_remaining_tokens, None);
+    }
+
+    #[test]
+    fn antigravity_official_quotas_appear_with_all_buckets_when_present() {
+        let payload = json!({
+            "generated_at": 1_700_000_000_000i64,
+            "windows": [
+                {"key": "antigravity", "source": "antigravity", "kind": "subscription", "window_minutes": 300, "authoritative": true, "used_percent": 80.0, "tokens": 40_000_000i64, "remaining_tokens": 10_000_000i64, "resets_at": 1_700_010_000_000i64},
+                {"key": "antigravity:weekly", "source": "antigravity", "kind": "subscription", "window_minutes": 10080, "authoritative": true, "used_percent": 25.0, "tokens": 100_000_000i64, "remaining_tokens": 300_000_000i64, "resets_at": 1_700_500_000_000i64}
+            ],
+            "quotas": [
+                {"source": "antigravity", "scope": "gemini-5h", "window_minutes": 300, "used_percent": 30.0, "resets_at": 1_700_010_000_000i64},
+                {"source": "antigravity", "scope": "3p-5h", "window_minutes": 300, "used_percent": 80.0, "resets_at": 1_700_010_000_000i64},
+                {"source": "antigravity", "scope": "gemini-weekly", "window_minutes": 10080, "used_percent": 15.0, "resets_at": 1_700_500_000_000i64},
+                {"source": "antigravity", "scope": "gemini-argon-wtu-weekly", "window_minutes": 10080, "used_percent": 25.0, "resets_at": 1_700_500_000_000i64}
+            ]
+        });
+        let view = view_for(Some(&payload), ConnectionKind::Live);
+        let ag = view
+            .quotas
+            .iter()
+            .find(|q| q.source == "antigravity")
+            .expect("antigravity quota card");
+        assert_eq!(ag.label, "Antigravity");
+        assert_eq!(ag.five_hour_percent, Some(80.0));
+        assert_eq!(ag.weekly_percent, Some(25.0));
+        assert_eq!(ag.five_hour_remaining_tokens, Some(10_000_000));
+        assert_eq!(ag.buckets.len(), 4);
+        assert_eq!(ag.buckets[0].scope, "gemini-5h");
+        assert_eq!(ag.buckets[0].label, "Gemini");
+        assert_eq!(ag.buckets[3].scope, "3p-5h");
+        assert_eq!(ag.buckets[3].label, "Claude / 第三方");
     }
 }

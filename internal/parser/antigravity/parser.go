@@ -62,6 +62,8 @@ func Parse(r io.Reader, device string, turnStartMS int64) model.ParseResult {
 // re-reads them once flushed.
 func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res model.ParseResult) {
 	sessionID := sessionIDFromPath(path)
+	var timings map[int64]stepTiming
+	timingsLoaded := false
 	br := bufio.NewReaderSize(r, 1<<20)
 	var prevMS int64
 	res.TurnStartMS = turnStartMS
@@ -79,6 +81,14 @@ func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res 
 		if ev, ok := buildEvent(rec, sessionID, device, lineMS); ok {
 			if prevMS > 0 && ev.TS > prevMS {
 				ev.DurationMS = min(ev.TS-prevMS, maxSpanMS)
+			}
+			if !timingsLoaded {
+				timings = loadConversationTimings(path, sessionID)
+				timingsLoaded = true
+			}
+			if t, ok := timings[rec.StepIndex]; ok {
+				ev.GenMS = t.GenMS
+				ev.TTFTMS = t.TTFTMS
 			}
 			res.Events = append(res.Events, ev)
 		}
@@ -123,7 +133,7 @@ func buildEvent(rec transcriptLine, sessionID, device string, tsMS int64) (model
 		Device:              device,
 		Source:              Source,
 		Model:               strings.TrimSpace(rec.Model),
-		Provider:            model.ProviderGoogle,
+		Provider:            model.ProviderGoogleOAuth,
 		InputTokens:         in,
 		OutputTokens:        out,
 		CacheReadTokens:     cr,

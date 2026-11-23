@@ -159,32 +159,131 @@ const QuotaUI = {
     if (row.value == null || !Number.isFinite(row.reset) || row.reset <= now || !(row.minutes > 0)) return null;
     return Math.max(0, Math.min(100, 100 * (1 - (row.reset - now) / (row.minutes * 60000))));
   },
+  scopeLabel(scope) {
+    const s = String(scope || "").trim();
+    const map = {
+      "gemini-5h": "Gemini",
+      "gemini-weekly": "Gemini",
+      "gemini-argon-wtu-weekly": "Gemini 4 Argon",
+      "3p-5h": "Claude / 第三方",
+      "3p-weekly": "Claude / 第三方",
+      seven_day_opus: "opus",
+      seven_day_sonnet: "sonnet",
+    };
+    if (map[s]) return map[s];
+    if (/:/.test(s)) return s.split(":").slice(1).join(":");
+    return "";
+  },
+  bucketsFor(source, quotas = []) {
+    const order = {
+      "gemini-5h": 1,
+      "gemini-weekly": 2,
+      "gemini-argon-wtu-weekly": 3,
+      "3p-5h": 4,
+      "3p-weekly": 5,
+    };
+    const byScope = new Map();
+    for (const q of quotas || []) {
+      if (!q || q.source !== source || !Number.isFinite(q.used_percent) || q.used_percent < 0) continue;
+      const scope = q.scope || "";
+      const minutes = this.minutes(q);
+      const key = `${minutes}:${scope}`;
+      const prev = byScope.get(key);
+      if (!prev || q.used_percent > prev.used_percent) {
+        byScope.set(key, {
+          scope,
+          minutes,
+          value: q.used_percent,
+          reset: q.resets_at || null,
+          observed: q.observed_at || null,
+        });
+      }
+    }
+    return [...byScope.values()].sort((a, b) => {
+      const ra = order[a.scope] || 99;
+      const rb = order[b.scope] || 99;
+      if (ra !== rb) return ra - rb;
+      if (a.minutes !== b.minutes) return a.minutes - b.minutes;
+      return String(a.scope).localeCompare(String(b.scope));
+    });
+  },
+  hasDetailBuckets(source, quotas = []) {
+    const buckets = this.bucketsFor(source, quotas);
+    if (buckets.length > 2) return true;
+    const perWindow = new Map();
+    for (const b of buckets) {
+      perWindow.set(b.minutes, (perWindow.get(b.minutes) || 0) + 1);
+      if (perWindow.get(b.minutes) > 1) return true;
+    }
+    return source === "antigravity" && buckets.length > 0;
+  },
+  renderSourceDetail(source, quotas = []) {
+    const buckets = this.bucketsFor(source, quotas);
+    if (!buckets.length) return '<p class="empty">暂无官方配额分桶读数</p>';
+    const body = buckets
+      .map((row) => {
+        const risk = this.severity(row.value);
+        const text = `${row.value.toFixed(0)}%`;
+        const hint = this.hint(row.value);
+        const elapsed = this.elapsed(row);
+        const timeLabel = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
+        const timeMarker =
+          elapsed == null
+            ? ""
+            : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeLabel}" aria-label="${timeLabel}"></i>`;
+        const win = row.minutes === 300 ? "5h" : row.minutes === 10080 ? "Week" : `${row.minutes || "?"}m`;
+        const pool = this.scopeLabel(row.scope) || row.scope || "默认";
+        const observed = row.observed ? `观测 ${relTime(row.observed)}` : "观测时间未知";
+        return `<tr data-risk="${risk}" class="quota-data"><th scope="row">${esc(pool)} · ${win}</th><td class="quota-used"><span class="quota-percent">${text}</span>${hint ? ` <small>${hint}</small>` : ""}<div class="quota-track" role="progressbar" aria-label="${esc(pool)} ${win} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(row.value, 100)}" aria-valuetext="${row.value}% ${hint}${timeLabel ? ` · ${timeLabel}` : ""}"><div style="width:${Math.min(row.value, 100)}%"></div>${timeMarker}</div></td><td><span>${this.countdown(row.reset)}</span><span class="quota-observed">${observed}</span></td></tr>`;
+      })
+      .join("");
+    return `<div class="quota-table-shell"><table class="tool-quota-table"><thead><tr><th>配额池 / 窗口</th><th>官方已用</th><th>距重置</th></tr></thead><tbody>${body}</tbody></table></div><p class="subtle quota-note">来自官方 statusLine 实时上报；蓝色刻度表示当前窗口已过去的时间比例。</p>`;
+  },
+  bindSourceDetail(container, getQuotas) {
+    if (!container || container.dataset.quotaDetailBound === "1") return;
+    container.dataset.quotaDetailBound = "1";
+    container.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-quota-source-detail]");
+      if (!trigger || typeof DetailDrawer === "undefined") return;
+      const source = trigger.dataset.quotaSourceDetail;
+      const quotas = typeof getQuotas === "function" ? getQuotas() : [];
+      DetailDrawer.open({
+        key: `quota-source:${source}`,
+        title: `${SourceUI.label(source)} · 官方配额分组`,
+        subtitle: "各模型池官方已用百分比与重置倒计时",
+        html: this.renderSourceDetail(source, quotas),
+        trigger,
+      });
+    });
+  },
   render(windows = [], quotas = []) {
     const rows = this.normalize(windows || [], quotas || []);
     const sources = [...new Set(rows.map((row) => row.source))];
     const groups = sources
-      .map(
-        (source) =>
-          `<tbody><tr class="quota-source"><th colspan="4" scope="rowgroup">${SourceUI.brand(source)}</th></tr>${rows
-            .filter((r) => r.source === source)
-            .map((row) => {
-              const known = row.value !== null;
-              const risk = known ? this.severity(row.value) : "missing";
-              const text = known ? `${row.value.toFixed(0)}%` : "暂无";
-              const hint = known ? this.hint(row.value) : "";
-              const elapsed = this.elapsed(row);
-              const timeLabel = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
-              const timeMarker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeLabel}" aria-label="${timeLabel}"></i>`;
-              const scope = /:/.test(row.scope)
-                ? ` · ${esc(row.scope.split(":").slice(1).join(":"))}`
-                : "";
-              const observed = row.observed
-                ? `观测 ${relTime(row.observed)}`
-                : "观测时间未知";
-              return `<tr data-risk="${risk}" class="quota-data"><th scope="row">${row.minutes === 300 ? "5h" : "Week"}${scope}</th><td class="quota-used"><span class="quota-percent">${text}</span>${hint ? ` <small>${hint}</small>` : ""}<div class="quota-track${known ? "" : " quota-unknown"}" ${known ? `role="progressbar" aria-label="${esc(SourceUI.label(source))} ${row.minutes === 300 ? "5h" : "Week"} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(row.value, 100)}" aria-valuetext="${row.value}% ${hint}${timeLabel ? ` · ${timeLabel}` : ""}"` : 'role="img" aria-label="官方配额暂无读数"'}><div style="width:${known ? Math.min(row.value, 100) : 0}%"></div>${timeMarker}</div></td><td ${row.remaining == null ? "" : `data-remaining="${row.remaining}"`}>${row.remaining == null ? "暂无估算" : compact(row.remaining)}</td><td><span>${this.countdown(row.reset)}</span><span class="quota-observed">${observed}</span></td></tr>`;
-            })
-            .join("")}</tbody>`,
-      )
+      .map((source) => {
+        const hasDetail = this.hasDetailBuckets(source, quotas);
+        const head = hasDetail
+          ? `<button type="button" class="tool-row-action quota-source-trigger" data-quota-source-detail="${esc(source)}" data-focus-key="quota-source:${esc(source)}" aria-label="查看 ${esc(SourceUI.label(source))} 各分组官方配额">${SourceUI.brand(source)}<span class="quota-group-more">分组详情 ›</span></button>`
+          : SourceUI.brand(source);
+        return `<tbody><tr class="quota-source"><th colspan="4" scope="rowgroup">${head}</th></tr>${rows
+          .filter((r) => r.source === source)
+          .map((row) => {
+            const known = row.value !== null;
+            const risk = known ? this.severity(row.value) : "missing";
+            const text = known ? `${row.value.toFixed(0)}%` : "暂无";
+            const hint = known ? this.hint(row.value) : "";
+            const elapsed = this.elapsed(row);
+            const timeLabel = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
+            const timeMarker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeLabel}" aria-label="${timeLabel}"></i>`;
+            const scopeName = this.scopeLabel(row.scope);
+            const scope = scopeName ? ` · ${esc(scopeName)}` : "";
+            const observed = row.observed
+              ? `观测 ${relTime(row.observed)}`
+              : "观测时间未知";
+            return `<tr data-risk="${risk}" class="quota-data"><th scope="row">${row.minutes === 300 ? "5h" : "Week"}${scope}</th><td class="quota-used"><span class="quota-percent">${text}</span>${hint ? ` <small>${hint}</small>` : ""}<div class="quota-track${known ? "" : " quota-unknown"}" ${known ? `role="progressbar" aria-label="${esc(SourceUI.label(source))} ${row.minutes === 300 ? "5h" : "Week"} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(row.value, 100)}" aria-valuetext="${row.value}% ${hint}${timeLabel ? ` · ${timeLabel}` : ""}"` : 'role="img" aria-label="官方配额暂无读数"'}><div style="width:${known ? Math.min(row.value, 100) : 0}%"></div>${timeMarker}</div></td><td ${row.remaining == null ? "" : `data-remaining="${row.remaining}"`}>${row.remaining == null ? "暂无估算" : compact(row.remaining)}</td><td><span>${this.countdown(row.reset)}</span><span class="quota-observed">${observed}</span></td></tr>`;
+          })
+          .join("")}</tbody>`;
+      })
       .join("");
     const metered = (windows || []).filter((w) => w.kind !== "subscription");
     const spend = metered.length

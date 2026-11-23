@@ -93,6 +93,19 @@ type sessionInput struct {
 		SevenDaySonnet *rateWindow `json:"seven_day_sonnet"`
 		SevenDayOpus   *rateWindow `json:"seven_day_opus"`
 	} `json:"rate_limits"`
+	// Product and Quota carry Antigravity CLI's documented statusLine payload
+	// (ADR-0045): quota maps bucket IDs (e.g. gemini-5h, gemini-weekly,
+	// gemini-argon-wtu-weekly, 3p-5h, 3p-weekly) to remaining_fraction and
+	// reset_time / reset_in_seconds.
+	Product string                    `json:"product"`
+	Quota   map[string]agyQuotaBucket `json:"quota"`
+}
+
+type agyQuotaBucket struct {
+	RemainingFraction *float64 `json:"remaining_fraction"`
+	ResetTime         string   `json:"reset_time"`
+	ResetInSeconds    int64    `json:"reset_in_seconds"`
+	Disabled          bool     `json:"disabled"`
 }
 
 // rateWindow mirrors one bucket of the status-line payload. resets_at is epoch

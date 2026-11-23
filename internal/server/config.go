@@ -117,16 +117,20 @@ func DefaultLocalDshDirs() []string {
 	return []string{filepath.Join(root, "sessions")}
 }
 
-// DefaultLocalAntigravityDirs is where Google Antigravity writes conversation
-// transcripts (~/.gemini/antigravity/brain), overridable via $ANTIGRAVITY_HOME
-// (ADR-0042).
+// DefaultLocalAntigravityDirs returns all standard Google Antigravity brain
+// directories — Desktop App (~/.gemini/antigravity/brain), CLI
+// (~/.gemini/antigravity-cli/brain), and IDE (~/.gemini/antigravity-ide/brain)
+// — overridable via $ANTIGRAVITY_HOME (ADR-0042 / ADR-0045).
 func DefaultLocalAntigravityDirs() []string {
-	home, _ := os.UserHomeDir()
-	root := os.Getenv("ANTIGRAVITY_HOME")
-	if root == "" {
-		root = filepath.Join(home, ".gemini", "antigravity")
+	if root := strings.TrimSpace(os.Getenv("ANTIGRAVITY_HOME")); root != "" {
+		return []string{filepath.Join(root, "brain")}
 	}
-	return []string{filepath.Join(root, "brain")}
+	home, _ := os.UserHomeDir()
+	return []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-ide", "brain"),
+	}
 }
 
 // DefaultLocalGeminiDirs is where Gemini CLI writes session logs (~/.gemini/tmp),

@@ -19,9 +19,38 @@ import (
 // Undo puts it back.
 
 const (
-	hookScriptName = "statusline-hook.sh"
-	hookStateName  = "statusline-hook.json"
+	hookScriptName            = "statusline-hook.sh"
+	hookStateName             = "statusline-hook.json"
+	antigravityHookScriptName = "statusline-hook-antigravity.sh"
+	antigravityHookStateName  = "statusline-hook-antigravity.json"
+
+	TargetClaude      = "claude"
+	TargetAntigravity = "antigravity"
 )
+
+func hookFileNames(target string) (scriptName, stateName string, err error) {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", TargetClaude:
+		return hookScriptName, hookStateName, nil
+	case TargetAntigravity:
+		return antigravityHookScriptName, antigravityHookStateName, nil
+	default:
+		return "", "", fmt.Errorf("unsupported statusline setup target %q (want claude or antigravity)", target)
+	}
+}
+
+// AntigravitySettingsPath locates Antigravity CLI's settings.json
+// (~/.gemini/antigravity-cli/settings.json), honoring $ANTIGRAVITY_CLI_HOME.
+func AntigravitySettingsPath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_CLI_HOME")); dir != "" {
+		return filepath.Join(dir, "settings.json"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), nil
+}
 
 // hookState remembers what the slot held before, so Undo is exact rather than
 // a guess at what the user probably had.
@@ -55,23 +84,34 @@ func ClaudeSettingsPath() (string, error) {
 	return filepath.Join(home, ".claude", "settings.json"), nil
 }
 
-// Setup registers the hook, wrapping whatever command already occupies the
-// slot. selfPath is this binary's absolute path — resolved by the caller so
-// the script does not depend on PATH.
+// Setup registers the Claude Code hook, wrapping whatever command already
+// occupies the slot. selfPath is this binary's absolute path — resolved by the
+// caller so the script does not depend on PATH.
 func Setup(settingsPath, dataDir, selfPath string, now time.Time) (SetupResult, error) {
+	return SetupTarget(TargetClaude, settingsPath, dataDir, selfPath, now)
+}
+
+// SetupTarget registers the statusLine hook for target ("claude" or
+// "antigravity"), wrapping any pre-existing status line command without
+// replacing it (ADR-0011 / ADR-0045).
+func SetupTarget(target, settingsPath, dataDir, selfPath string, now time.Time) (SetupResult, error) {
 	res := SetupResult{SettingsPath: settingsPath}
+	scriptName, stateName, err := hookFileNames(target)
+	if err != nil {
+		return res, err
+	}
 
 	settings, err := readSettings(settingsPath)
 	if err != nil {
 		return res, err
 	}
 	existing := existingCommand(settings)
-	scriptPath := filepath.Join(dataDir, hookScriptName)
+	scriptPath := filepath.Join(dataDir, scriptName)
 
 	switch {
 	case existing == scriptPath:
 		res.AlreadyDone, res.ScriptPath = true, scriptPath
-		if st, err := readHookState(dataDir); err == nil {
+		if st, err := readHookStateFile(dataDir, stateName); err == nil {
 			res.Wrapped = st.WrappedCommand
 		}
 		return res, nil
@@ -94,7 +134,7 @@ func Setup(settingsPath, dataDir, selfPath string, now time.Time) (SetupResult, 
 		if err != nil {
 			return res, err
 		}
-		return res, saveHookState(dataDir, hookState{InstalledAt: now.UnixMilli()})
+		return res, saveHookStateFile(dataDir, stateName, hookState{InstalledAt: now.UnixMilli()})
 	}
 
 	if err := writeHookScript(scriptPath, selfPath, existing); err != nil {
@@ -105,17 +145,28 @@ func Setup(settingsPath, dataDir, selfPath string, now time.Time) (SetupResult, 
 		return res, err
 	}
 	res.ScriptPath, res.Wrapped = scriptPath, existing
-	return res, saveHookState(dataDir, hookState{
+	return res, saveHookStateFile(dataDir, stateName, hookState{
 		WrappedCommand: existing, InstalledAt: now.UnixMilli(), ScriptPath: scriptPath,
 	})
 }
 
-// Undo restores the command the slot held before Setup and removes the script.
+// Undo restores the Claude Code command the slot held before Setup and removes
+// the wrapper script.
 func Undo(settingsPath, dataDir string, now time.Time) (string, error) {
-	st, err := readHookState(dataDir)
+	return UndoTarget(TargetClaude, settingsPath, dataDir, now)
+}
+
+// UndoTarget restores the statusLine command for target ("claude" or
+// "antigravity") and removes its wrapper script.
+func UndoTarget(target, settingsPath, dataDir string, now time.Time) (string, error) {
+	_, stateName, err := hookFileNames(target)
+	if err != nil {
+		return "", err
+	}
+	st, err := readHookStateFile(dataDir, stateName)
 	if err != nil {
 		return "", fmt.Errorf("no record of an install to undo (%s): %w",
-			filepath.Join(dataDir, hookStateName), err)
+			filepath.Join(dataDir, stateName), err)
 	}
 	settings, err := readSettings(settingsPath)
 	if err != nil {
@@ -127,7 +178,7 @@ func Undo(settingsPath, dataDir string, now time.Time) (string, error) {
 	if st.ScriptPath != "" {
 		os.Remove(st.ScriptPath)
 	}
-	os.Remove(filepath.Join(dataDir, hookStateName))
+	os.Remove(filepath.Join(dataDir, stateName))
 	return st.WrappedCommand, nil
 }
 
@@ -223,7 +274,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func saveHookState(dataDir string, st hookState) error {
+func saveHookStateFile(dataDir, stateName string, st hookState) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return err
 	}
@@ -231,12 +282,12 @@ func saveHookState(dataDir string, st hookState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dataDir, hookStateName), body, 0o600)
+	return os.WriteFile(filepath.Join(dataDir, stateName), body, 0o600)
 }
 
-func readHookState(dataDir string) (hookState, error) {
+func readHookStateFile(dataDir, stateName string) (hookState, error) {
 	var st hookState
-	raw, err := os.ReadFile(filepath.Join(dataDir, hookStateName))
+	raw, err := os.ReadFile(filepath.Join(dataDir, stateName))
 	if err != nil {
 		return st, err
 	}
