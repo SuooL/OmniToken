@@ -2,9 +2,11 @@ package antigravity
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -63,10 +65,10 @@ func loadConversationTimings(transcriptPath, sessionID string) map[int64]stepTim
 	return out
 }
 
-// conversationDBPath maps `<root>/brain/<id>/.system_generated/logs/transcript.jsonl`
-// to `<root>/conversations/<id>.db`.
-func conversationDBPath(transcriptPath, sessionID string) string {
-	if transcriptPath == "" || sessionID == "" {
+// antigravityRoot maps `<root>/brain/<id>/.system_generated/logs/transcript.jsonl`
+// to `<root>`.
+func antigravityRoot(transcriptPath string) string {
+	if transcriptPath == "" {
 		return ""
 	}
 	clean := filepath.Clean(transcriptPath)
@@ -75,8 +77,91 @@ func conversationDBPath(transcriptPath, sessionID string) string {
 	if filepath.Base(brainDir) != "brain" {
 		return ""
 	}
-	root := filepath.Dir(brainDir)
+	return filepath.Dir(brainDir)
+}
+
+// conversationDBPath maps `<root>/brain/<id>/.system_generated/logs/transcript.jsonl`
+// to `<root>/conversations/<id>.db`.
+func conversationDBPath(transcriptPath, sessionID string) string {
+	root := antigravityRoot(transcriptPath)
+	if root == "" || sessionID == "" {
+		return ""
+	}
 	return filepath.Join(root, "conversations", sessionID+".db")
+}
+
+// loadConversationCWD reads ONLY the workspace_uris column for sessionID from
+// Antigravity's read-only `<root>/conversation_summaries.db` metadata table.
+// Titles, previews, and raw summaries are never selected (N4). Missing or
+// unreadable DBs silently return "".
+func loadConversationCWD(transcriptPath, sessionID string) string {
+	root := antigravityRoot(transcriptPath)
+	if root == "" || sessionID == "" {
+		return ""
+	}
+	dbPath := filepath.Join(root, "conversation_summaries.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return ""
+	}
+	uri := "file:" + (&url.URL{Path: filepath.ToSlash(dbPath)}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(200)"
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	var raw string
+	if err := db.QueryRow(`SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ? LIMIT 1`, sessionID).Scan(&raw); err != nil {
+		return ""
+	}
+	return parseWorkspaceURIs(raw)
+}
+
+func parseWorkspaceURIs(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var uris []string
+	if err := json.Unmarshal([]byte(raw), &uris); err != nil {
+		return ""
+	}
+	for _, entry := range uris {
+		if p := workspaceURIToPath(entry); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func workspaceURIToPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "file://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		p := u.Path
+		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+			p = "//" + u.Host + p
+		}
+		// Windows file:///C:/path -> C:/path.
+		if len(p) >= 3 && p[0] == '/' && ((p[1] >= 'A' && p[1] <= 'Z') || (p[1] >= 'a' && p[1] <= 'z')) && p[2] == ':' {
+			p = p[1:]
+		}
+		if len(p) > 1 && !(len(p) == 3 && p[1] == ':' && p[2] == '/') {
+			p = strings.TrimRight(p, "/")
+		}
+		return p
+	}
+	if len(raw) > 1 {
+		raw = strings.TrimRight(raw, `/\`)
+	}
+	return raw
 }
 
 // decodeStepMetadataTiming extracts the four protobuf google.protobuf.Timestamp

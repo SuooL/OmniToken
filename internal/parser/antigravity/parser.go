@@ -63,7 +63,8 @@ func Parse(r io.Reader, device string, turnStartMS int64) model.ParseResult {
 func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res model.ParseResult) {
 	sessionID := sessionIDFromPath(path)
 	var timings map[int64]stepTiming
-	timingsLoaded := false
+	var cwd string
+	metaLoaded := false
 	br := bufio.NewReaderSize(r, 1<<20)
 	var prevMS int64
 	res.TurnStartMS = turnStartMS
@@ -82,14 +83,16 @@ func ParsePath(path string, r io.Reader, device string, turnStartMS int64) (res 
 			if prevMS > 0 && ev.TS > prevMS {
 				ev.DurationMS = min(ev.TS-prevMS, maxSpanMS)
 			}
-			if !timingsLoaded {
+			if !metaLoaded {
 				timings = loadConversationTimings(path, sessionID)
-				timingsLoaded = true
+				cwd = loadConversationCWD(path, sessionID)
+				metaLoaded = true
 			}
 			if t, ok := timings[rec.StepIndex]; ok {
 				ev.GenMS = t.GenMS
 				ev.TTFTMS = t.TTFTMS
 			}
+			ev.CWD = cwd
 			res.Events = append(res.Events, ev)
 		}
 		if lineMS > 0 {
