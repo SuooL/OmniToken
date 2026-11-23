@@ -50,9 +50,12 @@
 | `collect.local` | true | 是否采集本机日志 |
 | `collect.local_dirs` | 自动探测 | Claude Code 日志目录 |
 | `collect.codex_dirs` | 自动探测 | Codex 日志目录(`$CODEX_HOME` 生效) |
+| `collect.dsh_dirs` | 自动探测 | DeepSeek Harness 会话目录(`$DSH_HOME` 生效,ADR-0029) |
+| `collect.antigravity_dirs` | 自动探测 | Google Antigravity `brain/` 目录(`$ANTIGRAVITY_HOME` 生效,ADR-0042) |
+| `collect.gemini_dirs` | 自动探测 | Gemini CLI 会话目录(`$GEMINI_DATA_DIR` 生效,ADR-0042) |
 | `collect.ssh_hosts` | — | `[{host, name, since}]`,host 可用 ~/.ssh/config 别名;`since` 为 `YYYY-MM-DD`,该日零点之前的事件不从这台机器入库(留空 = 不限,ADR-0015)。日期写错会直接拒绝启动 |
 | `proxy_listen` | 空 | 在服务端内起本地 API 代理(F14),如 `127.0.0.1:8899`;空 = 不启用 |
-| `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` |
+| `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` / `google` / `gemini` |
 
 ### 读接口鉴权:由 `listen` 推导(ADR-0016)
 
@@ -478,12 +481,12 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 | `relay_token` | `OMNITOKEN_RELAY_TOKEN` | 空 | 保护本机 relay listener 的独立 credential;启用 relay 时必填 |
 | `relay_upstream_token` | `OMNITOKEN_RELAY_UPSTREAM_TOKEN` | 回落 `relay_token` | 连接上游 relay 时使用,支持每跳不同 credential |
 | `interval_seconds` | — | 10 | 扫描周期 |
-| `claude_dirs` / `codex_dirs` | — | 自动探测 | 日志目录 |
+| `claude_dirs` / `codex_dirs` / `dsh_dirs` / `antigravity_dirs` / `gemini_dirs` | — | 自动探测 | 各来源日志目录 |
 | `state` | — | `~/.omnitoken/agent-state.json` | offset 状态 |
 | `statusline_cache_path` | — | `~/.omnitoken/statusline-cache.json` | 定位 `omnitoken statusline` 的产物;Claude 配额从它旁边的 `rate-limits.json` 读取并上报(ADR-0011)。只在你给 statusline 配了非默认 `cache_path` 时才需要改 |
 | `since` | — | 空(不限) | 采集起点 `YYYY-MM-DD`,早于该日零点的事件不上报。日期写错**直接启动失败**,不会静默当成「不限」 |
 | `proxy_listen` | `OMNITOKEN_PROXY` | 空(关闭) | 本地 API 代理监听地址,如 `127.0.0.1:8899` |
-| `proxy_upstreams` | — | anthropic/openai 内置 | `{前缀: 上游 base}`,与内置合并 |
+| `proxy_upstreams` | — | anthropic/openai/google/gemini 内置 | `{前缀: 上游 base}`,与内置合并 |
 
 v2 设备先在目标机器执行 enrollment。admin secret 只通过环境或 secret store 注入,
 不会出现在命令行参数、成功输出或 Hub 响应中:
