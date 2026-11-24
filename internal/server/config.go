@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,15 @@ type Config struct {
 	// Version is stamped by cmd/omnitoken from build ldflags and exposed on
 	// /api/v1/health and /api/v1/devices so the UI can flag outdated agents.
 	Version string `json:"-"`
+
+	// ReleaseMirrorURL overrides the upstream release repository base URL used
+	// by the Hub release proxy (/api/v2/releases/{version}/{asset}, ADR-0046).
+	// Empty defaults to selfupdate.DefaultRepoURL (GitHub Releases).
+	ReleaseMirrorURL string `json:"release_mirror_url,omitempty"`
+	// ReleaseProxyDisabled turns off the Hub release proxy and advertises
+	// release_proxy=false in heartbeat responses. Enabled by default so
+	// intranet/GFW-restricted agents can self-update through the Hub.
+	ReleaseProxyDisabled bool `json:"release_proxy_disabled,omitempty"`
 
 	Collect struct {
 		IntervalSeconds int               `json:"interval_seconds"`
@@ -186,6 +196,12 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) validate() error {
 	if c.PricingRefreshHours < 0 || c.PricingRefreshHours > 720 {
 		return fmt.Errorf("pricing_refresh_hours must be between 1 and 720 (0 uses 24)")
+	}
+	if raw := strings.TrimSpace(c.ReleaseMirrorURL); raw != "" {
+		u, err := url.ParseRequestURI(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("release_mirror_url %q must be a valid http(s) base URL", c.ReleaseMirrorURL)
+		}
 	}
 	for _, h := range c.Collect.SSHHosts {
 		if _, err := h.SinceTime(); err != nil {

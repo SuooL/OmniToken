@@ -206,3 +206,67 @@ func TestSelfUpdateCommandChecksAndReplacesBinary(t *testing.T) {
 		t.Fatalf("replaced binary = %q, err=%v", string(got), err)
 	}
 }
+
+func TestSelfUpdateWithAgentConfigDownloadsFromHubProxy(t *testing.T) {
+	asset, err := selfupdate.AssetName(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported host %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	payload := []byte("#!/bin/sh\necho omnitoken v0.7.1\n")
+	if runtime.GOOS == "windows" {
+		if exe, err := os.Executable(); err == nil {
+			if b, err := os.ReadFile(exe); err == nil {
+				payload = b
+			}
+		}
+	}
+	sum := sha256.Sum256(payload)
+	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), asset)
+	var gotAuth, gotDevID, gotRelay string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/health":
+			_, _ = w.Write([]byte(`{"status":"ok","hub_version":"v0.7.1","release_proxy":true}`))
+		case "/api/v2/releases/v0.7.1/SHA256SUMS":
+			gotAuth = r.Header.Get("Authorization")
+			gotDevID = r.Header.Get("X-OmniToken-Device-ID")
+			gotRelay = r.Header.Get("X-OmniToken-Relay-Token")
+			_, _ = w.Write([]byte(sums))
+		case "/api/v2/releases/v0.7.1/" + asset:
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	dir := t.TempDir()
+	agentCfgPath := filepath.Join(dir, "agent.json")
+	if err := agent.SaveFileConfig(agentCfgPath, agent.FileConfig{
+		Server:             hub.URL,
+		AllowInsecureHTTP:  true,
+		SubnetOnly:         true,
+		ProtocolVersion:    2,
+		DeviceID:           "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001",
+		DeviceToken:        "device-proxy-secret",
+		RelayUpstreamToken: "relay-proxy-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "omnitoken")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runSelfUpdateWith([]string{"-agent-config", agentCfgPath, "-binary", target}, &out); err != nil {
+		t.Fatalf("self-update -agent-config: %v", err)
+	}
+	if !strings.Contains(out.String(), "v0.7.1") {
+		t.Fatalf("output = %q", out.String())
+	}
+	if gotAuth != "Bearer device-proxy-secret" ||
+		gotDevID != "018f2d5a-7b31-7d98-bf8e-3c2f35a1a001" ||
+		gotRelay != "relay-proxy-secret" {
+		t.Fatalf("proxy auth headers: auth=%q dev=%q relay=%q", gotAuth, gotDevID, gotRelay)
+	}
+}

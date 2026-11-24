@@ -7,7 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+)
+
+const (
+	AutoUpdateSourceHub    = "hub"
+	AutoUpdateSourceGitHub = "github"
 )
 
 // FileConfig is the agent's config file (~/.omnitoken/agent.json).
@@ -16,6 +22,9 @@ type FileConfig struct {
 	Server             string   `json:"server"`                        // server or relay-peer base URL
 	ResolveIP          string   `json:"resolve_ip,omitempty"`          // pin the server host's DNS to this IP; TLS still uses the hostname (ADR-0026 §3)
 	AllowInsecureHTTP  bool     `json:"allow_insecure_http,omitempty"` // permit plaintext to a non-loopback target
+	SubnetOnly         bool     `json:"subnet_only,omitempty"`         // restrict server URL to loopback/LAN/mesh-VPN IPs (ADR-0046)
+	AutoUpdate         bool     `json:"auto_update,omitempty"`         // opt-in heartbeat-driven self-update (ADR-0046)
+	AutoUpdateSource   string   `json:"auto_update_source,omitempty"`  // "hub" (default) or "github"
 	Token              string   `json:"token,omitempty"`               // ingest bearer token
 	ProtocolVersion    int      `json:"protocol_version,omitempty"`    // absent means legacy v1
 	MachineID          string   `json:"machine_id,omitempty"`
@@ -82,7 +91,21 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	if version := fc.EffectiveProtocolVersion(); version != 1 && version != 2 {
 		return fc, fmt.Errorf("agent config: unsupported protocol_version %d", fc.ProtocolVersion)
 	}
+	if _, err := normalizeAutoUpdateSource(fc.AutoUpdateSource); err != nil {
+		return fc, fmt.Errorf("agent config: %w", err)
+	}
 	return fc, nil
+}
+
+func normalizeAutoUpdateSource(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", AutoUpdateSourceHub:
+		return AutoUpdateSourceHub, nil
+	case AutoUpdateSourceGitHub:
+		return AutoUpdateSourceGitHub, nil
+	default:
+		return "", fmt.Errorf("unsupported auto_update_source %q (want %q or %q)", raw, AutoUpdateSourceHub, AutoUpdateSourceGitHub)
+	}
 }
 
 // EffectiveProtocolVersion keeps every pre-v2 config explicitly compatible:

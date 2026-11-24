@@ -108,7 +108,17 @@ ACK;相同 `batch_id` 不同 payload 返回 `409`;身份/撤销失败返回 `401
 同样使用 device credential,严格 JSON 上限 1 MiB。上报 boot/agent version、能力、
 进程快照以及 outbox backlog。客户端的 `sent_at` 只用于诊断;在线/延迟/离线状态只由
 Hub 接收请求时写入的 `last_seen_at` 计算,因此错误或恶意客户端时钟不能伪造在线状态。
-成功响应包含 `protocol_version/device_id/received_at`。
+成功响应包含 `protocol_version/device_id/received_at/hub_version/release_proxy`。
+当 Agent 显式启用 `auto_update` 且 `agent_version < hub_version` 时,将据此触发自更新(ADR-0046)。
+
+### GET /api/v2/releases/{version}/{asset}
+
+Hub 发行版代理与本地 SHA-256 校验缓存(ADR-0046),供无外网或 GitHub 受限的内网 Agent
+通过子网或 Relay 自更新。`version` 限 `vX.Y.Z`,`asset` 限 `SHA256SUMS` 与五平台官方产物。
+携带 `X-OmniToken-Device-ID` 时严格验证该 v2 设备的 `Authorization: Bearer <device_token>`
+(吊销立即 401);否则接受 `read_token` / `token` / `admin_token` 或站点登录会话。Hub 首次拉取
+会先校验 `SHA256SUMS` 再原子落盘(保留最新 3 个版本),校验失败返回 `502` 且不缓存。Agent Relay
+同步以 `X-OmniToken-Relay-Token` 鉴权并透传该路由。
 
 ### POST /api/v2/devices/{device_id}/revoke
 
