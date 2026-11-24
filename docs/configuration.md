@@ -56,6 +56,8 @@
 | `collect.ssh_hosts` | — | `[{host, name, since}]`,host 可用 ~/.ssh/config 别名;`since` 为 `YYYY-MM-DD`,该日零点之前的事件不从这台机器入库(留空 = 不限,ADR-0015)。日期写错会直接拒绝启动 |
 | `proxy_listen` | 空 | 在服务端内起本地 API 代理(F14),如 `127.0.0.1:8899`;空 = 不启用 |
 | `proxy_upstreams` | — | `{前缀: 上游 base}`,合并覆盖内置的 `anthropic` / `openai` / `google` / `gemini` |
+| `release_mirror_url` | `https://github.com/SuooL/OmniToken` | Hub 发行版代理回源仓库地址(ADR-0046) |
+| `release_proxy_disabled` | false | 为 true 时关闭 `/api/v2/releases/{version}/{asset}` 并在心跳中宣告 `release_proxy: false` |
 
 ### 读接口鉴权:由 `listen` 推导(ADR-0016)
 
@@ -470,6 +472,9 @@ printf '%s' "$input" | ccstatusline      # 换成你自己的那个
 |---|---|---|---|
 | `server` | `OMNITOKEN_SERVER` | 必填 | 服务端或中继的 base URL |
 | `allow_insecure_http` | — | false | 允许连接非 loopback 的明文 `http://`;只应在已确认的加密 overlay/受控 LAN 上显式开启 |
+| `subnet_only` | `OMNITOKEN_SUBNET_ONLY` | false | 强制 `server`（及 `resolve_ip`）只接受 loopback / RFC1918 / ULA / CGNAT(`100.64.0.0/10`) / 链路本地 IP，拒绝一切公网域名和公网 IP(ADR-0046) |
+| `auto_update` | `OMNITOKEN_AUTO_UPDATE` | false | 显式开启 v2 心跳驱动自动更新：当 Hub 心跳通告更高 `hub_version` 时自动下载、校验并重启（Unix 原地 `exec`，Windows 退出码 `75` 交由计划任务 `RestartOnFailure` 拉起；只读二进制宿主如 Hub 本机 agent 应保持 false） |
+| `auto_update_source` | `OMNITOKEN_AUTO_UPDATE_SOURCE` | `hub` | 自动更新下载源：`hub`（仅经子网/中继从 Hub `/api/v2/releases` 下载）或 `github`（禁止与 `subnet_only` 同用） |
 | `protocol_version` | — | 1 | `1` 为 legacy push,`2` 为 device-scoped + durable outbox |
 | `token` | `OMNITOKEN_TOKEN` | 空 | v1 ingest token |
 | `device_id` | — | enrollment 生成 | v2 稳定 UUID;改显示名不会改变它 |

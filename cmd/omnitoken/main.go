@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,12 +70,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   omnitoken serve [-config ~/.omnitoken/config.json] [-listen :8787] [-name NAME] [-rescan]
   omnitoken auth-code [-config ~/.omnitoken/config.json] [-ttl 30m] # one-time browser login
-  omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http]
-  omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan]
+  omnitoken agent enroll [-config ~/.omnitoken/agent.json] [-server URL] [-name NAME] [-allow-insecure-http] [-subnet-only]
+  omnitoken agent [-config ~/.omnitoken/agent.json] [-server http://HOST:8787] [-name NAME] [-token T] [-once] [-relay :8788] [-rescan] [-subnet-only] [-auto-update]
   omnitoken statusline [-server http://HOST:8787] [-no-color]   # for Claude Code / Antigravity CLI statusLine hook
   omnitoken statusline -capture-only                            # quota only, keep your own status line
   omnitoken statusline -setup [-setup-undo] [-target claude|antigravity] # install/remove the hook
-  omnitoken self-update [-check] [-version vX.Y.Z] [-restart] [-restart-service NAME]`)
+  omnitoken self-update [-check] [-version vX.Y.Z] [-agent-config ~/.omnitoken/agent.json] [-restart] [-restart-service NAME]`)
 }
 
 func runSelfUpdateWith(args []string, output io.Writer) error {
@@ -83,6 +85,7 @@ func runSelfUpdateWith(args []string, output io.Writer) error {
 	targetVersion := fs.String("version", "", "install a specific release tag (e.g. v0.5.0); default latest")
 	repoURL := fs.String("repo-url", selfupdate.DefaultRepoURL, "release repository base URL")
 	baseURL := fs.String("base-url", "", "direct mirror base URL holding <asset> and SHA256SUMS")
+	agentConfig := fs.String("agent-config", "", "agent.json path: download verified release from Hub/relay proxy instead of GitHub")
 	binaryPath := fs.String("binary", "", "target binary path to replace (default: current executable)")
 	allowDowngrade := fs.Bool("allow-downgrade", false, "allow replacing with an equal or older version")
 	autoRestart := fs.Bool("restart", false, "auto-detect and restart active omnitoken systemd/launchd services")
@@ -94,18 +97,54 @@ func runSelfUpdateWith(args []string, output io.Writer) error {
 	if strings.TrimSpace(*restartService) != "" {
 		services = append(services, *restartService)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+
+	effectiveTarget := strings.TrimSpace(*targetVersion)
+	effectiveBase := strings.TrimSpace(*baseURL)
+	var httpClient *http.Client
+	if cfgPath := strings.TrimSpace(*agentConfig); cfgPath != "" {
+		if _, err := os.Stat(cfgPath); err != nil {
+			return fmt.Errorf("read agent config %s: %w", cfgPath, err)
+		}
+		fc, err := agent.LoadFileConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load agent config: %w", err)
+		}
+		if fc.Server == "" {
+			return fmt.Errorf("agent config %s has no server URL", cfgPath)
+		}
+		client, hubURL, err := agent.NewReleaseHTTPClient(fc)
+		if err != nil {
+			return err
+		}
+		httpClient = client
+		if effectiveTarget == "" {
+			resolved, err := agent.ResolveHubVersion(ctx, httpClient, hubURL)
+			if err != nil {
+				return err
+			}
+			effectiveTarget = resolved
+		}
+		if !strings.HasPrefix(effectiveTarget, "v") {
+			effectiveTarget = "v" + effectiveTarget
+		}
+		if effectiveBase == "" {
+			effectiveBase = hubURL + "/api/v2/releases/" + effectiveTarget
+		}
+	}
+
 	res, err := selfupdate.Run(ctx, selfupdate.Options{
 		CurrentVersion:  version,
-		TargetVersion:   *targetVersion,
+		TargetVersion:   effectiveTarget,
 		RepoURL:         *repoURL,
-		BaseURL:         *baseURL,
+		BaseURL:         effectiveBase,
 		BinaryPath:      *binaryPath,
 		CheckOnly:       *checkOnly,
 		AllowDowngrade:  *allowDowngrade,
 		AutoRestart:     *autoRestart,
 		RestartServices: services,
+		HTTPClient:      httpClient,
 	})
 	if err != nil {
 		return err
@@ -228,6 +267,9 @@ func runAgent(args []string) {
 	proxyListen := fs.String("proxy-listen", "", "run the local API proxy on this address (e.g. 127.0.0.1:8899)")
 	interval := fs.Int("interval", 0, "scan interval seconds (default 10)")
 	dirs := fs.String("claude-dirs", "", "comma-separated Claude log dirs (default: auto-detect)")
+	subnetOnly := fs.Bool("subnet-only", false, "require loopback or private subnet IP for server URL (reject public domains/IPs)")
+	autoUpdate := fs.Bool("auto-update", false, "automatically self-update when Hub heartbeat advertises a newer version")
+	autoUpdateSource := fs.String("auto-update-source", "", "auto-update download source: hub (default) or github")
 	fs.Parse(args)
 
 	fc, err := agent.LoadFileConfig(*configPath)
@@ -315,6 +357,9 @@ func runAgent(args []string) {
 		ServerURL:           strings.TrimSuffix(srvURL, "/"),
 		ResolveIP:           fc.ResolveIP,
 		AllowInsecureHTTP:   fc.AllowInsecureHTTP,
+		SubnetOnly:          pickBool(*subnetOnly, "OMNITOKEN_SUBNET_ONLY", fc.SubnetOnly),
+		AutoUpdate:          pickBool(*autoUpdate, "OMNITOKEN_AUTO_UPDATE", fc.AutoUpdate),
+		AutoUpdateSource:    pick(*autoUpdateSource, "OMNITOKEN_AUTO_UPDATE_SOURCE", fc.AutoUpdateSource),
 		Token:               pick(*token, "OMNITOKEN_TOKEN", fc.Token),
 		ProtocolVersion:     fc.EffectiveProtocolVersion(),
 		DeviceID:            fc.DeviceID,
@@ -371,6 +416,7 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	serverURL := fs.String("server", "", "hub base URL")
 	name := fs.String("name", "", "device display name (default: hostname)")
 	allowInsecureHTTP := fs.Bool("allow-insecure-http", false, "allow plaintext HTTP to a non-loopback hub")
+	subnetOnly := fs.Bool("subnet-only", false, "require loopback or private subnet IP for server URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -410,6 +456,9 @@ func runAgentEnrollWith(args []string, output io.Writer) error {
 	}
 	if *allowInsecureHTTP {
 		candidate.AllowInsecureHTTP = true
+	}
+	if *subnetOnly {
+		candidate.SubnetOnly = true
 	}
 	if err := agent.Enroll(candidate.Server, admin, &candidate, nil); err != nil {
 		return err
@@ -560,6 +609,18 @@ func logDeviceIdentity(identity server.DeviceIdentity) {
 	case server.DeviceNameLastResort:
 		log.Printf("device: 未配置 device_name 且读不到主机名,退回 %q", identity.Name)
 	}
+}
+
+func pickBool(flagVal bool, envKey string, fileVal bool) bool {
+	if flagVal {
+		return true
+	}
+	if raw := strings.TrimSpace(os.Getenv(envKey)); raw != "" {
+		if b, err := strconv.ParseBool(raw); err == nil {
+			return b
+		}
+	}
+	return fileVal
 }
 
 func abs(n int) int {
