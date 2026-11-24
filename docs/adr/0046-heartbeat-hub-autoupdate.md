@@ -48,7 +48,7 @@ Agent 中继（`relay_listen`）新增 `GET /api/v2/releases/{version}/{asset}` 
   - 复用 `internal/selfupdate.Run` 执行二次端到端 SHA-256 校验、安装前 `<new> version` 冒烟测试与原子替换。
 - **跨平台自重启**：
   - Unix（Linux / macOS）：先优雅关闭本地 relay 与 durable outbox，再以 `syscall.Exec` 原地替换进程映像（保持 PID 与 `systemd`/`launchd` 监管上下文；失败时以退出码 `75` 交由 supervisor 拉起）；
-  - Windows：`selfupdate.Run` 将旧二进制暂存为 `omnitoken.exe.old.<pid>` 并原子换入新二进制后，关闭 relay/outbox 并以退出码 `75`（`EX_TEMPFAIL`）退出，触发计划任务 `RestartOnFailure`（或 Windows Service recovery）拉起新版本；新进程启动时自动清理同目录残留的 `*.old.<pid>` 文件。
+  - Windows：`selfupdate.Run` 将旧二进制暂存为 `omnitoken.exe.old.<pid>` 并原子换入新二进制后，关闭 relay/outbox，直接以相同参数与环境变量拉起新 `omnitoken.exe`（`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`）后优雅退出（若拉起失败则以退出码 `75` 退出交由外部监管重试）；新进程启动时自动清理同目录残留的 `*.old.<pid>` 文件。
   - **只读部署注意**：如 Hub 宿主机上的本机 agent（`ProtectSystem=strict` 且由 `deploy-hub` 统一更新 `/usr/local/bin/omnitoken`），必须保持 `auto_update: false`。
 
 ### 5. `subnet_only` 子网强制策略与手工代理更新
