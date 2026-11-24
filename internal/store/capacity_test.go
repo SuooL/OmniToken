@@ -573,32 +573,100 @@ func TestApplyIngestV2CalibratesAntigravityPerPoolCapacity(t *testing.T) {
 	if len(tpSamples) != 1 || tpSamples[0].TokensAtPeak != 9_000_000 {
 		t.Fatalf("3p-5h samples = %+v, want only 3p tokens (9M)", tpSamples)
 	}
-	// Fractional precision for antigravity allows live-only estimation at 6.9%.
+	// Fractional precision for antigravity allows live-only estimation from 1%.
 	capTokens, ok := CapacityForWindowWithSource("antigravity", 0, false, 690_000, 6.9)
 	if !ok || capTokens < 9_900_000 || capTokens > 10_100_000 {
 		t.Fatalf("antigravity live capacity at 6.9%% = %d (ok=%v), want ~10M", capTokens, ok)
+	}
+	if capLow, ok := CapacityForWindowWithSource("antigravity", 0, false, 33_000_000, 3.2); !ok || capLow <= 0 {
+		t.Fatalf("antigravity live capacity at 3.2%% = %d (ok=%v), want positive estimate", capLow, ok)
+	}
+	if _, ok := CapacityForWindowWithSource("antigravity", 0, false, 100_000, 0.5); ok {
+		t.Fatal("antigravity live-only estimate must still withhold below 1%")
 	}
 	if _, ok := CapacityForWindowWithSource("claude-code", 0, false, 690_000, 6.9); ok {
 		t.Fatal("integer-percent source must still withhold live-only estimate below 10%")
 	}
 }
 
-func TestPruneOperationalTablesRetainsEventsAndCapacity(t *testing.T) {
+func TestAntigravityFractionalPriorLearnsFromLowerPeaks(t *testing.T) {
+	s := capStore(t)
+	baseReset := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	// Two Antigravity weekly windows with fractional peaks (7.4% and 3.2%) —
+	// far below the 30% integer threshold, yet statistically equivalent in
+	// quantization error — should form a valid learned prior.
+	for i, sample := range []struct {
+		pct    float64
+		tokens int64
+	}{
+		{7.4, 212_000_000},
+		{3.2, 64_000_000},
+	} {
+		resets := baseReset.Add(time.Duration(i*7*24) * time.Hour)
+		if err := s.ObserveCapacity(CapacityObservation{
+			Source: "antigravity", Scope: "gemini-weekly", WindowMinutes: 10080,
+			ResetsAt: resets.UnixMilli(), UsedPercent: sample.pct, Tokens: sample.tokens,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	est, ok, err := s.CapacityEstimate("antigravity", "gemini-weekly", 10080)
+	if err != nil || !ok || est <= 0 {
+		t.Fatalf("antigravity prior = %d ok=%v err=%v, want learned estimate", est, ok, err)
+	}
+	// Integer source with the same two sub-30% samples must NOT form a prior.
+	for i, sample := range []struct {
+		pct    float64
+		tokens int64
+	}{
+		{7.4, 212_000_000},
+		{3.2, 64_000_000},
+	} {
+		resets := baseReset.Add(time.Duration(i*7*24) * time.Hour)
+		if err := s.ObserveCapacity(CapacityObservation{
+			Source: "claude-code", Scope: "seven_day", WindowMinutes: 10080,
+			ResetsAt: resets.UnixMilli(), UsedPercent: sample.pct, Tokens: sample.tokens,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := s.CapacityEstimate("claude-code", "seven_day", 10080); err != nil || ok {
+		t.Fatalf("claude-code must keep 30%%/3-sample gate: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPruneOperationalTablesRetainsDistinctHistoryAndDeduplicates(t *testing.T) {
 	s := capStore(t)
 	now := time.Now()
-	oldObs := now.Add(-40 * 24 * time.Hour).UnixMilli()
+	oldObs := now.Add(-120 * 24 * time.Hour).UnixMilli()
 	freshObs := now.Add(-1 * time.Hour).UnixMilli()
+	oldReset := oldObs + 3*3600_000
+	freshReset := freshObs + 3*3600_000
 
 	if _, err := s.InsertEvents([]model.Event{
 		{EventID: "old-ev", TS: oldObs, Device: "mac", Source: "claude-code", Model: "claude-opus-4-8", InputTokens: 100},
 	}, oldObs); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertQuotas([]model.QuotaSnapshot{
-		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 40, ResetsAt: oldObs + 3600_000, ObservedAt: oldObs},
-		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 50, ResetsAt: freshObs + 3600_000, ObservedAt: freshObs},
-	}); err != nil {
-		t.Fatal(err)
+	// Seed legacy consecutive duplicate quota_snapshots directly (simulating a
+	// pre-dedup database) including a 120-day-old distinct state transition.
+	for _, row := range []struct {
+		pct    float64
+		resets int64
+		obs    int64
+	}{
+		{40, oldReset, oldObs},
+		{40, oldReset, oldObs + 10_000}, // redundant consecutive duplicate
+		{40, oldReset, oldObs + 20_000}, // redundant consecutive duplicate
+		{45, oldReset, oldObs + 30_000}, // distinct change (120d old — must stay forever!)
+		{50, freshReset, freshObs},      // new window — must stay!
+	} {
+		if _, err := s.db.Exec(
+			`INSERT INTO quota_snapshots (device, source, limit_id, scope, window_minutes, used_percent, resets_at, observed_at, plan_type) VALUES ('mac','codex','codex','primary',300,?,?,?,'')`,
+			row.pct, row.resets, row.obs,
+		); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO ingest_receipts (batch_id, device_id, protocol_version, ack_sequence, accepted, duplicates, server_time) VALUES (?, ?, 2, '1', 1, 0, ?), (?, ?, 2, '2', 1, 0, ?)`,
@@ -612,11 +680,32 @@ func TestPruneOperationalTablesRetainsEventsAndCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if qDel != 1 || rDel != 1 {
-		t.Fatalf("pruned quotas=%d receipts=%d, want 1 and 1", qDel, rDel)
+	if qDel != 2 || rDel != 1 {
+		t.Fatalf("deduplicated quotas=%d pruned receipts=%d, want 2 and 1", qDel, rDel)
+	}
+	var snapCount int
+	if err := s.rdb.QueryRow(`SELECT COUNT(*) FROM quota_snapshots`).Scan(&snapCount); err != nil || snapCount != 3 {
+		t.Fatalf("distinct quota history (including 120d-old rows) must be kept permanently: count=%d err=%v", snapCount, err)
 	}
 	var evCount int
 	if err := s.rdb.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&evCount); err != nil || evCount != 1 {
 		t.Fatalf("events must never be pruned: count=%d err=%v", evCount, err)
+	}
+
+	// Write-time deduplication: inserting an unchanged reading updates
+	// quota_latest.observed_at without adding a redundant quota_snapshots row.
+	if n, err := s.InsertQuotas([]model.QuotaSnapshot{
+		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 50, ResetsAt: freshReset, ObservedAt: freshObs + 5_000},
+	}); err != nil || n != 1 {
+		t.Fatalf("seed latest: n=%d err=%v", n, err)
+	}
+	if n, err := s.InsertQuotas([]model.QuotaSnapshot{
+		{Device: "mac", Source: "codex", LimitID: "codex", Scope: "primary", WindowMinutes: 300, UsedPercent: 50, ResetsAt: freshReset, ObservedAt: freshObs + 15_000},
+	}); err != nil || n != 0 {
+		t.Fatalf("unchanged repeat should not insert duplicate snapshot: n=%d err=%v", n, err)
+	}
+	latest, err := s.LatestQuotas(time.UnixMilli(0))
+	if err != nil || len(latest) != 1 || latest[0].ObservedAt != freshObs+15_000 {
+		t.Fatalf("quota_latest must still advance observed_at on unchanged poll: %+v err=%v", latest, err)
 	}
 }

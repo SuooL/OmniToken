@@ -258,30 +258,19 @@ func migrateIngestReceiptsIndexes(db *sql.DB) error {
 }
 
 const (
-	quotaSnapshotRetention = 35 * 24 * time.Hour
 	ingestReceiptRetention = 14 * 24 * time.Hour
 	pruneBatchSize         = 50_000
 )
 
-// PruneOperationalTables removes aged rows from transient operational tables
-// (quota_snapshots > 35d, ingest_receipts > 14d) in bounded batches so the
-// database does not grow unboundedly while leaving events and learned
-// quota_capacity samples strictly untouched.
-func (s *Store) PruneOperationalTables(now time.Time) (quotasDeleted, receiptsDeleted int64, err error) {
-	quotaCutoff := now.Add(-quotaSnapshotRetention).UnixMilli()
-	for {
-		res, execErr := s.db.Exec(
-			`DELETE FROM quota_snapshots WHERE rowid IN (
-				SELECT rowid FROM quota_snapshots WHERE observed_at < ? LIMIT ?
-			)`, quotaCutoff, pruneBatchSize)
-		if execErr != nil {
-			return quotasDeleted, receiptsDeleted, execErr
-		}
-		n, _ := res.RowsAffected()
-		quotasDeleted += n
-		if n < pruneBatchSize {
-			break
-		}
+// PruneOperationalTables keeps usage and quota history permanent forever while
+// removing only redundant consecutive unchanged rows in quota_snapshots and
+// aged transport-level batch receipts (ingest_receipts > 14d). Both events and
+// every distinct quota state transition (plus quota_capacity) are preserved
+// indefinitely for lifetime historical review.
+func (s *Store) PruneOperationalTables(now time.Time) (quotasDeduplicated, receiptsDeleted int64, err error) {
+	quotasDeduplicated, err = s.DeduplicateQuotaSnapshots()
+	if err != nil {
+		return quotasDeduplicated, receiptsDeleted, err
 	}
 	receiptCutoff := now.Add(-ingestReceiptRetention).UnixMilli()
 	for {
@@ -290,7 +279,7 @@ func (s *Store) PruneOperationalTables(now time.Time) (quotasDeleted, receiptsDe
 				SELECT rowid FROM ingest_receipts WHERE server_time < ? LIMIT ?
 			)`, receiptCutoff, pruneBatchSize)
 		if execErr != nil {
-			return quotasDeleted, receiptsDeleted, execErr
+			return quotasDeduplicated, receiptsDeleted, execErr
 		}
 		n, _ := res.RowsAffected()
 		receiptsDeleted += n
@@ -298,7 +287,54 @@ func (s *Store) PruneOperationalTables(now time.Time) (quotasDeleted, receiptsDe
 			break
 		}
 	}
-	return quotasDeleted, receiptsDeleted, nil
+	return quotasDeduplicated, receiptsDeleted, nil
+}
+
+// DeduplicateQuotaSnapshots removes only consecutive unchanged duplicate rows
+// from quota_snapshots (same device, source, limit_id, scope, window_minutes,
+// used_percent, hour-bucketed resets_at, and plan_type as the immediately
+// preceding observation), preserving the first observation of every state
+// transition permanently regardless of age.
+func (s *Store) DeduplicateQuotaSnapshots() (int64, error) {
+	var total int64
+	for {
+		res, err := s.db.Exec(`
+			DELETE FROM quota_snapshots WHERE rowid IN (
+				SELECT rowid FROM (
+					SELECT rowid,
+					       used_percent,
+					       resets_at / 3600000 AS win,
+					       plan_type,
+					       LAG(used_percent) OVER (
+					           PARTITION BY device, source, limit_id, scope, window_minutes
+					           ORDER BY observed_at ASC
+					       ) AS prev_pct,
+					       LAG(resets_at / 3600000) OVER (
+					           PARTITION BY device, source, limit_id, scope, window_minutes
+					           ORDER BY observed_at ASC
+					       ) AS prev_win,
+					       LAG(plan_type) OVER (
+					           PARTITION BY device, source, limit_id, scope, window_minutes
+					           ORDER BY observed_at ASC
+					       ) AS prev_plan
+					FROM quota_snapshots
+				)
+				WHERE prev_pct IS NOT NULL
+				  AND used_percent = prev_pct
+				  AND win = prev_win
+				  AND plan_type = prev_plan
+				LIMIT ?
+			)`, pruneBatchSize)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < pruneBatchSize {
+			break
+		}
+	}
+	return total, nil
 }
 
 // DeviceOrigin records how a row's device attribution was obtained (ADR-0015).

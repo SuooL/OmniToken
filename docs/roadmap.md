@@ -423,3 +423,12 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 |---|---|---|
 | Hub 发行版代理缓存与心跳版本通告 | ✅ 完成 | `POST /api/v2/heartbeat` 返回 `hub_version` 与 `release_proxy`；`GET /api/v2/releases/{version}/{asset}` 提供 v2 设备鉴权、singleflight、先验 SHA-256 后落盘缓存与最新 3 版本清理 |
 | Relay 链式发行版透传与 `subnet_only` | ✅ 完成 | 中继支持转发 `GET /api/v2/releases/{version}/{asset}`（5 分钟写超时）；Agent 支持 `subnet_only` 强制禁止公网域名/IP、`auto_update` 显式 opt-in 心跳自更新与 `self-update -agent-config` 子网代理升级 |
+
+### v0.7.2 — 心跳防信标退避、Antigravity 模型/配额体验优化与永久无损历史保留（2026-11-24）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 心跳防信标抖动与失败退避 | ✅ 完成 | 正常心跳改为 30s ± 20% 抖动（24–36s），断网指数退避 `30s → 5m`，`401/403` 退避至 `15m`；Outbox 上传退避启用半抖动下界 `[0.5, 1.0]` 且上限扩至 `5m`（`401/403` 为 `15m`） |
+| 模型推理档位折并 | ✅ 完成 | `model.CanonicalModel` 与 `pricing.Table` 剥离尾部推理档位后缀（`-minimal/-low/-medium/-high/-xhigh/-extra-high`，排除 Mistral/Magistral 层级名且不碰 `-max`），原始 `events.model` 保持不变 |
+| Mac 客户端配额标签与 Antigravity 小数精度估算 | ✅ 完成 | Mac 菜单栏 Antigravity 主卡与 Claude/Codex 统一仅显示 `5h`/`Week`（详情抽屉保留分池明细）；Antigravity 按 0.1% 小数精度等价阈值校准（历史样本 ≥3% / 2 窗口、实时外推 ≥1%），整数源保持 30% / 3 窗口 / 10% 不变 |
+| `quota_snapshots` 永久无损去重保留 | ✅ 完成 | 移除 35 天按时间删快照逻辑；改为写入期与定期仅清理连续无变化重复快照，所有真实配额变化与 `events` 永久保留 |

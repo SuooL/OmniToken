@@ -58,7 +58,29 @@ var (
 	// looser rule — `claude-opus-4-5` ends in a dash and digits too, and eating
 	// that would merge every Opus 4 into one row.
 	releaseDate = regexp.MustCompile(`-(\d{8}|\d{4}-\d{2}-\d{2})$`)
+	// Reasoning-effort suffixes attached by hosts such as Antigravity (e.g.
+	// gemini-4-neon-high / gemini-4-neon-xhigh, claude-opus-4-6-medium / -high)
+	// or OpenAI o-series (o3-mini-high). Deliberately excludes "-max", which is
+	// a real model tier (qwen-max, gpt-5.1-codex-max).
+	reasoningEffort = regexp.MustCompile(`(?i)-(extra-high|xhigh|high|medium|low|minimal)$`)
 )
+
+// StripReasoningEffort removes a trailing reasoning-effort suffix while
+// preserving model families whose real tier name ends in "-medium" (Mistral /
+// Magistral). Returns id unchanged when no effort suffix applies.
+func StripReasoningEffort(id string) string {
+	loc := reasoningEffort.FindStringIndex(id)
+	if loc == nil || loc[0] <= 0 {
+		return id
+	}
+	base := id[:loc[0]]
+	lowerBase := strings.ToLower(base)
+	if lowerBase == "mistral" || lowerBase == "magistral" ||
+		strings.HasPrefix(lowerBase, "mistral-") || strings.HasPrefix(lowerBase, "magistral-") {
+		return id
+	}
+	return base
+}
 
 // CanonicalModel reduces a reported model id to the name shown and grouped by.
 func CanonicalModel(id string) string {
@@ -80,6 +102,9 @@ func CanonicalModel(id string) string {
 	// After the version suffix, so a Bedrock id carrying both
 	// (claude-sonnet-4-20250514-v1:0) loses them in the order they were added.
 	m = releaseDate.ReplaceAllString(m, "")
+	// Strip reasoning-effort tiers (-high / -xhigh / -medium / -low / -minimal)
+	// so runs of the same model at different effort levels aggregate together.
+	m = StripReasoningEffort(m)
 	if m == "" {
 		return id // never turn a real id into nothing
 	}

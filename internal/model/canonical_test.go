@@ -59,9 +59,40 @@ func TestCanonicalModelKeepsVersionNumbers(t *testing.T) {
 // The family name is what makes a mixed list readable — stripping it would
 // leave bare version numbers.
 func TestCanonicalModelKeepsFamilyNames(t *testing.T) {
-	for _, id := range []string{"gpt-5.6-sol", "gpt-5.4", "claude-fable-5", "codex-auto-review"} {
+	for _, id := range []string{
+		"gpt-5.6-sol",
+		"gpt-5.4",
+		"claude-fable-5",
+		"codex-auto-review",
+		"gpt-5.1-codex-max",
+		"qwen3.8-max",
+		"mistral-medium",
+		"magistral-medium",
+	} {
 		if got := CanonicalModel(id); got != id {
 			t.Errorf("CanonicalModel(%q) = %q, want it unchanged", id, got)
+		}
+	}
+}
+
+func TestCanonicalModelFoldsReasoningEffortTiers(t *testing.T) {
+	cases := map[string]string{
+		"gemini-4-neon-high":             "gemini-4-neon",
+		"gemini-4-neon-xhigh":            "gemini-4-neon",
+		"gemini-4-carbon-medium":         "gemini-4-carbon",
+		"gemini-4-carbon-high":           "gemini-4-carbon",
+		"gemini-4-hydrogen-tiered-xhigh": "gemini-4-hydrogen-tiered",
+		"gemini-3-flash-low":             "gemini-3-flash",
+		"gemini-3-flash-minimal":         "gemini-3-flash",
+		"gemini-3-flash-extra-high":      "gemini-3-flash",
+		"claude-opus-4-6-medium":         "claude-opus-4-6",
+		"claude-opus-4-6-high":           "claude-opus-4-6",
+		"claude-sonnet-4-6-HIGH":         "claude-sonnet-4-6",
+		"o3-mini-high":                   "o3-mini",
+	}
+	for in, want := range cases {
+		if got := CanonicalModel(in); got != want {
+			t.Errorf("CanonicalModel(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

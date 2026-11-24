@@ -194,6 +194,9 @@ jobs:
             exit 1
           fi
 
-          # Retain the 5 most recent rollback backups to prevent unbounded disk growth.
-          $SUDO bash -c 'ls -1t /var/backups/omnitoken/omnitoken-* 2>/dev/null | tail -n +6 | xargs -r rm -f'
+          # Retain the 5 most recent rollback backups when permitted by local
+          # permissions or sudoers, without requiring unrestricted `sudo bash`.
+          for old in $(ls -1t /var/backups/omnitoken/omnitoken-* 2>/dev/null | tail -n +6); do
+            rm -f "$old" 2>/dev/null || sudo -n rm -f "$old" 2>/dev/null || true
+          done
           REMOTE

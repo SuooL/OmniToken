@@ -363,3 +363,56 @@ func TestCleanupStaleOldBinariesInDir(t *testing.T) {
 		}
 	}
 }
+
+func TestHeartbeatJitterAndFailureBackoff(t *testing.T) {
+	jVal := 0.0
+	a := &Agent{jitter: func() float64 { return jVal }}
+	backoff := retryBackoff{base: heartbeatInterval, max: heartbeatMaxBackoff, minRatio: 0.75, jitter: a.jitterFn()}
+
+	// Healthy heartbeats spread across [24s, 36s] (30s ± 20%).
+	jVal = 0.0
+	if got := a.nextHeartbeatDelay(nil, &backoff); got != 24*time.Second {
+		t.Fatalf("healthy min delay=%v, want 24s", got)
+	}
+	jVal = 1.0
+	if got := a.nextHeartbeatDelay(nil, &backoff); got != 36*time.Second {
+		t.Fatalf("healthy max delay=%v, want 36s", got)
+	}
+
+	// Transient failures back off exponentially up to 5m with 75% jitter floor.
+	jVal = 1.0
+	wantSeq := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for i, want := range wantSeq {
+		if got := a.nextHeartbeatDelay(errors.New("dial tcp: connection refused"), &backoff); got != want {
+			t.Fatalf("transient attempt %d delay=%v, want %v", i+1, got, want)
+		}
+	}
+	jVal = 0.0
+	if got := a.nextHeartbeatDelay(errors.New("timeout"), &backoff); got != 225*time.Second {
+		t.Fatalf("transient floor at cap=%v, want 3m45s (75%% of 5m)", got)
+	}
+
+	// 401/403 jumps straight to 15m ± 15% so revoked agents stay quiet.
+	authErr := &httpStatusError{prefix: "heartbeat server", status: http.StatusUnauthorized, text: "401 Unauthorized"}
+	jVal = 0.5
+	if got := a.nextHeartbeatDelay(authErr, &backoff); got != 15*time.Minute {
+		t.Fatalf("auth reject delay=%v, want 15m", got)
+	}
+
+	// Recovery resets backoff cleanly.
+	jVal = 0.5
+	if got := a.nextHeartbeatDelay(nil, &backoff); got != 30*time.Second {
+		t.Fatalf("post-recovery delay=%v, want 30s", got)
+	}
+
+	// Upload retry backoff enforces half-jitter floor and 15m auth cooldown.
+	upBackoff := retryBackoff{base: uploadBaseBackoff, max: uploadMaxBackoff, minRatio: 0.5, jitter: a.jitterFn()}
+	jVal = 0.0
+	if got := a.nextUploadRetryDelay(errors.New("eof"), &upBackoff); got != time.Second {
+		t.Fatalf("upload floor delay=%v, want 1s (50%% of 2s)", got)
+	}
+	jVal = 0.5
+	if got := a.nextUploadRetryDelay(authErr, &upBackoff); got != 15*time.Minute {
+		t.Fatalf("upload auth reject delay=%v, want 15m", got)
+	}
+}

@@ -39,9 +39,30 @@ const (
 	relayTokenHeader               = "X-OmniToken-Relay-Token"
 	deviceIDHeader                 = "X-OmniToken-Device-ID"
 	heartbeatInterval              = 30 * time.Second
+	heartbeatJitterFraction        = 0.20 // ±20% (24s–36s) breaks fixed-cadence NDR beaconing while staying well inside 90s stale threshold
+	heartbeatMaxBackoff            = 5 * time.Minute
+	authRejectBackoff              = 15 * time.Minute
+	uploadBaseBackoff              = 2 * time.Second
+	uploadMaxBackoff               = 5 * time.Minute
 	outboxIdleInterval             = time.Second
 	relayReleaseWriteTimeout       = 5 * time.Minute
 )
+
+type httpStatusError struct {
+	prefix string
+	status int
+	text   string
+	body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s %s: %s", e.prefix, e.text, e.body)
+}
+
+func isAuthRejection(err error) bool {
+	var httpErr *httpStatusError
+	return errors.As(err, &httpErr) && (httpErr.status == http.StatusUnauthorized || httpErr.status == http.StatusForbidden)
+}
 
 type Config struct {
 	ServerURL string // e.g. https://hub.example or http://127.0.0.1:8788
@@ -437,11 +458,58 @@ func (a *Agent) Run() error {
 }
 
 func (a *Agent) startHeartbeatLoop() {
-	ticker := time.NewTicker(heartbeatInterval)
-	go func() {
-		defer ticker.Stop()
-		a.runHeartbeatLoop(ticker.C)
-	}()
+	go a.runScheduledHeartbeatLoop()
+}
+
+// runScheduledHeartbeatLoop sends heartbeats independently of scanning and
+// uploading, adding ±20% jitter on healthy intervals (avoiding zero-variance
+// periodic beaconing) and backing off exponentially on unreachable/revoked
+// hubs (30s -> 5m; 15m on 401/403).
+func (a *Agent) runScheduledHeartbeatLoop() {
+	backoff := retryBackoff{
+		base:     heartbeatInterval,
+		max:      heartbeatMaxBackoff,
+		minRatio: 0.75,
+		jitter:   a.jitterFn(),
+	}
+	for {
+		err := a.sendHeartbeat()
+		if err != nil {
+			log.Printf("agent: heartbeat failed: %v", err)
+		}
+		a.sleepDuration(a.nextHeartbeatDelay(err, &backoff))
+	}
+}
+
+func (a *Agent) nextHeartbeatDelay(err error, backoff *retryBackoff) time.Duration {
+	jitter := a.jitterFn()
+	if err == nil {
+		backoff.Reset()
+		// Spread uniformly across [1 - f, 1 + f] of heartbeatInterval (24s–36s).
+		factor := (1 - heartbeatJitterFraction) + 2*heartbeatJitterFraction*jitter()
+		return time.Duration(factor * float64(heartbeatInterval))
+	}
+	if isAuthRejection(err) {
+		backoff.Reset()
+		factor := 0.85 + 0.30*jitter()
+		return time.Duration(factor * float64(authRejectBackoff))
+	}
+	return backoff.Next()
+}
+
+func (a *Agent) jitterFn() func() float64 {
+	if a.jitter != nil {
+		return a.jitter
+	}
+	return mathrand.Float64
+}
+
+func (a *Agent) sleepDuration(d time.Duration) {
+	if a.sleep != nil {
+		a.sleep(d)
+		return
+	}
+	time.Sleep(d)
 }
 
 // runHeartbeatLoop is deliberately independent of scanning and uploading.
@@ -459,21 +527,35 @@ func (a *Agent) runHeartbeatLoop(ticks <-chan time.Time) {
 
 func (a *Agent) startUploadLoop() {
 	go func() {
-		backoff := retryBackoff{base: time.Second, max: time.Minute, jitter: a.jitter}
+		backoff := retryBackoff{
+			base:     uploadBaseBackoff,
+			max:      uploadMaxBackoff,
+			minRatio: 0.5,
+			jitter:   a.jitterFn(),
+		}
 		for {
 			err := a.uploadOldest()
 			switch {
 			case errors.Is(err, ErrOutboxEmpty):
 				backoff.Reset()
-				time.Sleep(outboxIdleInterval)
+				a.sleepDuration(outboxIdleInterval)
 			case err != nil:
 				log.Printf("agent: upload failed (will retry): %v", err)
-				time.Sleep(backoff.Next())
+				a.sleepDuration(a.nextUploadRetryDelay(err, &backoff))
 			default:
 				backoff.Reset()
 			}
 		}
 	}()
+}
+
+func (a *Agent) nextUploadRetryDelay(err error, backoff *retryBackoff) time.Duration {
+	if isAuthRejection(err) {
+		backoff.Reset()
+		factor := 0.85 + 0.30*a.jitterFn()()
+		return time.Duration(factor * float64(authRejectBackoff))
+	}
+	return backoff.Next()
 }
 
 func (a *Agent) push(events []model.Event) error {
@@ -569,7 +651,12 @@ func (a *Agent) sendHeartbeat() error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return fmt.Errorf("heartbeat server %s: %s", resp.Status, msg)
+		return &httpStatusError{
+			prefix: "heartbeat server",
+			status: resp.StatusCode,
+			text:   resp.Status,
+			body:   string(msg),
+		}
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	var hbResp heartbeatResponse
@@ -728,7 +815,12 @@ func (a *Agent) uploadOldest() error {
 				return nil
 			}
 		}
-		return fmt.Errorf("server %s: %s", resp.Status, msg)
+		return &httpStatusError{
+			prefix: "server",
+			status: resp.StatusCode,
+			text:   resp.Status,
+			body:   string(msg),
+		}
 	}
 	ackBody, err := io.ReadAll(io.LimitReader(resp.Body, ingestAckBodyMax+1))
 	if err != nil {
@@ -765,10 +857,11 @@ func newUUID() (string, error) {
 }
 
 type retryBackoff struct {
-	base    time.Duration
-	max     time.Duration
-	attempt uint
-	jitter  func() float64
+	base     time.Duration
+	max      time.Duration
+	minRatio float64 // optional lower jitter bound in [0, 1]; 0 preserves full jitter [0, cap]
+	attempt  uint
+	jitter   func() float64
 }
 
 func (b *retryBackoff) Next() time.Duration {
@@ -784,7 +877,12 @@ func (b *retryBackoff) Next() time.Duration {
 		cap = b.max
 	}
 	b.attempt++
-	return time.Duration(b.jitter() * float64(cap))
+	j := b.jitter()
+	ratio := j
+	if b.minRatio > 0 && b.minRatio < 1 {
+		ratio = b.minRatio + (1-b.minRatio)*j
+	}
+	return time.Duration(ratio * float64(cap))
 }
 
 func (b *retryBackoff) Reset() {
@@ -812,7 +910,12 @@ func (a *Agent) postIngest(payload map[string]any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return fmt.Errorf("server %s: %s", resp.Status, msg)
+		return &httpStatusError{
+			prefix: "server",
+			status: resp.StatusCode,
+			text:   resp.Status,
+			body:   string(msg),
+		}
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil

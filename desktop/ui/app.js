@@ -302,22 +302,6 @@ function quotaPool(source, scope) {
   return "all";
 }
 
-function quotaScopeLabel(scope) {
-  const s = String(scope || "").trim();
-  const map = {
-    "gemini-5h": "Gemini",
-    "gemini-weekly": "Gemini",
-    "gemini-argon-wtu-weekly": "Argon",
-    "3p-5h": "第三方",
-    "3p-weekly": "第三方",
-    seven_day_opus: "Opus",
-    seven_day_sonnet: "Sonnet",
-  };
-  if (map[s]) return map[s];
-  if (s.includes(":")) return s.split(":").slice(1).join(":");
-  return "";
-}
-
 function quotaRemaining(quota, key) {
   const remaining = quota[`${key}_remaining_tokens`];
   const known = finite(remaining) && remaining >= 0;
@@ -375,10 +359,8 @@ function renderQuotas() {
             const elapsed = quotaElapsed(percent, quota[`${window.key}_resets_at_ms`], window.key === "five_hour" ? 300 : 10080);
             const timeText = elapsed == null ? "" : `时间已过 ${elapsed.toFixed(0)}%`;
             const marker = elapsed == null ? "" : `<i class="quota-time-marker" style="left:${Number(elapsed.toFixed(2))}%" tabindex="0" role="img" title="${timeText}" aria-label="${timeText}"></i>`;
-            const scopeName = quotaScopeLabel(quota[`${window.key}_scope`]);
-            const winLabel = scopeName ? `${window.label} · ${scopeName}` : window.label;
             return `<div class="quota-window" data-window="${window.key}" data-risk="${risk}">
-      <span class="quota-window-label" title="${esc(winLabel)}">${esc(winLabel)}</span><div class="quota-reading">
+      <span class="quota-window-label">${window.label}</span><div class="quota-reading">
       <strong class="fig" data-severity="${severity}">${known ? percentLabel(percent) : "暂无"}</strong>${hint ? `<small>${hint}</small>` : ""}
       <div class="quota-meter${known ? "" : " missing"}" ${known ? `role="progressbar" aria-label="${esc(quota.label)} ${window.label} 官方已用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(percent, 100)}" aria-valuetext="${percentLabel(percent)}${hint ? ` ${hint}` : ""}${timeText ? ` · ${timeText}` : ""}"` : 'role="img" aria-label="配额暂无读数"'}><div class="quota-meter-fill" style="width:${known ? Math.min(percent, 100) : 0}%"></div>${marker}</div></div>
       <span class="quota-remainder" title="预估剩余额度（tokens）">${finite(remaining) ? compact(remaining) : "暂无估算"}</span>
