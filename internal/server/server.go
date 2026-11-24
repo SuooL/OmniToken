@@ -699,7 +699,7 @@ func (s *Server) runOperationalRetention() {
 			return
 		}
 		if qDel > 0 || rDel > 0 {
-			log.Printf("store[prune]: removed %d aged quota snapshots (>35d) and %d ingest receipts (>14d)", qDel, rDel)
+			log.Printf("store[maintenance]: deduplicated %d redundant quota snapshots and pruned %d expired ingest receipts (>14d)", qDel, rDel)
 		}
 	}
 	prune()

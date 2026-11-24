@@ -74,6 +74,13 @@ func migrateQuotaLatest(db *sql.DB) error {
 }
 
 func insertQuotasTx(tx *sql.Tx, qs []model.QuotaSnapshot) (int, []model.QuotaSnapshot, error) {
+	checkLatestStmt, err := tx.Prepare(`SELECT limit_id, used_percent, resets_at, observed_at, plan_type
+		FROM quota_latest
+		WHERE device = ? AND source = ? AND scope = ? AND window_minutes = ?`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer checkLatestStmt.Close()
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO quota_snapshots
 		(device, source, limit_id, scope, window_minutes, used_percent, resets_at, observed_at, plan_type)
 		VALUES (?,?,?,?,?,?,?,?,?)`)
@@ -101,6 +108,29 @@ func insertQuotasTx(tx *sql.Tx, qs []model.QuotaSnapshot) (int, []model.QuotaSna
 	n := 0
 	var fresh []model.QuotaSnapshot
 	for _, q := range qs {
+		// If this observation is an unchanged consecutive repeat of the live
+		// state in quota_latest, advance quota_latest.observed_at for UI
+		// freshness without bloating the permanent quota_snapshots history.
+		var prevLimit, prevPlan string
+		var prevPct float64
+		var prevResets, prevObserved int64
+		prevErr := checkLatestStmt.QueryRow(q.Device, q.Source, q.Scope, q.WindowMinutes).
+			Scan(&prevLimit, &prevPct, &prevResets, &prevObserved, &prevPlan)
+		if prevErr == nil &&
+			q.ObservedAt > prevObserved &&
+			q.LimitID == prevLimit &&
+			q.UsedPercent == prevPct &&
+			q.ResetsAt/3600000 == prevResets/3600000 &&
+			q.PlanType == prevPlan {
+			if _, err := latestStmt.Exec(q.Device, q.Source, q.Scope, q.WindowMinutes,
+				q.LimitID, q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType); err != nil {
+				return 0, nil, err
+			}
+			continue
+		} else if prevErr != nil && prevErr != sql.ErrNoRows {
+			return 0, nil, prevErr
+		}
+
 		res, err := stmt.Exec(q.Device, q.Source, q.LimitID, q.Scope, q.WindowMinutes,
 			q.UsedPercent, q.ResetsAt, q.ObservedAt, q.PlanType)
 		if err != nil {

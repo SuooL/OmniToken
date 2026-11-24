@@ -170,3 +170,21 @@ func TestCostChargesUnsplitCacheCreationRemainder(t *testing.T) {
 		t.Fatalf("Cost = %v, want %v", got, want)
 	}
 }
+
+func TestLookupFallsBackAcrossReasoningEffortSuffixes(t *testing.T) {
+	tb := &Table{prices: map[string]Price{
+		"claude-opus-4-6":      {Input: 5e-6, Output: 25e-6},
+		"gemini/gemini-4-neon": {Input: 1e-6, Output: 4e-6},
+		"gemini-4-neon-xhigh":  {Input: 2e-6, Output: 8e-6}, // explicit variant override wins
+	}, cache: map[string]*Price{}}
+
+	if p, ok := tb.Lookup("claude-opus-4-6-medium"); !ok || p.Output != 25e-6 {
+		t.Fatalf("claude-opus-4-6-medium = %+v ok=%v, want base 25e-6", p, ok)
+	}
+	if p, ok := tb.Lookup("gemini-4-neon-high"); !ok || p.Output != 4e-6 {
+		t.Fatalf("gemini-4-neon-high = %+v ok=%v, want base 4e-6", p, ok)
+	}
+	if p, ok := tb.Lookup("gemini-4-neon-xhigh"); !ok || p.Output != 8e-6 {
+		t.Fatalf("gemini-4-neon-xhigh = %+v ok=%v, want explicit override 8e-6", p, ok)
+	}
+}

@@ -244,14 +244,31 @@ func (s *Store) ResetCapacity(source string) (int, error) {
 // 40.7%, at 30% it was 26.0%.
 const capacityMinPeak = 30.0
 
+// capacityFractionalMinPeak is the statistically equivalent peak threshold for
+// providers reporting fractional percentages (Antigravity reports 0.1%
+// granularity, quantum 0.05%, so 0.05/3.0 = 1.67% relative quantization error,
+// matching integer providers at 30%: 0.5/30 = 1.67%).
+const capacityFractionalMinPeak = 3.0
+
 // capacityWindowMemory is how many recent windows the estimate considers.
 // Bounded so a plan change or a shift in the provider's accounting ages out on
 // its own — nobody has to clear a cache.
 const capacityWindowMemory = 30
 
 // capacityMinSamples is the point below which no estimate is offered. Showing
-// nothing is better than showing a number derived from two windows.
-const capacityMinSamples = 3
+// nothing is better than showing a number derived from two windows for noisy
+// integer-percent meters. Fractional providers stabilize sooner.
+const (
+	capacityMinSamples           = 3
+	capacityFractionalMinSamples = 2
+)
+
+func capacityThresholdsFor(source string) (minPeak float64, minSamples int) {
+	if source == "antigravity" {
+		return capacityFractionalMinPeak, capacityFractionalMinSamples
+	}
+	return capacityMinPeak, capacityMinSamples
+}
 
 // CapacitySamples returns the most recent windows that reached minPeak, newest
 // first.
@@ -283,11 +300,12 @@ func (s *Store) CapacitySamples(source, scope string, windowMinutes int, minPeak
 // the user does not overrun a quota, and both of those sit too high. On the
 // same 13 real samples the median was 333M and this is 314M.
 func (s *Store) CapacityEstimate(source, scope string, windowMinutes int) (int64, bool, error) {
-	samples, err := s.CapacitySamples(source, scope, windowMinutes, capacityMinPeak, capacityWindowMemory)
+	minPeak, minSamples := capacityThresholdsFor(source)
+	samples, err := s.CapacitySamples(source, scope, windowMinutes, minPeak, capacityWindowMemory)
 	if err != nil {
 		return 0, false, err
 	}
-	if len(samples) < capacityMinSamples {
+	if len(samples) < minSamples {
 		return 0, false, nil
 	}
 	caps := make([]int64, 0, len(samples))
@@ -296,7 +314,7 @@ func (s *Store) CapacityEstimate(source, scope string, windowMinutes int) (int64
 			caps = append(caps, v)
 		}
 	}
-	if len(caps) < capacityMinSamples {
+	if len(caps) < minSamples {
 		return 0, false, nil
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
@@ -334,10 +352,10 @@ const (
 	capacityQuantum = 0.5
 	// capacityLiveOnlyMinPercent is how full a window must be before its own
 	// ratio is used with no prior behind it at all — 10% keeps integer-percent
-	// rounding error under 5%. Fractional providers (Antigravity) carry
-	// negligible rounding error and can extrapolate safely from 5%.
+	// rounding error under 5%. Fractional providers (Antigravity, quantum 0.05%)
+	// achieve the exact same ≤5% rounding bound at 1.0%.
 	capacityLiveOnlyMinPercent           = 10.0
-	capacityFractionalLiveOnlyMinPercent = 5.0
+	capacityFractionalLiveOnlyMinPercent = 1.0
 	capacityFractionalQuantum            = 0.05
 )
 
@@ -394,9 +412,10 @@ func (s *Store) BackfillCapacity(since time.Time) (int, error) {
 		                PARTITION BY source, scope, window_minutes, resets_at / 3600000
 		                ORDER BY used_percent DESC, observed_at ASC) AS rn
 		       FROM quota_snapshots
-		       WHERE observed_at >= ? AND resets_at > 0 AND observed_at <= resets_at AND used_percent >= ?)
+		       WHERE observed_at >= ? AND resets_at > 0 AND observed_at <= resets_at
+		         AND used_percent >= CASE WHEN source = 'antigravity' THEN ? ELSE ? END)
 		 WHERE rn = 1`,
-		since.UnixMilli(), capacityMinPeak)
+		since.UnixMilli(), capacityFractionalMinPeak, capacityMinPeak)
 	if err != nil {
 		return 0, err
 	}
