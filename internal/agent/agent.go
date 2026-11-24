@@ -22,21 +22,25 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/suool/omnitoken/internal/collect"
 	"github.com/suool/omnitoken/internal/model"
 	"github.com/suool/omnitoken/internal/proxy"
+	"github.com/suool/omnitoken/internal/selfupdate"
 )
 
 const (
-	ingestAckBodyMax      int64 = 1 << 20
-	relayV1IngestBodyMax  int64 = 64 << 20
-	relayHeartbeatBodyMax int64 = 1 << 20
-	relayTokenHeader            = "X-OmniToken-Relay-Token"
-	heartbeatInterval           = 30 * time.Second
-	outboxIdleInterval          = time.Second
+	ingestAckBodyMax         int64 = 1 << 20
+	relayV1IngestBodyMax     int64 = 64 << 20
+	relayHeartbeatBodyMax    int64 = 1 << 20
+	relayTokenHeader               = "X-OmniToken-Relay-Token"
+	deviceIDHeader                 = "X-OmniToken-Device-ID"
+	heartbeatInterval              = 30 * time.Second
+	outboxIdleInterval             = time.Second
+	relayReleaseWriteTimeout       = 5 * time.Minute
 )
 
 type Config struct {
@@ -46,6 +50,9 @@ type Config struct {
 	// flaky or polluted resolver cannot stop uploads without weakening auth.
 	ResolveIP         string
 	AllowInsecureHTTP bool
+	SubnetOnly        bool
+	AutoUpdate        bool
+	AutoUpdateSource  string
 	Token             string // legacy v1 bearer token
 	ProtocolVersion   int    // zero and one are legacy v1; two uses the durable outbox
 	DeviceID          string
@@ -90,9 +97,12 @@ func Enroll(serverURL, adminToken string, fc *FileConfig, client *http.Client) e
 	if adminToken == "" {
 		return errors.New("admin credential is required")
 	}
-	hubURL, err := validateServerURL(serverURL, fc.AllowInsecureHTTP)
+	hubURL, err := validateServerURLWithPolicy(serverURL, fc.AllowInsecureHTTP, fc.SubnetOnly)
 	if err != nil {
 		return err
+	}
+	if fc.SubnetOnly && fc.ResolveIP != "" && !subnetHost(fc.ResolveIP) {
+		return fmt.Errorf("subnet_only rejects public resolve_ip %q", fc.ResolveIP)
 	}
 	if client == nil {
 		client, err = newHTTPClient(30*time.Second, hubURL.String(), fc.ResolveIP)
@@ -178,6 +188,22 @@ type Agent struct {
 	heartbeatSequence atomic.Uint64
 	lastScanAt        atomic.Int64
 	lastUploadAt      atomic.Int64
+
+	relayMu  sync.Mutex
+	relaySrv *http.Server
+
+	updateMu            sync.Mutex
+	updating            bool
+	updateAttempts      int
+	updateFailedVersion string
+	updateBackoffUntil  time.Time
+	updateWarning       string
+
+	// Test seams for heartbeat-driven auto-update (nil uses production defaults).
+	runSelfUpdate     func(context.Context, selfupdate.Options) (selfupdate.Result, error)
+	reexecSelf        func(string) error
+	updateJitterDelay func() time.Duration
+	updateSync        bool // when true (tests only), maybeAutoUpdate runs inline
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -187,9 +213,20 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.ProtocolVersion != 1 && cfg.ProtocolVersion != model.IngestProtocolV2 {
 		return nil, fmt.Errorf("unsupported ingest protocol version %d", cfg.ProtocolVersion)
 	}
-	serverURL, err := validateServerURL(cfg.ServerURL, cfg.AllowInsecureHTTP)
+	source, err := normalizeAutoUpdateSource(cfg.AutoUpdateSource)
 	if err != nil {
 		return nil, err
+	}
+	cfg.AutoUpdateSource = source
+	if cfg.SubnetOnly && cfg.AutoUpdate && cfg.AutoUpdateSource == AutoUpdateSourceGitHub {
+		return nil, errors.New("subnet_only cannot be combined with auto_update_source \"github\"")
+	}
+	serverURL, err := validateServerURLWithPolicy(cfg.ServerURL, cfg.AllowInsecureHTTP, cfg.SubnetOnly)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.SubnetOnly && cfg.ResolveIP != "" && !subnetHost(cfg.ResolveIP) {
+		return nil, fmt.Errorf("subnet_only rejects public resolve_ip %q", cfg.ResolveIP)
 	}
 	cfg.ServerURL = serverURL.String()
 	if cfg.RelayListen != "" && cfg.RelayToken == "" {
@@ -340,6 +377,7 @@ func (a *Agent) reportProcs() error {
 }
 
 func (a *Agent) Run() error {
+	cleanupStaleOldBinaries()
 	if a.cfg.RelayListen != "" {
 		go a.runRelay()
 	}
@@ -493,6 +531,9 @@ func (a *Agent) sendHeartbeat() error {
 	capabilities := a.cfg.Capabilities
 	if len(capabilities) == 0 {
 		capabilities = []string{"events", "quotas", "procs", "heartbeat", "durable_outbox"}
+		if a.cfg.AutoUpdate {
+			capabilities = append(capabilities, "auto_update")
+		}
 	}
 	heartbeat := model.Heartbeat{
 		ProtocolVersion: model.IngestProtocolV2,
@@ -507,6 +548,7 @@ func (a *Agent) sendHeartbeat() error {
 		OldestQueuedAt:  stats.OldestQueuedAt,
 		LastScanAt:      a.lastScanAt.Load(),
 		LastUploadAt:    a.lastUploadAt.Load(),
+		Warnings:        a.currentWarnings(),
 		ProcessState:    processState,
 	}
 	body, err := json.Marshal(heartbeat)
@@ -529,7 +571,11 @@ func (a *Agent) sendHeartbeat() error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return fmt.Errorf("heartbeat server %s: %s", resp.Status, msg)
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	var hbResp heartbeatResponse
+	if len(respBody) > 0 && json.Unmarshal(respBody, &hbResp) == nil {
+		a.maybeAutoUpdate(hbResp.HubVersion, hbResp.ReleaseProxy)
+	}
 	return nil
 }
 
@@ -782,14 +828,43 @@ func (a *Agent) runRelay() {
 		log.Printf("relay: configure: %v", err)
 		return
 	}
+	a.relayMu.Lock()
+	a.relaySrv = server
+	a.relayMu.Unlock()
+	defer func() {
+		a.relayMu.Lock()
+		if a.relaySrv == server {
+			a.relaySrv = nil
+		}
+		a.relayMu.Unlock()
+	}()
 	log.Printf("agent: relaying ingest on %s -> %s", a.cfg.RelayListen, a.cfg.ServerURL)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("relay: %v", err)
 	}
 }
 
+func (a *Agent) shutdownRelay(ctx context.Context) {
+	a.relayMu.Lock()
+	srv := a.relaySrv
+	a.relayMu.Unlock()
+	if srv != nil {
+		_ = srv.Shutdown(ctx)
+	}
+}
+
+// RelayHandler constructs the authenticated relay HTTP handler without binding
+// a socket (useful for integration tests exercising multi-hop relay chains).
+func (a *Agent) RelayHandler() (http.Handler, error) {
+	srv, err := a.relayServer()
+	if err != nil {
+		return nil, err
+	}
+	return srv.Handler, nil
+}
+
 func (a *Agent) relayServer() (*http.Server, error) {
-	upstream, err := validateServerURL(a.cfg.ServerURL, a.cfg.AllowInsecureHTTP)
+	upstream, err := validateServerURLWithPolicy(a.cfg.ServerURL, a.cfg.AllowInsecureHTTP, a.cfg.SubnetOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -815,6 +890,7 @@ func (a *Agent) relayServer() (*http.Server, error) {
 	} {
 		mux.Handle("POST "+path, a.relayForward(maxBytes, proxy))
 	}
+	mux.Handle("GET /api/v2/releases/{version}/{asset}", a.relayForwardGET(proxy))
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"relay"}`)
@@ -827,6 +903,39 @@ func (a *Agent) relayServer() (*http.Server, error) {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}, nil
+}
+
+func (a *Agent) relayForwardGET(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values(relayTokenHeader)
+		if len(values) != 1 || !relayCredentialOK(values[0], a.cfg.RelayToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !validRelayPathSegment(r.PathValue("version")) || !validRelayPathSegment(r.PathValue("asset")) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		r.Header.Set(relayTokenHeader, a.relayUpstreamToken())
+		rc := http.NewResponseController(w)
+		_ = rc.SetWriteDeadline(time.Now().Add(relayReleaseWriteTimeout))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func validRelayPathSegment(s string) bool {
+	if s == "" || len(s) > 64 || strings.Contains(s, "..") {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) relayForward(maxBytes int64, next http.Handler) http.Handler {
@@ -882,6 +991,10 @@ func relayCredentialOK(got, want string) bool {
 }
 
 func validateServerURL(raw string, allowInsecureHTTP bool) (*url.URL, error) {
+	return validateServerURLWithPolicy(raw, allowInsecureHTTP, false)
+}
+
+func validateServerURLWithPolicy(raw string, allowInsecureHTTP, subnetOnly bool) (*url.URL, error) {
 	parsed, err := url.ParseRequestURI(raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid server URL: %w", err)
@@ -896,6 +1009,9 @@ func validateServerURL(raw string, allowInsecureHTTP bool) (*url.URL, error) {
 		(parsed.Path != "" && parsed.Path != "/") {
 		return nil, errors.New("server URL must not contain credentials, query, fragment, or base path")
 	}
+	if subnetOnly && !subnetHost(parsed.Hostname()) {
+		return nil, fmt.Errorf("subnet_only requires a loopback or private subnet IP (got %q)", parsed.Hostname())
+	}
 	if parsed.Scheme == "http" && !allowInsecureHTTP && !loopbackHost(parsed.Hostname()) {
 		return nil, errors.New("plaintext HTTP requires a loopback host or allow_insecure_http")
 	}
@@ -908,11 +1024,36 @@ func loopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
+	ip := parseHostIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// subnetHost returns true for loopback, RFC1918/ULA private, link-local, and
+// RFC6598 CGNAT (100.64.0.0/10, used by Tailscale/EasyTier overlays) literal
+// IP addresses (plus "localhost"). Public IPs and all DNS hostnames return
+// false so subnet_only can never silently route traffic over public DNS/IPs.
+func subnetHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := parseHostIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
+func parseHostIP(host string) net.IP {
 	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
 		host = host[:zone]
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return net.ParseIP(host)
 }
 
 // newHTTPClient builds the agent's HTTP client. When resolveIP is set it pins

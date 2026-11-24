@@ -42,6 +42,10 @@ type Server struct {
 	// tell the user their machine is in the database under two names
 	// (ADR-0019 §7.3) — never to decide attribution.
 	hostname func() (string, error)
+
+	releaseProxyMu    sync.Mutex
+	releaseFetchLocks map[string]*sync.Mutex
+	releaseHTTPClient *http.Client
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -155,6 +159,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v2/enroll", s.handleEnrollV2)
 	mux.HandleFunc("POST /api/v2/ingest", s.handleIngestV2)
 	mux.HandleFunc("POST /api/v2/heartbeat", s.handleHeartbeatV2)
+	mux.HandleFunc("GET /api/v2/releases/{version}/{asset}", s.handleReleaseAssetV2)
 	mux.HandleFunc("POST /api/v2/devices/{device_id}/revoke", s.adminAuth(s.handleRevokeDeviceV2))
 	// Device identity merge (ADR-0019). Admin-only, and reachable from nowhere
 	// else: no collector, parser or ingest path may fold two identities together
@@ -186,6 +191,7 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, map[string]any{
 			"status":            "ok",
 			"hub_version":       s.hubVersion(),
+			"release_proxy":     s.releaseProxyEnabled(),
 			"auth_required":     s.siteAuth != nil || !s.loopbackOnly(),
 			"site_auth_enabled": s.siteAuth != nil,
 		})

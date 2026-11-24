@@ -177,6 +177,8 @@ func (s *Server) handleHeartbeatV2(w http.ResponseWriter, r *http.Request) {
 		"protocol_version": model.IngestProtocolV2,
 		"device_id":        record.DeviceID,
 		"received_at":      receivedAt,
+		"hub_version":      s.hubVersion(),
+		"release_proxy":    s.releaseProxyEnabled(),
 	})
 }
 

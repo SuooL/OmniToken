@@ -416,3 +416,10 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 | Wave 1 · P0 安全与关键缺陷修复 | ✅ 完成 | LiteLLM 价表大小写重复键修复与 431 大写模型归一化、未拆分缓存写入计费、`site_auth` 回环写鉴权 fail-closed 与 CSRF 校验、v2 Agent 代理 `DeviceID` 归属、代理禁重定向与内存上限、`LC_ALL=C` 进程检测、`deploy-hub` 自动回滚 trap、macOS `quota:*` 详情窗放行与 Web `DetailDrawer` 样式修复 |
 | Wave 2 · 配额分池校准、DB 瘦身与队列韧性 | ✅ 完成 | `quota_latest` 物化表、`ApplyIngestV2` 实时容量校准与 Antigravity 多池（`gemini` / `gemini-argon` / `3p`）隔离、小时级窗口分桶与 `ObservedAt` 截断、`quota_snapshots`(35d)/`ingest_receipts`(14d) 分批保留清理、热路径复合索引与 `ReadOnly` 事务、ISO-8601 `%G-W%V` 周报、v2 Outbox 永久 4xx 死信队列与零冗余编解码、解析器流式化与子进程超时、`selfupdate` 冒烟与失败回滚 |
 | Wave 3 · Web / Desktop UI/UX 与 CI/CD 升级 | ✅ 完成 | 5 来源动态高度速度泳道、总览周期成本（实付/等效）与按项目工时表、车队 `agent_version` 落后提示与一键复制升级命令、无定价一键跳转预填与 LiteLLM 同步状态条、7/30/90 天范围切换、模型均价与缓存命中率、明细全芯片清除与筛选导出 CSV/JSON、采集与接入诊断面板、设备身份吊销 UI、macOS 菜单栏设置收口与 80%/90% 预警对齐、Playwright Web 迁至 `ubuntu-latest` 与 `--draft` 原子发版 |
+
+### v0.7.1 — 子网心跳驱动自更新与 Hub 发行版代理（ADR-0046 · 2026-11-23）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| Hub 发行版代理缓存与心跳版本通告 | ✅ 完成 | `POST /api/v2/heartbeat` 返回 `hub_version` 与 `release_proxy`；`GET /api/v2/releases/{version}/{asset}` 提供 v2 设备鉴权、singleflight、先验 SHA-256 后落盘缓存与最新 3 版本清理 |
+| Relay 链式发行版透传与 `subnet_only` | ✅ 完成 | 中继支持转发 `GET /api/v2/releases/{version}/{asset}`（5 分钟写超时）；Agent 支持 `subnet_only` 强制禁止公网域名/IP、`auto_update` 显式 opt-in 心跳自更新与 `self-update -agent-config` 子网代理升级 |
