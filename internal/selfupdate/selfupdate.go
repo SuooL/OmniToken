@@ -232,7 +232,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return res, err
 	}
 
-	tmpPath, err := downloadVerified(ctx, client, baseURL+"/"+asset, filepath.Dir(binPath), wantHash)
+	tmpPath, err := downloadVerified(ctx, client, baseURL+"/"+asset, filepath.Dir(binPath), wantHash, goos)
 	if err != nil {
 		return res, err
 	}
@@ -344,7 +344,7 @@ func fetchText(ctx context.Context, client *http.Client, url string, maxBytes in
 	return string(data), nil
 }
 
-func downloadVerified(ctx context.Context, client *http.Client, url, dir, wantHex string) (string, error) {
+func downloadVerified(ctx context.Context, client *http.Client, url, dir, wantHex, goos string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -358,7 +358,11 @@ func downloadVerified(ctx context.Context, client *http.Client, url, dir, wantHe
 		return "", fmt.Errorf("download binary: HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".omnitoken-update-*")
+	pattern := ".omnitoken-update-*"
+	if goos == "windows" {
+		pattern = ".omnitoken-update-*.exe"
+	}
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp file in %s: %w", dir, err)
 	}
