@@ -651,6 +651,8 @@ test("Antigravity official multi-bucket quotas expose trigger and render bucket 
     label: "Antigravity",
     five_hour_percent: 82,
     weekly_percent: 45,
+    five_hour_scope: "gemini-5h",
+    weekly_scope: "gemini-weekly",
     five_hour_resets_at_ms: Date.now() + 180 * 60000,
     weekly_resets_at_ms: Date.now() + 5040 * 60000,
     five_hour_remaining_tokens: 12_000_000,
@@ -663,6 +665,10 @@ test("Antigravity official multi-bucket quotas expose trigger and render bucket 
   };
   const html = showQuotas([quota]);
   assert.match(html, /data-detail="quota:antigravity"/);
+  assert.match(quotaReading(html, "five_hour"), />5h<\/span>/);
+  assert.match(quotaReading(html, "weekly"), />Week<\/span>/);
+  assert.ok(!html.includes("5h · Gemini"), "main Antigravity card must match Claude/Codex 5h/Week labels");
+  assert.ok(!html.includes("Week · Gemini"), "main Antigravity card must match Claude/Codex 5h/Week labels");
   assert.match(html, /82%/);
   assert.match(html, /45%/);
 

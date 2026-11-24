@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/suool/omnitoken/internal/model"
 )
 
 //go:embed litellm_prices.json
@@ -150,6 +152,17 @@ func (t *Table) lookupUncached(m string) (Price, bool) {
 	if unprefixed != "" {
 		if undated := pinnedDateSuffix.ReplaceAllString(unprefixed, ""); undated != unprefixed {
 			candidates = append(candidates, undated, "anthropic/"+undated, "openai/"+undated, "gemini/"+undated)
+		}
+	}
+	// Strip reasoning-effort suffix (-high / -xhigh / -medium / -low / -minimal)
+	// only after exact and dated lookups miss, so explicit overrides on a
+	// specific effort variant still win while base model prices cover all tiers.
+	if base := model.StripReasoningEffort(m); base != m {
+		candidates = append(candidates, base, "anthropic/"+base, "openai/"+base, "gemini/"+base, "vertex_ai/"+base, "google/"+base)
+	}
+	if unprefixed != "" {
+		if base := model.StripReasoningEffort(unprefixed); base != unprefixed {
+			candidates = append(candidates, base, "anthropic/"+base, "openai/"+base, "gemini/"+base, "vertex_ai/"+base, "google/"+base)
 		}
 	}
 	for _, c := range candidates {
