@@ -432,3 +432,9 @@ Implemented: machine-derived enrollment keys preserve canonical device IDs acros
 | 模型推理档位折并 | ✅ 完成 | `model.CanonicalModel` 与 `pricing.Table` 剥离尾部推理档位后缀（`-minimal/-low/-medium/-high/-xhigh/-extra-high`，排除 Mistral/Magistral 层级名且不碰 `-max`），原始 `events.model` 保持不变 |
 | Mac 客户端配额标签与 Antigravity 小数精度估算 | ✅ 完成 | Mac 菜单栏 Antigravity 主卡与 Claude/Codex 统一仅显示 `5h`/`Week`（详情抽屉保留分池明细）；Antigravity 按 0.1% 小数精度等价阈值校准（历史样本 ≥3% / 2 窗口、实时外推 ≥1%），整数源保持 30% / 3 窗口 / 10% 不变 |
 | `quota_snapshots` 永久无损去重保留 | ✅ 完成 | 移除 35 天按时间删快照逻辑；改为写入期与定期仅清理连续无变化重复快照，所有真实配额变化与 `events` 永久保留 |
+
+### v0.7.3 — macOS 27 菜单栏左键弹窗兼容修复（2026-11-28）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| macOS 27 菜单栏左键兼容（`tauri#16035` / `tray-icon#355`） | ✅ 完成 | 升级桌面端 `tauri` 至 `2.12.7`、`tauri-build` 至 `2.7.6`、`tray-icon` 至 `0.25.1`（改为弹出时动态挂接 `NSMenu` 并即刻解绑，同时兼容 macOS 12–26 与 macOS 27）；附带 `v0.7.2` 收尾 PR #166 的 Windows 自更新直接拉起新进程修复 |
