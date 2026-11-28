@@ -479,7 +479,7 @@ fn quota_buckets_for(quotas: &[Value], source: &str) -> Vec<QuotaBucketView> {
         let key = (window_minutes, scope.clone());
         let replace = by_key
             .get(&key)
-            .map_or(true, |prev| used_percent > prev.used_percent);
+            .is_none_or(|prev| used_percent > prev.used_percent);
         if replace {
             by_key.insert(
                 key,
